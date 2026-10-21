@@ -152,6 +152,9 @@ async function homeView() {
 /* ---------- book ---------- */
 const STATUS = { owned: "On the shelf", out: "Off the shelf", loaned: "Loaned out", gone: "No longer owned", wanted: "Want to buy" };
 const fmtDay = (d) => { if (!d) return ""; const t = new Date(d + "T12:00:00"); return isNaN(t) ? d : t.toLocaleDateString(undefined, { month: "short", day: "numeric", year: t.getFullYear() === new Date().getFullYear() ? undefined : "numeric" }); };
+// Same folding as the server's fold(): "creme" finds "Crème", "oeufs" finds "Œufs".
+const FOLD_EXTRA = { æ: "ae", œ: "oe", ø: "o", ł: "l", đ: "d", ð: "d", þ: "th", ı: "i", ß: "ss" };
+const fold = (s) => (s || "").toLowerCase().normalize("NFKD").replace(/\p{M}/gu, "").replace(/[æœøłđðþıß]/g, (c) => FOLD_EXTRA[c]);
 const num = (x) => (+x % 1 ? (+x).toFixed(1) : String(Math.round(+x)));
 // Book rating, 0–5 in half stars: outline stars with a filled layer clipped to the rating.
 const starLabel = (v) => v == null ? "Not rated" : `${num(v)} star${v === 1 ? "" : "s"}`;
@@ -246,8 +249,8 @@ async function bookView(id) {
     ${ADMIN ? `<div id="dinners"></div>` : ""}`;
   const rf = $("#rf");
   if (rf) rf.oninput = () => {
-    const q = rf.value.toLowerCase();
-    $$("#rl li").forEach((li) => li.classList.toggle("hidden", !!q && !li.textContent.toLowerCase().includes(q)));
+    const q = fold(rf.value.trim());
+    $$("#rl li").forEach((li) => li.classList.toggle("hidden", !!q && !fold(li.textContent).includes(q)));
   };
   if (!ADMIN) return;
   rateWidget($("#rate"), b.rating, (v) => api("books/" + id, { method: "PUT", body: { rating: v } }));

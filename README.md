@@ -87,6 +87,7 @@ Editors can give each book an overall rating of 0–5 stars, in half stars.
 ## What should we cook? / Stats / shelf
 - **Cook** gives random ideas in four modes: starred but not yet made, never made, forgotten books, and old favorites.
 - **Pulled out / Put back** on a book's page tracks books that are off the shelf.
+- **Stats → The collection** counts the books you own by author, publisher, tag, book rating, decade published and format. Publisher spellings that differ only by case or accents are counted together. Each list shows the top 12, with the rest under **All**, and tapping an author, publisher or tag opens those books in the catalog.
 
 ## MCP (use the catalog from Claude)
 - `https://cookbooks.example.com/mcp` is public and read-only: search books and recipes, get a book with its index.

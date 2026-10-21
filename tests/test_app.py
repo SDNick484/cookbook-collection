@@ -193,6 +193,30 @@ def test_update_upload_and_delete(c):
     assert not any(a["name"] == "Solo Author Unique" for a in c.get("/api/facets").json["authors"])
 
 
+def test_book_rating(c):
+    bid = c.post("/admin/api/books", json={"title": "Rated Book", "rating": "4.5"}).json["id"]
+    assert c.get(f"/admin/api/books/{bid}").json["rating"] == 4.5
+    for v in (0, 0.5, 5, "3"):
+        assert c.put(f"/admin/api/books/{bid}", json={"rating": v}).json["rating"] == float(v)
+    for bad in (5.5, -0.5, 3.3, "lots", "nan"):
+        assert c.put(f"/admin/api/books/{bid}", json={"rating": bad}).status_code == 400
+    assert c.get(f"/admin/api/books/{bid}").json["rating"] == 3
+    # editors only
+    assert "rating" not in c.get(f"/api/books/{bid}").json
+    assert all("rating" not in b for b in c.get("/api/books").json["books"])
+    # top rated first, unrated last; public can't sort by it
+    other = c.post("/admin/api/books", json={"title": "Better Book", "rating": 5}).json["id"]
+    ids = [b["id"] for b in c.get("/admin/api/books?sort=rating").json["books"]]
+    assert ids.index(other) < ids.index(bid) and ids[-1] not in (other, bid)
+    assert c.get("/admin/api/books?sort=rating").json["books"][-1]["rating"] is None
+    assert "rating" in c.get("/admin/api/export.csv").data.decode().splitlines()[0].split(",")
+    # clearing it, and saving the edit form unrated
+    assert c.put(f"/admin/api/books/{bid}", json={"rating": None}).json["rating"] is None
+    assert c.put(f"/admin/api/books/{other}", json={"rating": ""}).json["rating"] is None
+    for x in (bid, other):
+        c.delete(f"/admin/api/books/{x}")
+
+
 def test_recipes_and_index_import(c):
     bid = c.post("/admin/api/books", json={"title": "Index Book"}).json["id"]
     text = "Chicken\n  roast, 42\n  braised, 50\nBraised Fennel, 255\n"

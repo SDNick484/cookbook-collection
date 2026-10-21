@@ -91,6 +91,12 @@ button:disabled { opacity: .5; cursor: default; }
 .rlist .acts button.on { color: var(--accent); }
 .rlist .extra { font-size: .85rem; color: var(--muted); margin-top: 2px; }
 .rating { color: var(--warn); font-weight: 600; font-size: .85rem; }
+.stars { position: relative; display: inline-block; color: color-mix(in srgb, var(--muted) 55%, transparent); font-size: .9rem; letter-spacing: 1px; line-height: 1; white-space: nowrap; }
+.stars .on { position: absolute; inset: 0 auto 0 0; overflow: hidden; color: var(--warn); }
+.stars.big { font-size: 1.6rem; cursor: pointer; touch-action: manipulation; }
+.stars.big:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+.rate { display: flex; align-items: center; gap: 10px; margin: 8px 0 0; }
+.card .stars { margin-top: 3px; }
 
 /* book detail */
 .back { display: inline-block; margin: 16px 0 10px; color: var(--muted); text-decoration: none; font-size: .92rem; }

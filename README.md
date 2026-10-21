@@ -69,6 +69,13 @@ Set a book's status to **Want to buy** and use **Add to a wish list…** on its 
 - **In Dinner Log** (updated `setup-dinner-log.sh`): choosing a cookbook offers that book's indexed recipes, and picking one fills in the page and the dinner name. The data comes from Cookbook Collection over localhost, and the form works as before if it's down.
 - **In Cookbook Collection:** set `DINNERLOG_URL` and each recipe gets a 🍽 link that opens Dinner Log's form already filled in.
 
+## Book ratings
+Editors can give each book an overall rating of 0–5 stars, in half stars.
+- On a book's page, tap the left half of a star for a half star or the right half for a whole one. The arrow keys also change it, and **Clear** removes it.
+- The **Edit book** form has the same rating as a menu.
+- Ratings appear on the catalog cards, and **Top rated** sorts by them, with unrated books last. Like recipe ratings, they're visible only to editors, not the public catalog.
+- The rating is also in the CSV export and in the private MCP's book results.
+
 ## What should we cook? / Stats / shelf
 - **Cook** gives random ideas in four modes: starred but not yet made, never made, forgotten books, and old favorites.
 - **Pulled out / Put back** on a book's page tracks books that are off the shelf.

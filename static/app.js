@@ -81,7 +81,7 @@ async function homeView() {
       <select id="tag" aria-label="Tag">${opt(f.tags, S.tag, "Tag")}</select>
       <select id="sort" aria-label="Sort">
         <option value="author">By author</option><option value="title">By title</option><option value="added">Recently added</option>
-        ${ADMIN ? `<option value="cooked">Most cooked</option>` : ""}
+        ${ADMIN ? `<option value="cooked">Most cooked</option><option value="rating">Top rated</option>` : ""}
       </select>
     </div>
     ${S.ingredients.length ? `<div class="ingchips" role="group" aria-label="Recipes by ingredient">${S.ingredients.map((i) =>
@@ -134,7 +134,8 @@ async function homeView() {
     };
     $("#grid").innerHTML = bk.books.length ? bk.books.map((b) => `
       <a class="card" href="#/book/${b.id}">${coverHTML(b)}
-        <div class="meta"><div class="ttl">${esc(b.title)}</div><div class="by">${esc(byline(b))}</div></div></a>`).join("")
+        <div class="meta"><div class="ttl">${esc(b.title)}</div><div class="by">${esc(byline(b))}</div>
+        ${ADMIN && b.rating != null ? starsHTML(b.rating) : ""}</div></a>`).join("")
       : (rc.count ? "" : `<div class="empty">Nothing matches.</div>`);
   };
   $("#q").addEventListener("input", debounce((e) => { S.q = e.target.value; load(); }, 220));
@@ -152,6 +153,36 @@ async function homeView() {
 const STATUS = { owned: "On the shelf", out: "Off the shelf", loaned: "Loaned out", gone: "No longer owned", wanted: "Want to buy" };
 const fmtDay = (d) => { if (!d) return ""; const t = new Date(d + "T12:00:00"); return isNaN(t) ? d : t.toLocaleDateString(undefined, { month: "short", day: "numeric", year: t.getFullYear() === new Date().getFullYear() ? undefined : "numeric" }); };
 const num = (x) => (+x % 1 ? (+x).toFixed(1) : String(Math.round(+x)));
+// Book rating, 0–5 in half stars: outline stars with a filled layer clipped to the rating.
+const starLabel = (v) => v == null ? "Not rated" : `${num(v)} star${v === 1 ? "" : "s"}`;
+const starsHTML = (v, cls = "") => `<span class="stars ${cls}" title="${starLabel(v)}" aria-label="${starLabel(v)}">
+  <span class="on" style="width:${(v || 0) * 20}%">★★★★★</span>☆☆☆☆☆</span>`;
+function rateWidget(el, value, save) {
+  const stars = $(".stars", el), on = $(".on", stars), txt = $(".ratev", el);
+  const show = (v) => { on.style.width = (v || 0) * 20 + "%"; };
+  const set = async (v) => {
+    if (v === value) return;
+    try { await save(v); } catch (err) { toast(err.message); show(value); return; }
+    value = v; show(v); txt.textContent = v == null ? "Not rated" : num(v);
+    stars.setAttribute("aria-valuenow", v ?? 0); stars.setAttribute("aria-valuetext", starLabel(v));
+    $(".clear", el).hidden = v == null;
+  };
+  // Left half of a star = half star, right half = whole star.
+  const at = (e) => { const r = stars.getBoundingClientRect(); return Math.min(5, Math.max(0.5, Math.ceil((e.clientX - r.left) / r.width * 10) / 2)); };
+  stars.onpointermove = (e) => show(at(e));
+  stars.onpointerleave = () => show(value);
+  stars.onclick = (e) => set(at(e));
+  stars.onkeydown = (e) => {
+    const step = { ArrowRight: 0.5, ArrowUp: 0.5, ArrowLeft: -0.5, ArrowDown: -0.5 }[e.key];
+    if (step) set(Math.min(5, Math.max(0, (value || 0) + step)));
+    else if (e.key === "Home") set(0);
+    else if (e.key === "End") set(5);
+    else if (e.key === "Delete" || e.key === "Backspace") set(null);
+    else return;
+    e.preventDefault();
+  };
+  $(".clear", el).onclick = () => set(null);
+}
 function recipeRow(r) {
   const extra = [];
   if (r.cooked_count) extra.push(`<span class="cooked">Cooked ${r.cooked_count}×${r.cooked_avg != null ? ` · <span class="rating">${num(r.cooked_avg)}/10</span>` : ""} · ${fmtDay(r.cooked_last)}</span>`);
@@ -193,6 +224,11 @@ async function bookView(id) {
       <div>
         <h1>${esc(b.title)}</h1>
         <div class="muted">${(b.authors || []).map((a) => `<a href="#/?author=${encodeURIComponent(a)}">${esc(a)}</a>`).join(", ")}</div>
+        ${ADMIN ? `<div class="rate" id="rate">
+          <span class="stars big" role="slider" tabindex="0" aria-label="Book rating" aria-valuemin="0" aria-valuemax="5"
+            aria-valuenow="${b.rating ?? 0}" aria-valuetext="${starLabel(b.rating)}"><span class="on" style="width:${(b.rating || 0) * 20}%">★★★★★</span>☆☆☆☆☆</span>
+          <span class="ratev small muted">${b.rating == null ? "Not rated" : num(b.rating)}</span>
+          <button class="link clear" ${b.rating == null ? "hidden" : ""}>Clear</button></div>` : ""}
         <dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
         ${b.tags.length ? `<div class="tags">${b.tags.map((t) => `<a class="chip" href="#/?tag=${encodeURIComponent(t)}">${esc(t)}</a>`).join("")}</div>` : ""}
         ${b.description ? `<p class="desc">${esc(b.description)}</p>` : ""}
@@ -214,6 +250,7 @@ async function bookView(id) {
     $$("#rl li").forEach((li) => li.classList.toggle("hidden", !!q && !li.textContent.toLowerCase().includes(q)));
   };
   if (!ADMIN) return;
+  rateWidget($("#rate"), b.rating, (v) => api("books/" + id, { method: "PUT", body: { rating: v } }));
   $("#addr").onclick = () => recipeDialog(null, id, () => bookView(id));
   $("#shelf").onclick = async () => {
     await api(`books/${id}/shelf`, { method: "POST", body: { out: b.status !== "out" } });
@@ -288,6 +325,8 @@ function bookForm(b = {}) {
     <label class="f">Status<select name="status">${Object.entries(STATUS).map(([k, t]) => `<option value="${k}" ${(b.status || "owned") === k ? "selected" : ""}>${t}</option>`).join("")}</select></label>
     <label class="f">Loaned to<input name="loaned_to" value="${esc(b.loaned_to)}"></label>
     <label class="f">Shelf / location<input name="location" value="${esc(b.location)}"></label>
+    <label class="f">Rating<select name="rating"><option value="">Not rated</option>${[0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5].map((v) =>
+      `<option value="${v}" ${b.rating === v ? "selected" : ""}>${starLabel(v)}</option>`).join("")}</select></label>
     <label class="chk" style="align-self:end"><input type="checkbox" name="signed" ${b.signed ? "checked" : ""}> Signed copy</label>
     <label class="f full">Private notes <span class="small">(only visible when signed in)</span><textarea name="private_notes">${esc(b.private_notes)}</textarea></label>
     ${b.needs_review ? `<label class="chk full review"><input type="checkbox" name="clear_review"> Mark reviewed (${esc(b.needs_review)})</label>` : ""}

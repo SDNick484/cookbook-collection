@@ -27,7 +27,7 @@ CF_TEAM_DOMAIN = re.sub(r"^https?://", "", os.environ.get("CF_TEAM_DOMAIN", "").
 CF_AUD = os.environ.get("CF_AUD", "").strip().strip("'\"")
 ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
 LAN_EDIT = os.environ.get("LAN_EDIT", "1") == "1"
-UA = "cookbooks-catalog/1.0 (personal collection; https://cookbooks.nickandrade.com)"
+UA = "cookbooks-catalog/1.0 (personal cookbook collection)"
 COVER_HOSTS = {"covers.openlibrary.org", "archive.org", "books.google.com", "books.googleusercontent.com"}
 
 app = Flask(__name__, static_folder=None)
@@ -313,7 +313,7 @@ def access_identity():
                     got = None
                 hint = (f" The sign-in came from the Access application with AUD {got}; CF_AUD is set to {CF_AUD}."
                         if got else "") + (" CF_AUD must be the AUD tag of the Access application that protects "
-                                           "cookbooks.nickandrade.com/admin.")
+                                           "this site's /admin path.")
             elif "issuer" in str(e).lower():
                 hint = " CF_TEAM_DOMAIN must match your Zero Trust team domain."
             g.auth_reason = f"Cloudflare Access token rejected: {e}.{hint}"
@@ -327,7 +327,7 @@ def access_identity():
     if LAN_EDIT and not via_cloudflare:
         return "lan"
     g.auth_reason = ("No Cloudflare Access sign-in reached the app. Check that the Access application for "
-                     "cookbooks.nickandrade.com covers the path 'admin'." if via_cloudflare else
+                     "this site covers the path 'admin'." if via_cloudflare else
                      "Editing from the LAN is turned off (LAN_EDIT=0).")
     return None
 

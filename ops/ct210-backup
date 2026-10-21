@@ -1,0 +1,58 @@
+#!/bin/sh
+# Nightly backup of the CT 210 family apps (installed by setup-cookbooks.sh).
+# - Consistent SQLite snapshots (sqlite3 .backup) of Cookbooks, Dinner Log and the wish list,
+#   kept for $KEEP_DAYS days in $LOCAL_DIR (small: databases only).
+# - If BACKUP_TARGET is set (e.g. an NFS/SMB mount from OMV), the snapshots *and* the photo/cover
+#   folders are copied there too, so a lost container disk loses nothing.
+# Config: /etc/conf.d/ct210-ops     Log: /var/log/ct210-ops.log
+set -u
+[ -f /etc/conf.d/ct210-ops ] && . /etc/conf.d/ct210-ops
+LOCAL_DIR=${LOCAL_DIR:-/var/backups/ct210}
+KEEP_DAYS=${KEEP_DAYS:-14}
+BACKUP_TARGET=${BACKUP_TARGET:-}
+STAMP=$(date +%Y-%m-%d)
+LOG=/var/log/ct210-ops.log
+log() { echo "$(date '+%F %T') backup: $*" >> "$LOG"; }
+
+fail=0
+mkdir -p "$LOCAL_DIR/$STAMP"
+for app in cookbooks dinner-log wishlist; do
+  dir=/var/lib/$app
+  [ -d "$dir" ] || continue
+  for db in "$dir"/*.db; do
+    [ -f "$db" ] || continue
+    out="$LOCAL_DIR/$STAMP/$app-$(basename "$db")"
+    if sqlite3 "$db" ".backup '$out'" && [ "$(sqlite3 "$out" 'PRAGMA integrity_check;')" = "ok" ]; then
+      gzip -f "$out"
+      log "ok $app/$(basename "$db") ($(du -h "$out.gz" | cut -f1))"
+    else
+      log "FAILED $app/$(basename "$db")"; fail=1
+    fi
+  done
+done
+
+# retention
+find "$LOCAL_DIR" -mindepth 1 -maxdepth 1 -type d -mtime +"$KEEP_DAYS" -exec rm -rf {} + 2>/dev/null
+
+if [ -n "$BACKUP_TARGET" ]; then
+  if [ -d "$BACKUP_TARGET" ] && [ -w "$BACKUP_TARGET" ]; then
+    mkdir -p "$BACKUP_TARGET/db" && cp -a "$LOCAL_DIR/$STAMP" "$BACKUP_TARGET/db/" || fail=1
+    for app in cookbooks dinner-log wishlist; do
+      for sub in covers photos uploads files; do
+        [ -d "/var/lib/$app/$sub" ] || continue
+        mkdir -p "$BACKUP_TARGET/files/$app/$sub"
+        # photos/covers are write-once: copy new files only
+        cp -au "/var/lib/$app/$sub/." "$BACKUP_TARGET/files/$app/$sub/" || fail=1
+      done
+    done
+    find "$BACKUP_TARGET/db" -mindepth 1 -maxdepth 1 -type d -mtime +"$KEEP_DAYS" -exec rm -rf {} + 2>/dev/null
+    log "copied to $BACKUP_TARGET"
+  else
+    log "FAILED: BACKUP_TARGET $BACKUP_TARGET is not a writable directory (is it mounted?)"; fail=1
+  fi
+fi
+
+if [ "$fail" != 0 ] && [ -x /usr/local/bin/ct210-notify ]; then
+  /usr/local/bin/ct210-notify "Backups" down "Last night's CT 210 backup had a problem. See /var/log/ct210-ops.log."
+fi
+exit $fail

@@ -1,0 +1,14 @@
+#!/bin/sh
+# ct210-notify <app> <down|up> <detail>  -> POST to the Home Assistant webhook
+# automation "Server: CT 210 app health alerts". No-op (logged) if HA_URL isn't set.
+[ -f /etc/conf.d/ct210-ops ] && . /etc/conf.d/ct210-ops
+app=$1 status=$2 detail=$3
+esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+if [ -z "${HA_URL:-}" ] || [ -z "${HA_WEBHOOK_ID:-}" ]; then
+  echo "$(date '+%F %T') notify (HA_URL not set): $app $status: $detail" >> /var/log/ct210-ops.log
+  exit 0
+fi
+wget -q -O /dev/null -T 10 --header "Content-Type: application/json" \
+  --post-data "{\"app\":\"$(esc "$app")\",\"status\":\"$(esc "$status")\",\"detail\":\"$(esc "$detail")\"}" \
+  "${HA_URL%/}/api/webhook/$HA_WEBHOOK_ID" \
+  || echo "$(date '+%F %T') notify FAILED to reach $HA_URL: $app $status" >> /var/log/ct210-ops.log

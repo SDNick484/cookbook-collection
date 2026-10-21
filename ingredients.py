@@ -31,6 +31,7 @@ CREATE INDEX IF NOT EXISTS recipe_ingredients_ing ON recipe_ingredients(ingredie
 
 def migrate(con):
     con.executescript(SCHEMA)
+    tidy_names(con)
 
 
 def clean_name(s):
@@ -38,12 +39,38 @@ def clean_name(s):
     return s[:1].upper() + s[1:] if s else ""
 
 
+# Words that describe the file rather than the ingredient: "Chicken - all pages combined.csv", "lamb pages 1-4.csv".
+# (Bounded by anything that isn't a letter or digit, so "pork_combined" counts too.)
+FILE_NOISE = re.compile(r"(?i)(?<![^\W_])(?:all\s+pages?|pages?(?:\s*\d+(?:\s*(?:-|–|to)\s*\d+)?)?|combined|merged"
+                        r"|part\s*\d+)(?![^\W_])")
+
+
 def guess_name(filename):
-    """'IngredientList-chicken.csv' -> 'Chicken'; the plain EYB name gives nothing."""
+    """'IngredientList-chicken.csv' -> 'Chicken', 'Jalapeño - all pages combined.csv' -> 'Jalapeño';
+    the plain EYB name gives nothing."""
     stem = re.sub(r"\.csv$", "", filename or "", flags=re.I)
     stem = re.sub(r"(?i)ingredient\s*list|recipe\s*list|eyb|export|\(\d+\)", " ", stem)
-    words = re.findall(r"[A-Za-z]+", stem)
+    words = re.findall(r"[^\W\d_]+", FILE_NOISE.sub(" ", stem))
     return clean_name(" ".join(words)) if words else ""
+
+
+def tidy_names(con):
+    """Rename tags named after their file ("Chicken all pages combined" -> "Chicken"), merging into the
+    tag of that name when there already is one. Runs at every start; does nothing once they're tidy."""
+    for iid, name in con.execute("SELECT id, name FROM ingredients").fetchall():
+        if not FILE_NOISE.search(name):
+            continue
+        tidy = re.sub(r"\(\s*\)|\[\s*\]", " ", FILE_NOISE.sub(" ", name))  # "Lamb (all pages combined)"
+        tidy = clean_name(re.sub(r"\s+", " ", tidy).strip(" -–_,."))
+        if not tidy or tidy == name:
+            continue
+        keep = con.execute("SELECT id FROM ingredients WHERE fold(name)=fold(?) AND id<>?", (tidy, iid)).fetchone()
+        if keep:
+            con.execute("INSERT OR IGNORE INTO recipe_ingredients(recipe_id, ingredient_id) "
+                        "SELECT recipe_id, ? FROM recipe_ingredients WHERE ingredient_id=?", (keep[0], iid))
+            con.execute("DELETE FROM ingredients WHERE id=?", (iid,))
+        else:
+            con.execute("UPDATE ingredients SET name=? WHERE id=?", (tidy, iid))
 
 
 # ------------------------------------------------------------------ search support (used by app.py)

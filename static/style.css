@@ -194,6 +194,7 @@ footer.foot { margin: 40px 0 30px; color: var(--muted); font-size: .85rem; text-
 .cols .panel, .panel.wide { max-width: none; }
 .panel h3 { margin-bottom: 10px; }
 .hbars { display: grid; gap: 6px; }
+.stats-h { font-family: var(--serif); margin: 28px 0 4px; }
 .hb { display: grid; grid-template-columns: minmax(0, 42%) 1fr 2.2em; gap: 8px; align-items: center; text-decoration: none; font-size: .88rem; position: relative; }
 .hb .hl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hb .ht { height: 10px; }

@@ -396,6 +396,48 @@ def suggest_route():
 
 
 # ======================================================== stats
+OWNED = "b.status NOT IN ('gone','wanted')"  # books on the shelves (or out/loaned), not wishes or ones let go
+
+
+def by_name(con, column):
+    """Owned books per value of a free-text books column, grouping spellings that differ only by case or
+    accents ("Ten Speed Press" / "ten speed press") under the most common one."""
+    groups = {}
+    for name, n in con.execute(f"SELECT {column}, count(*) FROM books b WHERE {OWNED} "
+                               f"AND trim(coalesce({column}, '')) <> '' GROUP BY {column}"):
+        g = groups.setdefault(fold(name), {"name": name, "books": 0, "top": 0})
+        g["books"] += n
+        if n > g["top"]:
+            g["name"], g["top"] = name, n
+    return sorted(({"name": g["name"], "books": g["books"]} for g in groups.values()),
+                  key=lambda g: (-g["books"], fold(g["name"])))
+
+
+def collection_stats(con):
+    """How the collection breaks down: by author, publisher, tag, decade, format and book rating."""
+    one = lambda sql: con.execute(sql).fetchone()[0]
+    ranked = lambda sql: sorted((dict(r) for r in con.execute(sql)), key=lambda r: (-r["books"], fold(r["name"])))
+    return {
+        "by_author": ranked(f"SELECT a.name, count(*) AS books FROM authors a JOIN book_authors ba ON ba.author_id=a.id "
+                            f"JOIN books b ON b.id=ba.book_id WHERE {OWNED} GROUP BY a.id"),
+        "by_publisher": by_name(con, "b.publisher"),
+        "by_tag": ranked(f"SELECT t.name, count(*) AS books FROM tags t JOIN book_tags bt ON bt.tag_id=t.id "
+                         f"JOIN books b ON b.id=bt.book_id WHERE {OWNED} GROUP BY t.id"),
+        "by_decade": [{"name": f"{r[0]}s", "books": r[1]} for r in con.execute(
+            f"SELECT (b.year / 10) * 10 AS d, count(*) FROM books b WHERE {OWNED} AND b.year > 0 GROUP BY d ORDER BY d")],
+        "by_format": by_name(con, "b.format"),
+        "ratings": [dict(r) for r in con.execute(
+            f"SELECT b.rating AS stars, count(*) AS books FROM books b WHERE {OWNED} AND b.rating IS NOT NULL "
+            "GROUP BY b.rating ORDER BY b.rating DESC")],
+        "rating_avg": one(f"SELECT round(avg(b.rating), 1) FROM books b WHERE {OWNED} AND b.rating IS NOT NULL"),
+        "missing": {k: one(f"SELECT count(*) FROM books b WHERE {OWNED} AND {cond}") for k, cond in (
+            ("author", "b.id NOT IN (SELECT book_id FROM book_authors)"),
+            ("publisher", "trim(coalesce(b.publisher, '')) = ''"),
+            ("year", "coalesce(b.year, 0) <= 0"),
+            ("format", "trim(coalesce(b.format, '')) = ''"))},
+    }
+
+
 def stats():
     ensure_synced()
     con = db()
@@ -434,6 +476,7 @@ def stats():
             "ORDER BY b.title")],
         "months": months,
         "dinnerlog": meta_get(con, "dl_synced"),
+        **collection_stats(con),
     }
 
 

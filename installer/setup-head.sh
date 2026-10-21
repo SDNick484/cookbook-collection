@@ -83,9 +83,9 @@ add_setting "$CONF" WISHLIST_BOOK_URL "https://www.amazon.com/s?k={q}" "Shopping
 add_setting "$CONF" DINNERLOG_URL "" "Dinner Log's public address, e.g. https://dinners.example.com — turns on 'Log this dinner' links"
 chmod 640 "$CONF"; chown root:"$SVC_USER" "$CONF"
 
-[ -f "$OPS_CONF" ] || printf '# CT 210 backups + health alerts (scripts in /usr/local/bin)\n' > "$OPS_CONF"
+[ -f "$OPS_CONF" ] || printf '# Backups + health alerts for the apps on this server (scripts in /usr/local/bin)\n' > "$OPS_CONF"
 add_setting "$OPS_CONF" HA_URL "" "Home Assistant LAN address, e.g. http://192.168.1.50:8123 (alerts are off until set)"
-add_setting "$OPS_CONF" HA_WEBHOOK_ID "$HA_WEBHOOK_ID" "Webhook of the HA automation 'Server: CT 210 app health alerts'"
+add_setting "$OPS_CONF" HA_WEBHOOK_ID "$HA_WEBHOOK_ID" "Webhook ID of the Home Assistant automation that receives app health alerts"
 add_setting "$OPS_CONF" BACKUP_TARGET "" "Optional folder on other storage (e.g. an OMV NFS mount) that also gets photos/covers"
 add_setting "$OPS_CONF" KEEP_DAYS 14 "Days of nightly database snapshots to keep"
 chmod 600 "$OPS_CONF"

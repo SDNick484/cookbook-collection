@@ -140,6 +140,33 @@ def test_stats_and_shelf(c, dl):
     assert "status" not in c.get(f"/api/books/{bid}").json
 
 
+def test_collection_stats(c):
+    before = c.get("/admin/api/stats").json
+    pepin = next(a for a in before["by_author"] if a["name"] == "Jacques Pépin")
+    assert pepin["books"] >= 7 and before["by_author"][0]["books"] >= pepin["books"]  # most books first
+    ten = next(p for p in before["by_publisher"] if p["name"] == "Ten Speed Press")
+    new = [c.post("/admin/api/books", json=b).json["id"] for b in (
+        {"title": "Stats A", "authors": ["Jacques Pépin"], "publisher": "ten speed press", "year": 1994,
+         "format": "Hardcover", "rating": 4.5, "tags": ["Stats tag"]},
+        {"title": "Stats B", "publisher": "Ten Speed Press", "year": 2003, "format": "hardcover", "rating": 4.5},
+        {"title": "Stats C", "publisher": "Ten Speed Press", "status": "wanted", "rating": 1},  # not owned: ignored
+    )]
+    s = c.get("/admin/api/stats").json
+    assert next(a for a in s["by_author"] if a["name"] == "Jacques Pépin")["books"] == 8
+    # spellings that differ only by case are one publisher, under the most common spelling
+    assert [p["books"] for p in s["by_publisher"] if p["name"].lower() == "ten speed press"] == [ten["books"] + 2]
+    assert {"name": "1990s", "books": 1} in s["by_decade"] and {"name": "2000s", "books": 1} in s["by_decade"]
+    assert [f for f in s["by_format"] if f["name"].lower() == "hardcover"][0]["books"] >= 2
+    assert {"stars": 4.5, "books": 2} in s["ratings"] and all(r["stars"] != 1 for r in s["ratings"])
+    assert {"name": "Stats tag", "books": 1} in s["by_tag"]
+    assert s["missing"]["year"] == before["missing"]["year"]
+    # the publisher filter the bars link to matches every spelling
+    titles = {b["title"] for b in c.get("/api/books?publisher=TEN SPEED PRESS").json["books"]}
+    assert {"Stats A", "Stats B", "Stats C"} <= titles and len(titles) == ten["books"] + 3
+    for bid in new:
+        c.delete(f"/admin/api/books/{bid}")
+
+
 # ------------------------------------------------------------ photo import
 def jpeg():
     from PIL import Image

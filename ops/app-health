@@ -1,5 +1,5 @@
 #!/bin/sh
-# Every 15 minutes: check the CT 210 web apps; tell Home Assistant when one goes down
+# Every 15 minutes: check the web apps on this server; tell Home Assistant when one goes down
 # (2 failed checks in a row, ~30 min) and when it comes back. Only state changes are sent.
 [ -f /etc/conf.d/ct210-ops ] && . /etc/conf.d/ct210-ops
 STATE=/var/lib/ct210-ops/health

@@ -241,7 +241,7 @@ WISHLIST_SRC = Path(os.environ.get("WISHLIST_SRC", "/home/claude/src/wishlist/ap
 def test_wishlist_integration(c, monkeypatch, tmp_path):
     import importlib.util
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("SEED_PEOPLE", "Nick,Lauren")
+    monkeypatch.setenv("SEED_PEOPLE", "Alice,Bob")
     spec = importlib.util.spec_from_file_location("wishlist_app", WISHLIST_SRC)
     wl = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(wl)
@@ -256,15 +256,15 @@ def test_wishlist_integration(c, monkeypatch, tmp_path):
     monkeypatch.setattr(X, "wishlist_call", via_test_client)
 
     people = c.get("/admin/api/wishlist/people").json["people"]
-    assert [p["name"] for p in people] == ["Nick", "Lauren"]
+    assert [p["name"] for p in people] == ["Alice", "Bob"]
     bid = c.post("/admin/api/books", json={"title": "Nopalito", "authors": ["Gonzalo Guzmán"],
                                            "isbn": "9780131103627", "status": "wanted"}).json["id"]
     r = c.post(f"/admin/api/books/{bid}/wishlist", json={"person_id": people[1]["id"], "price": "32.50"})
-    assert r.status_code == 200 and r.json["person"] == "Lauren"
+    assert r.status_code == 200 and r.json["person"] == "Bob"
     items = via_test_client("GET", f"/api/people/{people[1]['id']}/items")["items"]
     assert items[0]["name"] == "Nopalito by Gonzalo Guzmán" and items[0]["price"] == 32.5
     assert "9780131103627" in items[0]["url"] and "ISBN 9780131103627" in items[0]["notes"]
-    assert c.get(f"/admin/api/books/{bid}").json["wishes"][0]["person_name"] == "Lauren"
+    assert c.get(f"/admin/api/books/{bid}").json["wishes"][0]["person_name"] == "Bob"
     assert c.post(f"/admin/api/books/{bid}/wishlist", json={"person_id": 999}).status_code == 400
     monkeypatch.setattr(X, "wishlist_call", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
     assert c.get("/admin/api/wishlist/people").status_code == 502

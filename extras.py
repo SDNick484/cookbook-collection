@@ -535,7 +535,7 @@ def features():
 
 # ======================================================== MCP endpoint
 MCP_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
-MCP_INSTRUCTIONS = ("Search Nick and Lauren's home cookbook collection: books, and recipes indexed from those books "
+MCP_INSTRUCTIONS = ("Search a home cookbook collection: books, and recipes indexed from those books "
                     "(name, index heading such as a main ingredient, and page). Recipes are physical: tell the user the "
                     "book and page. Index headings are often ingredients, so ingredient searches work well.")
 

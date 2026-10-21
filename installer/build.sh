@@ -1,7 +1,7 @@
 #!/bin/sh
 # Build the one-file installer: dist/setup-cookbooks.sh (shell header + base64 tarball of the app).
 # The Home Assistant webhook ID for health alerts isn't kept in the repo; pass it in if you want it baked in:
-#   HA_WEBHOOK_ID=ct210-app-health-… sh installer/build.sh
+#   HA_WEBHOOK_ID=<your-webhook-id> sh installer/build.sh
 set -eu
 cd "$(dirname "$0")/.."
 STAGE=$(mktemp -d)

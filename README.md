@@ -58,7 +58,7 @@ Cookbook Collection reads `/var/lib/dinner-log/meals.db` **read-only**. The inst
 ## Ingredient tags
 EYB's ingredient search finds far more recipes than titles do: searching "chicken" there returns everything that uses chicken, stock included. To bring that in, search an ingredient on EYB, export the results, and import them under **More → Import from Eat Your Books → Ingredient lists** with the ingredient's name.
 - Recipes already in the catalog get tagged; ones that aren't yet get added.
-- The catalog shows a chip per ingredient, which lists every recipe using it. Chips combine with search words, cuisine and tag.
+- The catalog shows a chip per ingredient. Picking one lists the books that use it, with how many matching recipes each has; open a book to see those recipes. Chips combine with search words, cuisine and tag, which narrow both the books and the counts.
 - Search matches every word against recipe names *or* ingredient tags, so "chicken curry" finds curries that use chicken.
 - Re-importing a list is safe. Removing an ingredient deletes only the tag, not the recipes.
 

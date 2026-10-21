@@ -1,5 +1,5 @@
 #!/bin/sh
-# Every 15 minutes: check the the server web apps; tell Home Assistant when one goes down
+# Every 15 minutes: check the web apps on this server; tell Home Assistant when one goes down
 # (2 failed checks in a row, ~30 min) and when it comes back. Only state changes are sent.
 [ -f /etc/conf.d/app-ops ] && . /etc/conf.d/app-ops
 STATE=/var/lib/app-ops/health

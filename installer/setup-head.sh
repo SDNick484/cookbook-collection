@@ -1,5 +1,5 @@
 #!/bin/sh
-# Cookbook Collection installer for Alpine Linux (OpenRC) — the server. Build with installer/build.sh.
+# Cookbook Collection installer for Alpine Linux (OpenRC). Build with installer/build.sh.
 # Re-runnable: upgrades the app in place; never touches existing data, and only *adds*
 # missing settings to existing config files.
 #
@@ -76,7 +76,7 @@ add_setting "$CONF" DINNERLOG_DB /var/lib/dinner-log/meals.db "Dinner Log databa
 add_setting "$CONF" ANTHROPIC_API_KEY "" "Claude API key for reading photos of index pages (console.anthropic.com)"
 add_setting "$CONF" ANTHROPIC_MODEL claude-sonnet-5-5 "Model used for photo import"
 add_setting "$CONF" MCP_TOKEN "$(head -c 24 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')" \
-  "Secret for private MCP tools: https://cookbooks.example.com/mcp/<MCP_TOKEN>"
+  "Secret for private MCP tools: https://<your public address>/mcp/<MCP_TOKEN>"
 add_setting "$CONF" MCP_PUBLIC 1 "1 = /mcp without a token serves public search (books, recipes, pages)"
 add_setting "$CONF" WISHLIST_URL http://127.0.0.1:8766 "Family wish list app (local) for 'Add to a wish list'"
 add_setting "$CONF" WISHLIST_BOOK_URL "https://www.amazon.com/s?k={q}" "Shopping link put on wish list items; {q} = ISBN (or title + author)"
@@ -143,6 +143,6 @@ grep -q '^ANTHROPIC_API_KEY=$' "$CONF" && echo "  - Photo import is off until yo
 grep -q '^HA_URL=$' "$OPS_CONF" && echo "  - Health alerts are off until you set HA_URL in $OPS_CONF"
 grep -q "^HA_WEBHOOK_ID=$" "$OPS_CONF" && echo "  - Health alerts also need HA_WEBHOOK_ID in $OPS_CONF (the HA automation's webhook)"
 grep -q '^DINNERLOG_URL=$' "$CONF" && echo "  - 'Log this dinner' links are off until you set DINNERLOG_URL in $CONF"
-echo "  - Private MCP URL: https://cookbooks.example.com/mcp/$(sed -n 's/^MCP_TOKEN=//p' "$CONF")"
+echo "  - Private MCP URL: https://<your public address>/mcp/$(sed -n 's/^MCP_TOKEN=//p' "$CONF")"
 echo "Config: $CONF, $OPS_CONF   Backups: /var/backups/apps   Logs: /var/log/cookbooks.log, /var/log/app-ops.log"
 exit 0

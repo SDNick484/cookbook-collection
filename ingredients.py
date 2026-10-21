@@ -34,7 +34,7 @@ def migrate(con):
 
 
 def clean_name(s):
-    s = re.sub(r"\s+", " ", (s or "").strip())
+    s = re.sub(r"\s+", " ", clean(s) or "")
     return s[:1].upper() + s[1:] if s else ""
 
 
@@ -52,17 +52,19 @@ def token_condition(token):
     tagged with an ingredient containing a word starting with it."""
     t = fold(token)
     ing = ("r.id IN (SELECT ri.recipe_id FROM recipe_ingredients ri JOIN ingredients i ON i.id=ri.ingredient_id "
-           "WHERE lower(i.name) LIKE ? OR lower(i.name) LIKE ?)")
+           "WHERE fold(i.name) LIKE ? OR fold(i.name) LIKE ?)")
     ing_args = [f"{t}%", f"% {t}%"]
+    if core.UNSPACED.search(t):  # Chinese/Japanese/Korean/Thai: find it anywhere in the name, not just word starts
+        return f"(instr(fold(r.name) || ' ' || fold(r.heading), ?) > 0 OR {ing})", [t] + ing_args
     if core.HAS_FTS:
         return f"(r.id IN (SELECT rowid FROM recipes_fts WHERE recipes_fts MATCH ?) OR {ing})", \
-               [f'"{token}"*'] + ing_args
-    return f"(lower(r.name) LIKE ? OR lower(coalesce(r.heading,'')) LIKE ? OR {ing})", \
+               [core.fts_query(t)] + ing_args
+    return f"(fold(r.name) LIKE ? OR fold(r.heading) LIKE ? OR {ing})", \
            [f"%{t}%", f"%{t}%"] + ing_args
 
 
 def ingredient_id(name):
-    row = db().execute("SELECT id FROM ingredients WHERE name=?", (name,)).fetchone()
+    row = db().execute("SELECT id FROM ingredients WHERE fold(name)=fold(?)", (name,)).fetchone()
     return row[0] if row else None
 
 
@@ -70,8 +72,8 @@ def ingredient_id(name):
 def list_ingredients():
     rows = db().execute(
         "SELECT i.id, i.name, count(ri.recipe_id) AS n FROM ingredients i "
-        "LEFT JOIN recipe_ingredients ri ON ri.ingredient_id=i.id GROUP BY i.id ORDER BY i.name").fetchall()
-    return jsonify(ingredients=[dict(r) for r in rows])
+        "LEFT JOIN recipe_ingredients ri ON ri.ingredient_id=i.id GROUP BY i.id").fetchall()
+    return jsonify(ingredients=sorted((dict(r) for r in rows), key=lambda r: fold(r["name"])))
 
 
 @app.delete("/admin/api/ingredients/<int:iid>")
@@ -175,8 +177,8 @@ def ingredient_commit():
     except ValueError:
         return make_err(400, "Bad decisions")
     con = db()
-    con.execute("INSERT OR IGNORE INTO ingredients(name) VALUES (?)", (name,))
-    iid = ingredient_id(name)
+    iid = core.name_id(con, "ingredients", name)
+    name = con.execute("SELECT name FROM ingredients WHERE id=?", (iid,)).fetchone()[0]
     tagged = added = skipped = 0
     books, created = {}, {}
     for r in rows:

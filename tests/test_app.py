@@ -248,7 +248,7 @@ def test_export(c):
     j = json.loads(c.get("/admin/api/export.json").data)
     assert len(j["books"]) >= 153 and any(b["recipes"] for b in j["books"])
     csv_text = c.get("/admin/api/export.csv").data.decode()
-    assert csv_text.startswith("id,title")
+    assert csv_text.startswith("\ufeffid,title")  # BOM so Excel reads it as UTF-8
     assert c.get("/admin/api/export.json", headers=CF).status_code == 401
 
 

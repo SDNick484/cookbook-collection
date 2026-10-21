@@ -1,0 +1,2676 @@
+{
+ "books": [
+  {
+   "title": "Franklin BBQ",
+   "authors": [
+    "Aaron Franklin"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": "American",
+   "tags": [
+    "BBQ & Grilling"
+   ],
+   "legacy_category": "BBQ",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Real Food Fermentation",
+   "authors": [
+    "Alex Lewin"
+   ],
+   "publisher": "Quarry Books",
+   "cuisine": null,
+   "tags": [
+    "Preserving & Fermenting"
+   ],
+   "legacy_category": "Preserving",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Dining In",
+   "authors": [
+    "Alison Roman"
+   ],
+   "publisher": "Clarkson Potter",
+   "cuisine": null,
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Nothing Fancy",
+   "authors": [
+    "Alison Roman"
+   ],
+   "publisher": "Clarkson Potter",
+   "cuisine": null,
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Something From Nothing",
+   "authors": [
+    "Alison Roman"
+   ],
+   "publisher": "Clarkson Potter",
+   "cuisine": null,
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Cook's Illustrated Cookbook",
+   "authors": [
+    "America's Test Kitchen"
+   ],
+   "publisher": "America's Test Kitchen",
+   "cuisine": null,
+   "tags": [
+    "Technique & Reference"
+   ],
+   "legacy_category": "Research/Technique",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Cook's Illustrated Meat Book",
+   "authors": [
+    "America's Test Kitchen"
+   ],
+   "publisher": "America's Test Kitchen",
+   "cuisine": null,
+   "tags": [
+    "Meat"
+   ],
+   "legacy_category": "Meat",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Foolproof Preserving",
+   "authors": [
+    "America's Test Kitchen"
+   ],
+   "publisher": "America's Test Kitchen",
+   "cuisine": null,
+   "tags": [
+    "Preserving & Fermenting"
+   ],
+   "legacy_category": "Preserving",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "My First Cookbook",
+   "authors": [
+    "America's Test Kitchen"
+   ],
+   "publisher": "America's Test Kitchen",
+   "cuisine": null,
+   "tags": [
+    "Kids"
+   ],
+   "legacy_category": "Kids",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Portuguese Home Style Cooking",
+   "authors": [
+    "Ana Patuleia Ortins"
+   ],
+   "publisher": "Interlink Books",
+   "cuisine": "Portuguese",
+   "tags": [],
+   "legacy_category": "Single Origin",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Les Halles Cookbook",
+   "authors": [
+    "Anthony Bourdain"
+   ],
+   "publisher": "Bloomsbury",
+   "cuisine": "French",
+   "tags": [
+    "Restaurant"
+   ],
+   "legacy_category": "Restaurant",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Complete Cooks Country Cookbook",
+   "authors": [
+    "America's Test Kitchen"
+   ],
+   "publisher": "America's Test Kitchen",
+   "cuisine": "Southern US",
+   "tags": [],
+   "legacy_category": "Southern",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "America's Test Kitchen 25th Anniversary Cookbook",
+   "authors": [
+    "America's Test Kitchen"
+   ],
+   "publisher": "America's Test Kitchen",
+   "cuisine": null,
+   "tags": [
+    "Technique & Reference"
+   ],
+   "legacy_category": "Research/Technique",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Our Syria",
+   "authors": [
+    "Itab Azzam",
+    "Dina Mousawi"
+   ],
+   "publisher": "Running Press",
+   "cuisine": "Middle Eastern",
+   "tags": [],
+   "legacy_category": "Middle Eastern",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "La Tartine Gourmande",
+   "authors": [
+    "Béatrice Peltre"
+   ],
+   "publisher": "Roost Books",
+   "cuisine": "French",
+   "tags": [],
+   "legacy_category": "French",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "In the Charcuterie",
+   "authors": [
+    "Taylor Boetticher",
+    "Toponia Miller"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": null,
+   "tags": [
+    "Meat"
+   ],
+   "legacy_category": "Meat",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Jerky",
+   "authors": [
+    "Taylor Boetticher",
+    "Toponia Miller"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": null,
+   "tags": [
+    "Meat"
+   ],
+   "legacy_category": "Meat",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Olympia Provisions",
+   "authors": [
+    "Elias Cairo",
+    "Meredith Erickson"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": null,
+   "tags": [
+    "Meat"
+   ],
+   "legacy_category": "Meat",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Beginnings",
+   "authors": [
+    "Chris Cosentino"
+   ],
+   "publisher": "Olive Press",
+   "cuisine": null,
+   "tags": [
+    "Quick & Easy"
+   ],
+   "legacy_category": "Quick & Easy",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Milk Street Cookbook 2017-2025",
+   "authors": [
+    "Christopher Kimball"
+   ],
+   "publisher": "Little, Brown",
+   "cuisine": "International",
+   "tags": [],
+   "legacy_category": "International",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Milk Street Tuesday Nights",
+   "authors": [
+    "Christopher Kimball"
+   ],
+   "publisher": "Little, Brown",
+   "cuisine": "International",
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Cured",
+   "authors": [
+    "Steve McHugh"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": null,
+   "tags": [
+    "Preserving & Fermenting"
+   ],
+   "legacy_category": "Preserving",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Pizza Bible",
+   "authors": [
+    "Tony Gemignani"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": "Italian",
+   "tags": [
+    "Single Subject"
+   ],
+   "legacy_category": "Single Origin",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Noma Guide to Fermentation",
+   "authors": [
+    "Rene Redzepi"
+   ],
+   "publisher": "Artisan",
+   "cuisine": null,
+   "tags": [
+    "Preserving & Fermenting"
+   ],
+   "legacy_category": "Preserving",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Complete Book of Home Preserving",
+   "authors": [
+    "Ball"
+   ],
+   "publisher": "Robert Rose",
+   "cuisine": null,
+   "tags": [
+    "Preserving & Fermenting"
+   ],
+   "legacy_category": "Preserving",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Kitchy Kitchen",
+   "authors": [
+    "Claire Thomas"
+   ],
+   "publisher": "Emily Bestler Books",
+   "cuisine": null,
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Kids Cook French",
+   "authors": [
+    "Claudine Pépin"
+   ],
+   "publisher": "Quarry Books",
+   "cuisine": "French",
+   "tags": [
+    "Kids"
+   ],
+   "legacy_category": "Kids",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The New York Times Cookbook",
+   "authors": [
+    "Craig Claiborne"
+   ],
+   "publisher": "Harper & Row",
+   "cuisine": "American",
+   "tags": [],
+   "legacy_category": "American",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Craig Claiborne's Southern Cooking",
+   "authors": [
+    "Craig Claiborne"
+   ],
+   "publisher": "Georgia",
+   "cuisine": "Southern US",
+   "tags": [],
+   "legacy_category": "Southern",
+   "needs_review": "Publisher 'Georgia' — University of Georgia Press?",
+   "source": "sheet"
+  },
+  {
+   "title": "Simple",
+   "authors": [
+    "Diana Henry"
+   ],
+   "publisher": "Mitchell Beazley",
+   "cuisine": null,
+   "tags": [
+    "Quick & Easy"
+   ],
+   "legacy_category": "Quick & Easy",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Salt, Sugar, Smoke",
+   "authors": [
+    "Diana Henry"
+   ],
+   "publisher": "Mitchell Beazley",
+   "cuisine": null,
+   "tags": [
+    "Preserving & Fermenting"
+   ],
+   "legacy_category": "Preserving",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Art of Mexican Cooking",
+   "authors": [
+    "Diana Kennedy"
+   ],
+   "publisher": "Bantam Press",
+   "cuisine": "Mexican",
+   "tags": [],
+   "legacy_category": "Mexican",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Avec Eric",
+   "authors": [
+    "Eric Ripert"
+   ],
+   "publisher": "Wiley",
+   "cuisine": "French",
+   "tags": [
+    "Seafood"
+   ],
+   "legacy_category": "Seafood",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Complete Nose to Tail",
+   "authors": [
+    "Fergus Henderson"
+   ],
+   "publisher": "Ecco",
+   "cuisine": "British",
+   "tags": [
+    "Meat"
+   ],
+   "legacy_category": "Meat",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Every Grain of Rice",
+   "authors": [
+    "Fuchsia Dunlop"
+   ],
+   "publisher": "Norton",
+   "cuisine": "Chinese",
+   "tags": [],
+   "legacy_category": "Single Origin",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Ethiopia",
+   "authors": [
+    "Yohanis Gebreyesus"
+   ],
+   "publisher": "Interlink Books",
+   "cuisine": "Ethiopian",
+   "tags": [],
+   "legacy_category": "Single Origin",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Kaukasis",
+   "authors": [
+    "Olia Hercules"
+   ],
+   "publisher": "Mitchell Beazley",
+   "cuisine": "Caucasus",
+   "tags": [],
+   "legacy_category": "Single Origin",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The River Cottage Cookbook",
+   "authors": [
+    "Hugh Fearnley-Whittingstall"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": "British",
+   "tags": [
+    "Technique & Reference"
+   ],
+   "legacy_category": "Research/Technique",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "River Cottage Meat Book",
+   "authors": [
+    "Hugh Fearnley-Whittingstall"
+   ],
+   "publisher": "Hodder & Stoughton",
+   "cuisine": "British",
+   "tags": [
+    "Meat"
+   ],
+   "legacy_category": "Meat",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "River Cottage Fish Book",
+   "authors": [
+    "Hugh Fearnley-Whittingstall"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": "British",
+   "tags": [
+    "Seafood"
+   ],
+   "legacy_category": "Seafood",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Barefoot Contessa",
+   "authors": [
+    "Ina Garten"
+   ],
+   "publisher": "Clarkson Potter",
+   "cuisine": null,
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Barefoot Contessa At Home",
+   "authors": [
+    "Ina Garten"
+   ],
+   "publisher": "Clarkson Potter",
+   "cuisine": null,
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Barefoot Contessa Family Style",
+   "authors": [
+    "Ina Garten"
+   ],
+   "publisher": "Clarkson Potter",
+   "cuisine": null,
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Barefoot Contessa in Paris",
+   "authors": [
+    "Ina Garten"
+   ],
+   "publisher": "Clarkson Potter",
+   "cuisine": null,
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Food Lab",
+   "authors": [
+    "J. Kenji López-Alt"
+   ],
+   "publisher": "Norton",
+   "cuisine": null,
+   "tags": [
+    "Technique & Reference"
+   ],
+   "legacy_category": "Research/Technique",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Heart & Soul in the Kitchen",
+   "authors": [
+    "Jacques Pépin"
+   ],
+   "publisher": "Houghton Mifflin Harcourt",
+   "cuisine": "French",
+   "tags": [],
+   "legacy_category": "Jacques",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The New Complete Technique",
+   "authors": [
+    "Jacques Pépin"
+   ],
+   "publisher": "Black Dog & Leventhal",
+   "cuisine": "French",
+   "tags": [
+    "Technique & Reference"
+   ],
+   "legacy_category": "Research/Technique",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Poulet & Legumes",
+   "authors": [
+    "Jacques Pépin"
+   ],
+   "publisher": "Houghton Mifflin Harcourt",
+   "cuisine": "French",
+   "tags": [],
+   "legacy_category": "Jacques",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "A Grandfather's Lessons",
+   "authors": [
+    "Jacques Pépin"
+   ],
+   "publisher": "Houghton Mifflin Harcourt",
+   "cuisine": "French",
+   "tags": [
+    "Kids"
+   ],
+   "legacy_category": "Kids",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Essential Pepin",
+   "authors": [
+    "Jacques Pépin"
+   ],
+   "publisher": "Houghton Mifflin Harcourt",
+   "cuisine": "French",
+   "tags": [],
+   "legacy_category": "Jacques",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Cooking My Way",
+   "authors": [
+    "Jacques Pépin"
+   ],
+   "publisher": "Houghton Mifflin Harcourt",
+   "cuisine": null,
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "American Cookery",
+   "authors": [
+    "James Beard"
+   ],
+   "publisher": "Little, Brown",
+   "cuisine": "American",
+   "tags": [],
+   "legacy_category": "American",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Naked Chef",
+   "authors": [
+    "Jamie Oliver"
+   ],
+   "publisher": "Hyperion",
+   "cuisine": "British",
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "5 Ingredients",
+   "authors": [
+    "Jamie Oliver"
+   ],
+   "publisher": "Flatiron Books",
+   "cuisine": null,
+   "tags": [
+    "Quick & Easy"
+   ],
+   "legacy_category": "Quick & Easy",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Jamie at Home",
+   "authors": [
+    "Jamie Oliver"
+   ],
+   "publisher": "Hyperion",
+   "cuisine": "British",
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Eating Local",
+   "authors": [
+    "Janet Fletcher"
+   ],
+   "publisher": "Andrews McMeel",
+   "cuisine": null,
+   "tags": [
+    "Vegetarian"
+   ],
+   "legacy_category": "Vegetarian",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Zuni Cafe Cookbook",
+   "authors": [
+    "Judy Rodgers"
+   ],
+   "publisher": "Norton",
+   "cuisine": "American",
+   "tags": [
+    "Restaurant"
+   ],
+   "legacy_category": "Restaurant",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Mastering the Art of French Cooking Vol 1",
+   "authors": [
+    "Julia Child"
+   ],
+   "publisher": "Knopf",
+   "cuisine": "French",
+   "tags": [],
+   "legacy_category": "French",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Mastering the Art of French Cooking Vol 2",
+   "authors": [
+    "Julia Child"
+   ],
+   "publisher": "Knopf",
+   "cuisine": "French",
+   "tags": [],
+   "legacy_category": "French",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Way to Cook",
+   "authors": [
+    "Julia Child"
+   ],
+   "publisher": "Knopf",
+   "cuisine": null,
+   "tags": [
+    "Technique & Reference"
+   ],
+   "legacy_category": "Research/Technique",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "From Julia Child's Kitchen",
+   "authors": [
+    "Julia Child"
+   ],
+   "publisher": "Gramercy",
+   "cuisine": "French",
+   "tags": [],
+   "legacy_category": "French",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The French Chef Cookbook",
+   "authors": [
+    "Julia Child"
+   ],
+   "publisher": "Knopf",
+   "cuisine": "French",
+   "tags": [],
+   "legacy_category": "French",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Julia and Jacques Cooking at Home",
+   "authors": [
+    "Julia Child",
+    "Jacques Pépin"
+   ],
+   "publisher": "Knopf",
+   "cuisine": "French",
+   "tags": [],
+   "legacy_category": "French",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Flour Water Salt Yeast",
+   "authors": [
+    "Ken Forkish"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": null,
+   "tags": [
+    "Technique & Reference",
+    "Baking & Desserts"
+   ],
+   "legacy_category": "Research/Technique",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Larousse Gastronomique",
+   "authors": [
+    "Larousse"
+   ],
+   "publisher": "Clarkson Potter",
+   "cuisine": "French",
+   "tags": [
+    "Technique & Reference"
+   ],
+   "legacy_category": "Research/Technique",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "A Taste of Provence",
+   "authors": [
+    "Leslie Forbes"
+   ],
+   "publisher": "Johnson Editions Ltd",
+   "cuisine": "French",
+   "tags": [
+    "Provence"
+   ],
+   "legacy_category": "French (Provencal)",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Lidia's Family Table",
+   "authors": [
+    "Lidia Bastianich"
+   ],
+   "publisher": "Knopf",
+   "cuisine": "Italian",
+   "tags": [],
+   "legacy_category": "Italian",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Lidia's Italy in America",
+   "authors": [
+    "Lidia Bastianich"
+   ],
+   "publisher": "Knopf",
+   "cuisine": "Italian",
+   "tags": [],
+   "legacy_category": "Italian",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Essentials of Italian Cooking",
+   "authors": [
+    "Marcella Hazan"
+   ],
+   "publisher": "Knopf",
+   "cuisine": "Italian",
+   "tags": [],
+   "legacy_category": "Italian",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Meathead",
+   "authors": [
+    "Meathead Goldwyn"
+   ],
+   "publisher": "Houghton Mifflin Harcourt",
+   "cuisine": null,
+   "tags": [
+    "Meat"
+   ],
+   "legacy_category": "Meat",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "How to Roast a Lamb",
+   "authors": [
+    "Michael Psilakis"
+   ],
+   "publisher": "Little, Brown",
+   "cuisine": "Greek",
+   "tags": [],
+   "legacy_category": "Middle Eastern",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Mastering the Art of Japanese Home Cooking",
+   "authors": [
+    "Masaharu Morimoto"
+   ],
+   "publisher": "Ecco",
+   "cuisine": "Japanese",
+   "tags": [],
+   "legacy_category": "Single Origin",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Downtime",
+   "authors": [
+    "Nadine Redzepi"
+   ],
+   "publisher": "Pam Krauss Books",
+   "cuisine": null,
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The San Francisco Ferry Plaza Farmers' Market Cookbook",
+   "authors": [
+    "Peggy Knickerbocker"
+   ],
+   "publisher": "Chronicle Books",
+   "cuisine": null,
+   "tags": [
+    "Vegetarian"
+   ],
+   "legacy_category": "Vegetarian",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Oysters",
+   "authors": [
+    "Cynthia Nims"
+   ],
+   "publisher": "Sasquatch",
+   "cuisine": null,
+   "tags": [
+    "Seafood"
+   ],
+   "legacy_category": "Seafood",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Kitchen On Fire",
+   "authors": [
+    "Olivier Said"
+   ],
+   "publisher": "Lifelong Books",
+   "cuisine": null,
+   "tags": [
+    "Technique & Reference"
+   ],
+   "legacy_category": "Research/Technique",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Dumplings & Noodles",
+   "authors": [
+    "Pippa Middlehurst"
+   ],
+   "publisher": "Quadrille",
+   "cuisine": "Chinese",
+   "tags": [
+    "Single Subject"
+   ],
+   "legacy_category": "Single",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Louisiana Kitchen",
+   "authors": [
+    "Paul Prudhomme"
+   ],
+   "publisher": "William Morrow",
+   "cuisine": "Southern US",
+   "tags": [],
+   "legacy_category": "Southern",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Cooking of the Eastern Mediterranean",
+   "authors": [
+    "Paula Wolfert"
+   ],
+   "publisher": "HarperCollins",
+   "cuisine": "Middle Eastern",
+   "tags": [],
+   "legacy_category": "Middle Eastern",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Cooking of Southwest France",
+   "authors": [
+    "Paula Wolfert"
+   ],
+   "publisher": "HarperCollins",
+   "cuisine": "French",
+   "tags": [],
+   "legacy_category": "French",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Provençal Cookbook",
+   "authors": [
+    "Pierre Moine"
+   ],
+   "publisher": "DK",
+   "cuisine": "French",
+   "tags": [],
+   "legacy_category": "French",
+   "needs_review": "Author 'Pierre Moine' unverified",
+   "source": "sheet"
+  },
+  {
+   "title": "Blue Chair Jam Cookbook",
+   "authors": [
+    "Rachel Saunders"
+   ],
+   "publisher": "Andrews McMeel",
+   "cuisine": null,
+   "tags": [
+    "Preserving & Fermenting"
+   ],
+   "legacy_category": "Preserving",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Palestinian Table",
+   "authors": [
+    "Reem Kassis"
+   ],
+   "publisher": "Phaidon",
+   "cuisine": "Middle Eastern",
+   "tags": [],
+   "legacy_category": "Middle Eastern",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "French Feasts",
+   "authors": [
+    "Stéphane Reynaud"
+   ],
+   "publisher": "STC",
+   "cuisine": "French",
+   "tags": [],
+   "legacy_category": "French",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Simple French Food",
+   "authors": [
+    "Richard Olney"
+   ],
+   "publisher": "Collier",
+   "cuisine": "French",
+   "tags": [],
+   "legacy_category": "French",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Mexican Kitchen",
+   "authors": [
+    "Rick Bayless"
+   ],
+   "publisher": "Scribner",
+   "cuisine": "Mexican",
+   "tags": [],
+   "legacy_category": "Mexican",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Mexico One Plate at a Time",
+   "authors": [
+    "Rick Bayless"
+   ],
+   "publisher": "Scribner",
+   "cuisine": "Mexican",
+   "tags": [],
+   "legacy_category": "Mexican",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Complete Robuchon",
+   "authors": [
+    "Joël Robuchon"
+   ],
+   "publisher": "Knopf",
+   "cuisine": "French",
+   "tags": [
+    "Restaurant"
+   ],
+   "legacy_category": "Restaurant",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Cooking My Way Back Home",
+   "authors": [
+    "Mitchell Rosenthal"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": "American",
+   "tags": [
+    "Restaurant"
+   ],
+   "legacy_category": "Restaurant",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Salt, Fat, Acid, Heat",
+   "authors": [
+    "Samin Nosrat"
+   ],
+   "publisher": "Simon & Schuster",
+   "cuisine": null,
+   "tags": [
+    "Technique & Reference"
+   ],
+   "legacy_category": "Research/Technique",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Elliott Homestead Family Table",
+   "authors": [
+    "Shaye Elliott"
+   ],
+   "publisher": "Story Farm",
+   "cuisine": null,
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Seasons at the Farm",
+   "authors": [
+    "Shaye Elliott"
+   ],
+   "publisher": "Lyons Press",
+   "cuisine": null,
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Cookwise",
+   "authors": [
+    "Shirley O. Corriher"
+   ],
+   "publisher": "William Morrow",
+   "cuisine": null,
+   "tags": [
+    "Technique & Reference"
+   ],
+   "legacy_category": "Research/Technique",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Nevel Well-Done",
+   "authors": [
+    "Stefano Bencista Falorni"
+   ],
+   "publisher": "Simebooks",
+   "cuisine": "Italian",
+   "tags": [
+    "Tuscany"
+   ],
+   "legacy_category": "Italian (Tuscany)",
+   "needs_review": "Title looks misspelled (Never Well-Done?)",
+   "source": "sheet"
+  },
+  {
+   "title": "The Bean Book",
+   "authors": [
+    "Steve Sando"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": null,
+   "tags": [
+    "Single Subject"
+   ],
+   "legacy_category": "Single Topic",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Pozole",
+   "authors": [
+    "Steve Sando"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": "Mexican",
+   "tags": [
+    "Single Subject"
+   ],
+   "legacy_category": "Single Topic",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Ad Hoc at Home",
+   "authors": [
+    "Thomas Keller"
+   ],
+   "publisher": "Artisan",
+   "cuisine": "American",
+   "tags": [
+    "Restaurant"
+   ],
+   "legacy_category": "Restaurant",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "From the Tules to the Table",
+   "authors": [
+    "Trudy Eastman"
+   ],
+   "publisher": "Self-published",
+   "cuisine": "American",
+   "tags": [],
+   "legacy_category": "American",
+   "needs_review": "Author/title unverified",
+   "source": "sheet"
+  },
+  {
+   "title": "Trattoria",
+   "authors": [
+    "Ursula Ferrigno"
+   ],
+   "publisher": "Mitchell Beazley",
+   "cuisine": "Italian",
+   "tags": [],
+   "legacy_category": "Italian",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Lodge Cast Iron Nation",
+   "authors": [
+    "Lodge Cast Iron"
+   ],
+   "publisher": "Oxmoor House",
+   "cuisine": "American",
+   "tags": [],
+   "legacy_category": "American",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Roots Run Deep",
+   "authors": [
+    "Vivian Howard"
+   ],
+   "publisher": "Little, Brown",
+   "cuisine": "Southern US",
+   "tags": [],
+   "legacy_category": "Southern",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "This Will Make It Taste Good",
+   "authors": [
+    "Vivian Howard"
+   ],
+   "publisher": "Little, Brown",
+   "cuisine": null,
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Plenty",
+   "authors": [
+    "Yotam Ottolenghi"
+   ],
+   "publisher": "Chronicle Books",
+   "cuisine": null,
+   "tags": [
+    "Vegetarian"
+   ],
+   "legacy_category": "Vegetarian",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Jerusalem",
+   "authors": [
+    "Yotam Ottolenghi"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": "Middle Eastern",
+   "tags": [],
+   "legacy_category": "Middle Eastern",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Sweet",
+   "authors": [
+    "Yotam Ottolenghi"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": null,
+   "tags": [
+    "Baking & Desserts"
+   ],
+   "legacy_category": "Desserts",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Ottolenghi Simple",
+   "authors": [
+    "Yotam Ottolenghi"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": "Middle Eastern",
+   "tags": [],
+   "legacy_category": "Middle Eastern",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The New Book of Middle Eastern Food",
+   "authors": [
+    "Claudia Roden"
+   ],
+   "publisher": "Knopf",
+   "cuisine": "Middle Eastern",
+   "tags": [],
+   "legacy_category": "Middle Eastern",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Book of Jewish Food",
+   "authors": [
+    "Claudia Roden"
+   ],
+   "publisher": "Knopf",
+   "cuisine": "Jewish",
+   "tags": [],
+   "legacy_category": "Middle Eastern",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Parwana",
+   "authors": [
+    "Durkhanai Ayubi"
+   ],
+   "publisher": "Interlink Books",
+   "cuisine": "Afghan",
+   "tags": [],
+   "legacy_category": "Miiddle Eastern",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Taste of Persia",
+   "authors": [
+    "Naomi Duguid"
+   ],
+   "publisher": "Artisan",
+   "cuisine": "Persian",
+   "tags": [],
+   "legacy_category": "Middle Eastern",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Salt",
+   "authors": [
+    "Naomi Duguid"
+   ],
+   "publisher": "Artisan",
+   "cuisine": null,
+   "tags": [
+    "Preserving & Fermenting"
+   ],
+   "legacy_category": "Preserving",
+   "needs_review": "Naomi Duguid 'Salt' — confirm title/author",
+   "source": "sheet"
+  },
+  {
+   "title": "Burma",
+   "authors": [
+    "Naomi Duguid"
+   ],
+   "publisher": "Artisan",
+   "cuisine": "Burmese",
+   "tags": [],
+   "legacy_category": "East Asian",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Hot, Sour, Salty, Sweet",
+   "authors": [
+    "Naomi Duguid"
+   ],
+   "publisher": "Artisan",
+   "cuisine": "Southeast Asian",
+   "tags": [],
+   "legacy_category": "East Asian",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Plenty More",
+   "authors": [
+    "Yotam Ottolenghi"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": null,
+   "tags": [
+    "Vegetarian"
+   ],
+   "legacy_category": "Veg",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Ottolenghi Flavor",
+   "authors": [
+    "Yotam Ottolenghi"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": null,
+   "tags": [
+    "Vegetarian"
+   ],
+   "legacy_category": "Veg",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Falastin",
+   "authors": [
+    "Sami Tamimi",
+    "Tara Wigley"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": "Middle Eastern",
+   "tags": [],
+   "legacy_category": "Middle Eastern",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Good Things",
+   "authors": [
+    "Samin Nosrat"
+   ],
+   "publisher": "Random House",
+   "cuisine": null,
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Feasts on the Farm",
+   "authors": [
+    "Tamara Hicks"
+   ],
+   "publisher": "Chronicle Books",
+   "cuisine": null,
+   "tags": [
+    "Farm to Table"
+   ],
+   "legacy_category": "Farm to Table",
+   "needs_review": "Author/title unverified",
+   "source": "sheet"
+  },
+  {
+   "title": "Taste of Southern Cooking",
+   "authors": [
+    "Edna Lewis"
+   ],
+   "publisher": "Knopf",
+   "cuisine": "Southern US",
+   "tags": [],
+   "legacy_category": "Southern",
+   "needs_review": "Edna Lewis titles: The Taste of Country Cooking / The Gift of Southern Cooking?",
+   "source": "sheet"
+  },
+  {
+   "title": "The Flavor Equation",
+   "authors": [
+    "Nik Sharma"
+   ],
+   "publisher": "Chronicle Books",
+   "cuisine": null,
+   "tags": [
+    "Technique & Reference"
+   ],
+   "legacy_category": "Research/Technique",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Splendid Soups",
+   "authors": [
+    "James Peterson"
+   ],
+   "publisher": "Bantam Press",
+   "cuisine": null,
+   "tags": [
+    "Single Subject"
+   ],
+   "legacy_category": "Single Topic",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Cooking at Home",
+   "authors": [
+    "David Chang",
+    "Priya Krishna"
+   ],
+   "publisher": "Clarkson Potter",
+   "cuisine": null,
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "World of BBQ",
+   "authors": [
+    "Rodney Scott"
+   ],
+   "publisher": "Clarkson Potter",
+   "cuisine": "American",
+   "tags": [
+    "BBQ & Grilling"
+   ],
+   "legacy_category": "BBQ",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Meathead Method",
+   "authors": [
+    "Meathead Goldwyn"
+   ],
+   "publisher": "Harvest",
+   "cuisine": "American",
+   "tags": [
+    "BBQ & Grilling"
+   ],
+   "legacy_category": "BBQ",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Matty Matheson: A Cookbook",
+   "authors": [
+    "Matty Matheson"
+   ],
+   "publisher": "Abrama",
+   "cuisine": null,
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Smoke & Pickles",
+   "authors": [
+    "Edward Lee"
+   ],
+   "publisher": "Artisan",
+   "cuisine": "Southern US",
+   "tags": [],
+   "legacy_category": "Southern",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Big Heart Little Stove",
+   "authors": [
+    "Erin French"
+   ],
+   "publisher": "Celadon",
+   "cuisine": "American",
+   "tags": [
+    "Farm to Table"
+   ],
+   "legacy_category": "Farm to Table",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Village Baker's Wife",
+   "authors": [
+    "Gayle Ortiz"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": null,
+   "tags": [
+    "Baking & Desserts"
+   ],
+   "legacy_category": "Baking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Snacking Cakes",
+   "authors": [
+    "Yossy Arefi"
+   ],
+   "publisher": "Clarkson Potter",
+   "cuisine": null,
+   "tags": [
+    "Baking & Desserts"
+   ],
+   "legacy_category": "Baking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Basics with Babish",
+   "authors": [
+    "Andrew Rea"
+   ],
+   "publisher": "Simon & Schuster",
+   "cuisine": null,
+   "tags": [
+    "Technique & Reference"
+   ],
+   "legacy_category": "Research/Technique",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Essential NY Times Cookbook",
+   "authors": [
+    "Amanda Hesser"
+   ],
+   "publisher": "Norton",
+   "cuisine": "American",
+   "tags": [],
+   "legacy_category": "American",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Home Cheesemaking",
+   "authors": [
+    "Ricki Carroll"
+   ],
+   "publisher": "Storey",
+   "cuisine": null,
+   "tags": [
+    "Single Subject"
+   ],
+   "legacy_category": "Single",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The River Cottage Everyday",
+   "authors": [
+    "Hugh Fearnley-Whittingstall"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": "British",
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Market Cooking",
+   "authors": [
+    "David Tanis"
+   ],
+   "publisher": "Artisan",
+   "cuisine": null,
+   "tags": [
+    "Vegetarian"
+   ],
+   "legacy_category": "Veg",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Cooking with Jamie",
+   "authors": [
+    "Jamie Oliver"
+   ],
+   "publisher": "Hyperion",
+   "cuisine": null,
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Together",
+   "authors": [
+    "Jamie Oliver"
+   ],
+   "publisher": "Flatiron Books",
+   "cuisine": null,
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Basque Country",
+   "authors": [
+    "Marti Buckley"
+   ],
+   "publisher": "Artisan",
+   "cuisine": "Basque",
+   "tags": [],
+   "legacy_category": "European (Basque)",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Tacos: Recipes and Provocations",
+   "authors": [
+    "Alex Stupak"
+   ],
+   "publisher": "Clarkson Potter",
+   "cuisine": "Mexican",
+   "tags": [
+    "Single Subject"
+   ],
+   "legacy_category": "Single",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Vietnamese Home Cooking",
+   "authors": [
+    "Charles Phan"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": "Vietnamese",
+   "tags": [],
+   "legacy_category": "East Asian (Vietnamese)",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Salt, Sugar, MSG",
+   "authors": [
+    "Calvin Eng"
+   ],
+   "publisher": "Clarkson Potter",
+   "cuisine": "Chinese",
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Pho Cookbook",
+   "authors": [
+    "Andrea Nguyen"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": "Vietnamese",
+   "tags": [
+    "Single Subject"
+   ],
+   "legacy_category": "Single",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Pok Pok",
+   "authors": [
+    "Andy Ricker"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": "Thai",
+   "tags": [],
+   "legacy_category": "East Asian (Thai)",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Food of Sichuan",
+   "authors": [
+    "Fuchsia Dunlop"
+   ],
+   "publisher": "Norton",
+   "cuisine": "Chinese",
+   "tags": [],
+   "legacy_category": "East Asian (China)",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "All Under Heaven",
+   "authors": [
+    "Carolyn Phillips"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": "Chinese",
+   "tags": [],
+   "legacy_category": "East Asisan (China)",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "The Wok",
+   "authors": [
+    "J. Kenji López-Alt"
+   ],
+   "publisher": "Norton",
+   "cuisine": "Chinese",
+   "tags": [
+    "Technique & Reference"
+   ],
+   "legacy_category": "Research/Technique",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Le Creuset Cookbook",
+   "authors": [
+    "Sheri Castle"
+   ],
+   "publisher": "Rizzoli",
+   "cuisine": "French",
+   "tags": [],
+   "legacy_category": "French",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Chez Manon",
+   "authors": [
+    "Manon Lagrève"
+   ],
+   "publisher": "Herdie Grant",
+   "cuisine": "French",
+   "tags": [],
+   "legacy_category": "French",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Six Seasons",
+   "authors": [
+    "Joshua McFadden"
+   ],
+   "publisher": "Artisan",
+   "cuisine": null,
+   "tags": [
+    "Vegetarian"
+   ],
+   "legacy_category": "Veg",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Pass the Plate",
+   "authors": [
+    "Carolina Gelen"
+   ],
+   "publisher": "Clarkson Potter",
+   "cuisine": null,
+   "tags": [
+    "Home Cooking"
+   ],
+   "legacy_category": "Home Cooking",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Dinner in French",
+   "authors": [
+    "Melissa Clark"
+   ],
+   "publisher": "Clarkson Potter",
+   "cuisine": "French",
+   "tags": [],
+   "legacy_category": "French",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Ceviche",
+   "authors": [
+    "Martin Morales"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": "Peruvian",
+   "tags": [],
+   "legacy_category": "Peruvian",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Peru: The Cookbook",
+   "authors": [
+    "Gastón Acurio"
+   ],
+   "publisher": "Phaidon",
+   "cuisine": "Peruvian",
+   "tags": [],
+   "legacy_category": "Peruvian",
+   "needs_review": null,
+   "source": "sheet"
+  },
+  {
+   "title": "Asada: The Art of Mexican-Style Grilling",
+   "authors": [
+    "Bricia Lopez"
+   ],
+   "publisher": "Ten Speed Press",
+   "cuisine": "Mexican",
+   "tags": [
+    "Oaxaca"
+   ],
+   "legacy_category": "Mexican (Oxacan)",
+   "needs_review": null,
+   "source": "sheet"
+  }
+ ],
+ "recipes": [
+  {
+   "book": "Downtime",
+   "page": "195",
+   "name": "Roast Chicken & Potatoes with Garlic & Thyme",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 0,
+   "source": "journal"
+  },
+  {
+   "book": "Downtime",
+   "page": "217",
+   "name": "Lamb Curry with Raita",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 0,
+   "source": "journal"
+  },
+  {
+   "book": "Downtime",
+   "page": "96",
+   "name": "Baked Salmon with Thyme & Thin Potatoes",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 0,
+   "source": "journal"
+  },
+  {
+   "book": "Downtime",
+   "page": "80",
+   "name": "Leeks with Vinagrette, Bacon, & Pine Nuts",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 0,
+   "source": "journal"
+  },
+  {
+   "book": "Downtime",
+   "page": "205",
+   "name": "Pan-Roasted Cauliflower with Sesame Creme Fraiche",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 0,
+   "source": "journal"
+  },
+  {
+   "book": "Downtime",
+   "page": "74",
+   "name": "Deep Fried Eggplant with Ricotta & Sage",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 0,
+   "source": "journal"
+  },
+  {
+   "book": "Downtime",
+   "page": "33",
+   "name": "Salmon Tartar",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 0,
+   "source": "journal"
+  },
+  {
+   "book": "Downtime",
+   "page": "29",
+   "name": "Homemade Potato Chips",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 0,
+   "source": "journal"
+  },
+  {
+   "book": "Ottolenghi Simple",
+   "page": "100",
+   "name": "Chickpeas and Swiss Chard with Yogurt",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 0,
+   "source": "journal"
+  },
+  {
+   "book": "Ottolenghi Simple",
+   "page": "227",
+   "name": "Spring Roast Chicken with Preserved Lemon",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 0,
+   "source": "journal"
+  },
+  {
+   "book": "Ottolenghi Simple",
+   "page": "75",
+   "name": "Fried Broccoli and Kale with Garlic, Cumin, and Lime",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 0,
+   "source": "journal"
+  },
+  {
+   "book": "Ottolenghi Simple",
+   "page": "130",
+   "name": "Aromatic Olive Oil Mash Potatoes",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 0,
+   "source": "journal"
+  },
+  {
+   "book": "Ottolenghi Simple",
+   "page": "217",
+   "name": "Lamb and Pistatio Patties with Sumac Yogurt Sauce",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 0,
+   "source": "journal"
+  },
+  {
+   "book": "Ottolenghi Simple",
+   "page": "191",
+   "name": "Gigli with Chickpeas and Za'tar",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 0,
+   "source": "journal"
+  },
+  {
+   "book": "Ottolenghi Simple",
+   "page": "248",
+   "name": "Roasted Trout with Tomato Orange Barbary salsa",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 0,
+   "source": "journal"
+  },
+  {
+   "book": "Dining In",
+   "page": "213",
+   "name": "Fennel-Rubbed Pork Chops",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 0,
+   "source": "journal"
+  },
+  {
+   "book": "The Zuni Cafe Cookbook",
+   "page": "233",
+   "name": "Buttermilk Mashed Potatoes",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 0,
+   "source": "journal"
+  },
+  {
+   "book": "Dining In",
+   "page": "83",
+   "name": "Vinegared Romain with Sour Cream, Bacon, & Herbs",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 0,
+   "source": "journal"
+  },
+  {
+   "book": "Dining In",
+   "page": "206",
+   "name": "Skillet Chicken with Crushed Olives & Sumac",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 0,
+   "source": "journal"
+  },
+  {
+   "book": "Dining In",
+   "page": "42",
+   "name": "Roasted Broccolini and Lemon with Crispy Parmesan",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 0,
+   "source": "journal"
+  },
+  {
+   "book": "The Lodge Cast Iron Nation",
+   "page": "59",
+   "name": "Chilaquiles",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Lodge Cast Iron Nation",
+   "page": "110",
+   "name": "New England Chicken Pot Pie",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Lodge Cast Iron Nation",
+   "page": "118",
+   "name": "Buttermilk Brined Fried Chicken",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Lodge Cast Iron Nation",
+   "page": "130",
+   "name": "Honey Roasted Chicken Breasts",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Lodge Cast Iron Nation",
+   "page": "160",
+   "name": "Baked Sausage and Potatoes",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Lodge Cast Iron Nation",
+   "page": "198",
+   "name": "Trout Cakes and Watercress Salad",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "Downtime",
+   "page": "47",
+   "name": "Mashed Potatoes & Greens with Salt Cured Egg Yolk",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "Ottolenghi Simple",
+   "page": "113",
+   "name": "Brussels Sprouts with Browned Butter and Black Garlic",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "Ottolenghi Simple",
+   "page": "7",
+   "name": "Harissa and Manchego Omeletes",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "Ottolenghi Simple",
+   "page": "72",
+   "name": "Tomato, Chard, and Spinach with Toasted Almonds",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "Ottolenghi Simple",
+   "page": "138",
+   "name": "Oven Fries with Oregano and Feta",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "Ottolenghi Simple",
+   "page": "142",
+   "name": "Harissa and Confit Garlic Roasted Potatoes",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "Ottolenghi Simple",
+   "page": "188",
+   "name": "Pappardelle with Rose Harissa, Black Olives, and Capers",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "Ottolenghi Simple",
+   "page": "204",
+   "name": "Lamb and Feta Meatballs",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "Ottolenghi Simple",
+   "page": "215",
+   "name": "Slow-cooked Lamb Shoulder with Mint and Cumin",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "Ottolenghi Simple",
+   "page": "243",
+   "name": "Trout Tartare with Browned Butter and Pistachios",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "Ottolenghi Simple",
+   "page": "278",
+   "name": "Fig and Thyme Clafoutis",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Zuni Cafe Cookbook",
+   "page": "235",
+   "name": "Rosemary-Roasted Potatoes",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Zuni Cafe Cookbook",
+   "page": "115",
+   "name": "Sage Grilled Cheese",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Zuni Cafe Cookbook",
+   "page": "127",
+   "name": "Rosemary-Grilled Chicken Livers & Bacon with Balsamic Onion Marmalade Toasts",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Zuni Cafe Cookbook",
+   "page": "210",
+   "name": "Pasta alla Carbonara",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Zuni Cafe Cookbook",
+   "page": "221",
+   "name": "Zuni Ricotta Gnochi",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Zuni Cafe Cookbook",
+   "page": "150",
+   "name": "Shredded Radicchio with Anchovy Vinagrette, Bread Crumbs, & Sieved Egg",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Zuni Cafe Cookbook",
+   "page": "154",
+   "name": "Zuni Caesar Salad",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Zuni Cafe Cookbook",
+   "page": "159",
+   "name": "Onion Soup with Tomato & Poached Egg",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Zuni Cafe Cookbook",
+   "page": "169",
+   "name": "La Garbure Landaise",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Zuni Cafe Cookbook",
+   "page": "179",
+   "name": "Fried Eggs in Bread Crumbs",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Zuni Cafe Cookbook",
+   "page": "377",
+   "name": "Oxtails Braised in Red Wine",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Zuni Cafe Cookbook",
+   "page": "237",
+   "name": "Salt Roasties",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Zuni Cafe Cookbook",
+   "page": "255",
+   "name": "Braised Fennel",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Zuni Cafe Cookbook",
+   "page": "256",
+   "name": "Baked Artichokes with Onions, Lemon, Black Olives, & Mint",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Zuni Cafe Cookbook",
+   "page": "270",
+   "name": "Red Onion Pickles",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Zuni Cafe Cookbook",
+   "page": "342",
+   "name": "Zuni Roast Chicken with Bread Salad",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Zuni Cafe Cookbook",
+   "page": "308",
+   "name": "Chopped Lemon Bagna Cauda",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Zuni Cafe Cookbook",
+   "page": "326",
+   "name": "Monkfish Braised with White Beans, Fennel, & Tomato",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Zuni Cafe Cookbook",
+   "page": "350",
+   "name": "Chicken Braised with Figs, Honey, & Vinegar",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Zuni Cafe Cookbook",
+   "page": "366",
+   "name": "The Zuni Hamburger",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Zuni Cafe Cookbook",
+   "page": "385",
+   "name": "Pot-Au-Feu",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "The Zuni Cafe Cookbook",
+   "page": "408",
+   "name": "Mock Porchetta",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "Dining In",
+   "page": "110",
+   "name": "Baked Eggs with Crushed Chickpeas, Chorizo, & Bread Crumbs",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "Dining In",
+   "page": "200",
+   "name": "Swordfish with Crispy Capers",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "Dining In",
+   "page": "221",
+   "name": "Vinegar Braised Chicken with Farro & Watercress",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "Dining In",
+   "page": "239",
+   "name": "Buttermilk Brined Chicken with Za'tar",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  },
+  {
+   "book": "Dining In",
+   "page": "241",
+   "name": "Lamb Stew with Fennel, Preserved Lemon, & Crispy Fried Bread",
+   "rating": null,
+   "notes": null,
+   "last_made": null,
+   "want_to_try": 1,
+   "source": "ideas"
+  }
+ ]
+}

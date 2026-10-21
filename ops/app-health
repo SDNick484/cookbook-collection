@@ -1,0 +1,32 @@
+#!/bin/sh
+# Every 15 minutes: check the the server web apps; tell Home Assistant when one goes down
+# (2 failed checks in a row, ~30 min) and when it comes back. Only state changes are sent.
+[ -f /etc/conf.d/app-ops ] && . /etc/conf.d/app-ops
+STATE=/var/lib/app-ops/health
+mkdir -p "$STATE"
+# name|url|service  (services that aren't installed are skipped)
+CHECKS=${HEALTH_CHECKS:-"Cookbooks|http://127.0.0.1:8767/healthz|cookbooks
+Dinner Log|http://127.0.0.1:8765/|dinner-log
+Wish list|http://127.0.0.1:8766/healthz|wishlist"}
+
+echo "$CHECKS" | while IFS='|' read -r name url svc; do
+  [ -n "$name" ] || continue
+  [ -x "/etc/init.d/$svc" ] || continue
+  key=$(echo "$svc" | tr -c 'a-z0-9\n' '_')
+  fails=$(cat "$STATE/$key.fails" 2>/dev/null || echo 0)
+  was=$(cat "$STATE/$key.state" 2>/dev/null || echo up)
+  # "up" = the app answers HTTP at all (a 401/403 from a login wall still means it's running)
+  if wget -S -O /dev/null -T 15 "$url" 2>&1 | grep -q 'HTTP/1\.[01] [234]'; then
+    if [ "$was" = down ]; then
+      /usr/local/bin/app-notify "$name" up "$name is answering again on this server."
+    fi
+    echo 0 > "$STATE/$key.fails"; echo up > "$STATE/$key.state"
+  else
+    fails=$((fails + 1)); echo "$fails" > "$STATE/$key.fails"
+    if [ "$fails" -eq 2 ] && [ "$was" != down ]; then
+      echo down > "$STATE/$key.state"
+      st=$(rc-service "$svc" status 2>&1 | tail -n1)
+      /usr/local/bin/app-notify "$name" down "$name on this server hasn't answered for ~30 minutes ($url). Service: $st. Log: /var/log/$svc.log"
+    fi
+  fi
+done

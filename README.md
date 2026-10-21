@@ -69,6 +69,21 @@ Set a book's status to **Want to buy** and use **Add to a wish list…** on its 
 - **In Dinner Log** (updated `setup-dinner-log.sh`): choosing a cookbook offers that book's indexed recipes, and picking one fills in the page and the dinner name. The data comes from Cookbook Collection over localhost, and the form works as before if it's down.
 - **In Cookbook Collection:** set `DINNERLOG_URL` and each recipe gets a 🍽 link that opens Dinner Log's form already filled in.
 
+## Accents and other alphabets
+- Search ignores case and accents, and also special letters: "creme brulee" finds *Crème brûlée*, "pepin" finds Jacques Pépin, "oeufs" finds *Œufs*, "smorrebrod" finds *Smørrebrød* and "strasse" finds *Straße*. The same applies to ingredient tags, the filter on a book's page and Dinner Log title matching.
+- Chinese, Japanese, Korean and Thai don't put spaces between words, so a search in those scripts matches anywhere in a recipe name or book title.
+- Authors, tags and ingredients that differ only by accents or case are treated as one. "Jose Andres" from an EYB export joins an existing "José Andrés", and an accented spelling replaces an unaccented one.
+- Saved text is normalized, so an "é" typed on a Mac matches one from a CSV, and ﬁ/ﬂ ligatures from PDFs or photographed indexes are spelled out.
+- The EYB import repairs text garbled by a round-trip through Excel ("CrÃ¨me" → "Crème"). **Download CSV** includes a byte-order mark so Excel opens accents correctly.
+- The search index stores folded text, using a `fold()` SQL function the app registers on every connection. It's rebuilt on each start. Edit recipes through the app rather than the `sqlite3` command line, which doesn't have `fold()`.
+
+## Book ratings
+Editors can give each book an overall rating of 0–5 stars, in half stars.
+- On a book's page, tap the left half of a star for a half star or the right half for a whole one. The arrow keys also change it, and **Clear** removes it.
+- The **Edit book** form has the same rating as a menu.
+- Ratings appear on the catalog cards, and **Top rated** sorts by them, with unrated books last. Like recipe ratings, they're visible only to editors, not the public catalog.
+- The rating is also in the CSV export and in the private MCP's book results.
+
 ## What should we cook? / Stats / shelf
 - **Cook** gives random ideas in four modes: starred but not yet made, never made, forgotten books, and old favorites.
 - **Pulled out / Put back** on a book's page tracks books that are off the shelf.

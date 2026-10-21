@@ -45,6 +45,8 @@ def migrate(con):
     cols = [r[1] for r in con.execute("PRAGMA table_info(books)")]
     if "out_since" not in cols:
         con.execute("ALTER TABLE books ADD COLUMN out_since TEXT")
+    if "rating" not in cols:
+        con.execute("ALTER TABLE books ADD COLUMN rating REAL")  # 0–5 in half stars, editors only
 
 
 # ======================================================== Dinner Log link
@@ -229,7 +231,7 @@ def dinnerlog_status():
     q = lambda sql: con.execute(sql).fetchone()[0]
     unmatched = [dict(r) for r in con.execute(
         "SELECT dl_title AS title, count(*) AS n, max(day) AS last FROM cooked WHERE book_id IS NULL "
-        "AND trim(coalesce(dl_title,'')) <> '' GROUP BY lower(dl_title) ORDER BY n DESC")]
+        "AND trim(coalesce(dl_title,'')) <> '' GROUP BY fold(dl_title) ORDER BY n DESC")]
     return jsonify(available=True, path=DINNERLOG_DB, synced=meta_get(con, "dl_synced"),
                    meals=q("SELECT count(*) FROM cooked"),
                    recipe_matched=q("SELECT count(*) FROM cooked WHERE recipe_id IS NOT NULL"),
@@ -541,7 +543,7 @@ MCP_INSTRUCTIONS = ("Search Nick and Lauren's home cookbook collection: books, a
 def _book_out(b, private):
     keys = ["id", "title", "subtitle", "authors", "publisher", "year", "cuisine", "tags", "recipe_count"]
     if private:
-        keys += ["status", "location", "cooked_count", "cooked_last", "want_count"]
+        keys += ["status", "location", "rating", "cooked_count", "cooked_last", "want_count"]
     return {k: b.get(k) for k in keys if b.get(k) not in (None, [], "")}
 
 
@@ -576,7 +578,7 @@ def t_search_books(a, private):
         sql += " AND b.status NOT IN ('gone')"
     q = (a.get("query") or "").strip()
     if q:
-        sql += " AND b.id IN (SELECT rowid FROM books_fts WHERE books_fts MATCH ?)" if core.HAS_FTS else " AND lower(b.title) LIKE ?"
+        sql += " AND b.id IN (SELECT rowid FROM books_fts WHERE books_fts MATCH ?)" if core.HAS_FTS else " AND fold(b.title) LIKE ?"
         args.append(core.fts_query(q) if core.HAS_FTS else f"%{fold(q)}%")
     for k, s in (("cuisine", " AND b.cuisine=?"),
                  ("tag", " AND b.id IN (SELECT bt.book_id FROM book_tags bt JOIN tags t ON t.id=bt.tag_id WHERE t.name=?)"),
@@ -599,7 +601,7 @@ def t_get_book(a, private):
     if a.get("book_id"):
         row = con.execute("SELECT * FROM books WHERE id=?", (int(a["book_id"]),)).fetchone()
     elif a.get("title"):
-        row = con.execute("SELECT * FROM books WHERE lower(title)=lower(?)", (a["title"],)).fetchone()
+        row = con.execute("SELECT * FROM books WHERE fold(title)=fold(?)", (a["title"],)).fetchone()
         if not row and core.HAS_FTS:
             row = con.execute("SELECT b.* FROM books b WHERE b.id IN (SELECT rowid FROM books_fts WHERE books_fts MATCH ?) "
                               "LIMIT 1", (core.fts_query(a["title"]),)).fetchone()

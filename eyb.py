@@ -12,7 +12,7 @@ already present are skipped.
 
 Also here: bulk "fetch covers & details" for books that have an ISBN.
 """
-import csv, difflib, io, json, re, time
+import csv, difflib, io, json, re, time, unicodedata
 
 from flask import abort, jsonify, request
 
@@ -33,7 +33,14 @@ def decode(raw):
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
         text = raw.decode("cp1252", errors="replace")
-    return re.sub(r"%u([0-9A-Fa-f]{4})", lambda m: chr(int(m.group(1), 16)), text)
+    # UTF-8 that was read as Windows-1252 and saved again (e.g. combining exports in Excel): "CrÃ¨me" -> "Crème".
+    if re.search("[ÂÃÅâ][\u0080-\u00bf\u2010-\u203a\u20ac\u0152\u0153\u0160\u0161\u0178\u017d\u017e\u0192\u02c6\u02dc]", text):
+        try:
+            text = text.encode("cp1252").decode("utf-8")
+        except UnicodeError:
+            pass  # not cleanly reversible, so leave it as it is
+    text = re.sub(r"%u([0-9A-Fa-f]{4})", lambda m: chr(int(m.group(1), 16)), text)
+    return unicodedata.normalize("NFC", text).translate(core.LIGATURES)
 
 
 def split_authors(s):

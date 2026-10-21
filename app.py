@@ -63,18 +63,19 @@ CREATE TABLE IF NOT EXISTS recipes (
 );
 CREATE INDEX IF NOT EXISTS recipes_book ON recipes(book_id, page_sort);
 """
+# Both indexes hold fold()ed text, so "oeufs" finds "Œufs" and "strasse" finds "Straße". The triggers call the
+# fold() SQL function that connect() registers, so recipes should only be written through this app.
 FTS = """
-CREATE VIRTUAL TABLE IF NOT EXISTS recipes_fts USING fts5(
-  name, heading, content='recipes', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
-CREATE TRIGGER IF NOT EXISTS recipes_ai AFTER INSERT ON recipes BEGIN
-  INSERT INTO recipes_fts(rowid, name, heading) VALUES (new.id, new.name, coalesce(new.heading,''));
+CREATE VIRTUAL TABLE IF NOT EXISTS recipes_fts USING fts5(name, heading, tokenize='unicode61 remove_diacritics 2');
+CREATE TRIGGER IF NOT EXISTS recipes_fts_ai AFTER INSERT ON recipes BEGIN
+  INSERT INTO recipes_fts(rowid, name, heading) VALUES (new.id, fold(new.name), fold(new.heading));
 END;
-CREATE TRIGGER IF NOT EXISTS recipes_ad AFTER DELETE ON recipes BEGIN
-  INSERT INTO recipes_fts(recipes_fts, rowid, name, heading) VALUES ('delete', old.id, old.name, coalesce(old.heading,''));
+CREATE TRIGGER IF NOT EXISTS recipes_fts_ad AFTER DELETE ON recipes BEGIN
+  DELETE FROM recipes_fts WHERE rowid=old.id;
 END;
-CREATE TRIGGER IF NOT EXISTS recipes_au AFTER UPDATE OF name, heading ON recipes BEGIN
-  INSERT INTO recipes_fts(recipes_fts, rowid, name, heading) VALUES ('delete', old.id, old.name, coalesce(old.heading,''));
-  INSERT INTO recipes_fts(rowid, name, heading) VALUES (new.id, new.name, coalesce(new.heading,''));
+CREATE TRIGGER IF NOT EXISTS recipes_fts_au AFTER UPDATE OF name, heading ON recipes BEGIN
+  DELETE FROM recipes_fts WHERE rowid=old.id;
+  INSERT INTO recipes_fts(rowid, name, heading) VALUES (new.id, fold(new.name), fold(new.heading));
 END;
 CREATE VIRTUAL TABLE IF NOT EXISTS books_fts USING fts5(
   title, people, other, tokenize='unicode61 remove_diacritics 2');
@@ -85,6 +86,7 @@ HAS_FTS = True
 def connect():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
+    con.create_function("fold", 1, fold, deterministic=True)
     con.execute("PRAGMA foreign_keys=ON")
     con.execute("PRAGMA journal_mode=WAL")
     return con
@@ -113,6 +115,10 @@ def init_db():
     extras.migrate(con)
     eyb.migrate(con)
     ingredients.migrate(con)
+    old = con.execute("SELECT sql FROM sqlite_master WHERE name='recipes_fts'").fetchone()
+    if old and "content=" in old[0]:  # the old index read unfolded text straight from recipes; replace it
+        con.executescript("DROP TRIGGER IF EXISTS recipes_ai; DROP TRIGGER IF EXISTS recipes_ad; "
+                          "DROP TRIGGER IF EXISTS recipes_au; DROP TABLE recipes_fts;")
     try:
         con.executescript(FTS)
     except sqlite3.OperationalError:
@@ -121,8 +127,10 @@ def init_db():
     seed = APP_DIR / "seed.json"
     if empty and seed.exists():
         load_seed(con, json.loads(seed.read_text()))
-    if HAS_FTS:
+    if HAS_FTS:  # rebuilt on every start, so a change to fold() reaches the whole catalog
         reindex_all_books(con)
+        con.execute("DELETE FROM recipes_fts")
+        con.execute("INSERT INTO recipes_fts(rowid, name, heading) SELECT id, fold(name), fold(heading) FROM recipes")
     con.commit()
     con.close()
 
@@ -150,20 +158,34 @@ def page_sort(page):
 
 
 def clean(s):
-    s = (s or "").strip()
+    """Tidy text before it's stored: composed accents (NFC, so "é" typed on a Mac matches "é" from a CSV),
+    and the ﬁ/ﬂ ligatures that PDFs and photographed indexes produce spelled out."""
+    s = unicodedata.normalize("NFC", s or "").translate(LIGATURES).strip()
     return s or None
+
+
+def name_id(con, table, name):
+    """id of the author, tag or ingredient called `name`, adding it if new. Case and accents don't count,
+    so "Jose Andres" from an EYB export joins "José Andrés"; an accented spelling replaces a plain one."""
+    row = con.execute(f"SELECT id, name FROM {table} WHERE fold(name)=fold(?) ORDER BY id LIMIT 1", (name,)).fetchone()
+    if not row:
+        return con.execute(f"INSERT INTO {table}(name) VALUES (?)", (name,)).lastrowid
+    if row[1] != name and row[1].isascii() and not name.isascii():
+        try:
+            con.execute(f"UPDATE {table} SET name=? WHERE id=?", (name, row[0]))
+        except sqlite3.IntegrityError:
+            pass
+    return row[0]
 
 
 def set_people(con, book_id, authors, tags):
     con.execute("DELETE FROM book_authors WHERE book_id=?", (book_id,))
-    for i, name in enumerate(dict.fromkeys(a.strip() for a in authors if a and a.strip())):
-        con.execute("INSERT OR IGNORE INTO authors(name) VALUES (?)", (name,))
-        aid = con.execute("SELECT id FROM authors WHERE name=?", (name,)).fetchone()[0]
+    for i, name in enumerate(dict.fromkeys(filter(None, map(clean, authors)))):
+        aid = name_id(con, "authors", name)
         con.execute("INSERT OR IGNORE INTO book_authors VALUES (?,?,?)", (book_id, aid, i))
     con.execute("DELETE FROM book_tags WHERE book_id=?", (book_id,))
-    for name in dict.fromkeys(t.strip() for t in tags if t and t.strip()):
-        con.execute("INSERT OR IGNORE INTO tags(name) VALUES (?)", (name,))
-        tid = con.execute("SELECT id FROM tags WHERE name=?", (name,)).fetchone()[0]
+    for name in dict.fromkeys(filter(None, map(clean, tags))):
+        tid = name_id(con, "tags", name)
         con.execute("INSERT OR IGNORE INTO book_tags VALUES (?,?)", (book_id, tid))
 
 
@@ -180,7 +202,7 @@ def reindex_book(con, book_id):
         "SELECT t.name FROM tags t JOIN book_tags bt ON bt.tag_id=t.id WHERE bt.book_id=?", (book_id,)))
     other = " ".join(x for x in (b["subtitle"], b["publisher"], b["cuisine"], tags, b["isbn"]) if x)
     con.execute("INSERT INTO books_fts(rowid, title, people, other) VALUES (?,?,?,?)",
-                (book_id, b["title"], people, other))
+                (book_id, fold(b["title"]), fold(people), fold(other)))
 
 
 def reindex_all_books(con):
@@ -190,12 +212,31 @@ def reindex_all_books(con):
 
 
 def fts_query(q):
-    toks = re.findall(r"\w+", unicodedata.normalize("NFKC", q or ""))
-    return " ".join(f'"{t}"*' for t in toks)
+    """Prefix match for every word, folded the same way as the index."""
+    return " ".join(f'"{t}"*' for t in re.findall(r"\w+", fold(q)))
+
+
+# Letters that aren't an accent on a plain letter, so stripping accents leaves them alone.
+FOLD_EXTRA = str.maketrans({"æ": "ae", "œ": "oe", "ø": "o", "ł": "l", "đ": "d", "ð": "d", "þ": "th", "ı": "i",
+                            "ħ": "h", "ŧ": "t", "ŋ": "n"})
+LIGATURES = str.maketrans({"ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl", "ﬃ": "ffi", "ﬄ": "ffl", "ﬅ": "st", "ﬆ": "st"})
+# Scripts written without spaces between words: a word search can't find text in the middle of a run.
+UNSPACED = re.compile(r"[\u0e00-\u0eff\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]")
 
 
 def fold(s):
-    return "".join(c for c in unicodedata.normalize("NFKD", s or "") if not unicodedata.combining(c)).lower()
+    """Search and matching key: "Crème Brûlée" -> "creme brulee", "Œufs" -> "oeufs", "Straße" -> "strasse"."""
+    s = unicodedata.normalize("NFKD", (s or "").casefold())
+    return "".join(c for c in s if not unicodedata.combining(c)).translate(FOLD_EXTRA)
+
+
+def search_words(q):
+    """Split a search into (words for the full-text index, runs of Chinese/Japanese/Korean/Thai text). Those
+    scripts don't put spaces between words, so they're matched as substrings rather than word prefixes."""
+    words, runs = [], []
+    for t in re.findall(r"\w+", unicodedata.normalize("NFKC", q or "")):
+        (runs if UNSPACED.search(t) else words).append(t)
+    return words, runs
 
 
 PUBLIC_BOOK = ("id", "title", "subtitle", "isbn", "publisher", "year", "cuisine", "description", "cover", "signed", "format")
@@ -329,13 +370,17 @@ def healthz():
 def list_books(private):
     q = request.args.get("q", "").strip()
     sql, args = "SELECT b.* FROM books b WHERE 1=1", []
-    if q:
+    words, runs = search_words(q)
+    if words:
         if HAS_FTS:
             sql += " AND b.id IN (SELECT rowid FROM books_fts WHERE books_fts MATCH ?)"
-            args.append(fts_query(q))
+            args.append(fts_query(" ".join(words)))
         else:
-            sql += " AND lower(b.title) LIKE ?"
-            args.append(f"%{fold(q)}%")
+            sql += " AND fold(b.title) LIKE ?"
+            args.append(f"%{fold(' '.join(words))}%")
+    for t in runs:
+        sql += " AND instr(fold(b.title || ' ' || coalesce(b.subtitle, '')), ?) > 0"
+        args.append(fold(t))
     if request.args.get("cuisine"):
         sql += " AND b.cuisine = ?"
         args.append(request.args["cuisine"])
@@ -347,7 +392,7 @@ def list_books(private):
         args.append(request.args["author"])
     if request.args.get("ingredient"):
         sql += (" AND b.id IN (SELECT r.book_id FROM recipes r JOIN recipe_ingredients ri ON ri.recipe_id=r.id "
-                "JOIN ingredients i ON i.id=ri.ingredient_id WHERE i.name=?)")
+                "JOIN ingredients i ON i.id=ri.ingredient_id WHERE fold(i.name)=fold(?))")
         args.append(request.args["ingredient"])
     if private and request.args.get("status"):
         sql += " AND b.status = ?"
@@ -367,6 +412,8 @@ def list_books(private):
         books.sort(key=lambda b: fold(re.sub(r"^(the|a|an)\s+", "", b["title"], flags=re.I)))
     elif sort == "cooked" and private:
         books.sort(key=lambda b: (-(b.get("cooked_count") or 0), fold(b["title"])))
+    elif sort == "rating" and private:  # unrated books last
+        books.sort(key=lambda b: (b["rating"] is None, -(b["rating"] or 0), fold(b["title"])))
     elif sort == "added":
         books.sort(key=lambda b: -b["id"])
     else:
@@ -402,13 +449,14 @@ def recipe_filter(params, private):
     import ingredients
     where, args = [], []
     q = (params.get("q") or "").strip()
-    for tok in re.findall(r"\w+", unicodedata.normalize("NFKC", q))[:8]:
+    words, runs = search_words(q)
+    for tok in (words + runs)[:8]:
         sql, a = ingredients.token_condition(tok)
         where.append(sql)
         args += a
     if params.get("ingredient"):
         where.append("r.id IN (SELECT ri.recipe_id FROM recipe_ingredients ri JOIN ingredients i "
-                     "ON i.id=ri.ingredient_id WHERE i.name=?)")
+                     "ON i.id=ri.ingredient_id WHERE fold(i.name)=fold(?))")
         args.append(params["ingredient"])
     if params.get("book"):
         where.append("r.book_id=?")
@@ -444,15 +492,16 @@ def search_recipes(private):
 
 def facets(private):
     d = db()
+    by_name = lambda rows: sorted((dict(r) for r in rows), key=lambda x: fold(x["name"]))  # É with E, not after Z
     return jsonify(
-        cuisines=[dict(r) for r in d.execute(
-            "SELECT cuisine AS name, count(*) AS n FROM books WHERE cuisine IS NOT NULL GROUP BY cuisine ORDER BY cuisine")],
-        tags=[dict(r) for r in d.execute(
-            "SELECT t.name, count(*) AS n FROM tags t JOIN book_tags bt ON bt.tag_id=t.id GROUP BY t.id ORDER BY t.name")],
-        authors=[dict(r) for r in d.execute(
-            "SELECT a.name, count(*) AS n FROM authors a JOIN book_authors ba ON ba.author_id=a.id GROUP BY a.id ORDER BY a.name")],
-        publishers=[r[0] for r in d.execute(
-            "SELECT DISTINCT publisher FROM books WHERE publisher IS NOT NULL ORDER BY publisher")] if private else [],
+        cuisines=by_name(d.execute(
+            "SELECT cuisine AS name, count(*) AS n FROM books WHERE cuisine IS NOT NULL GROUP BY cuisine")),
+        tags=by_name(d.execute(
+            "SELECT t.name, count(*) AS n FROM tags t JOIN book_tags bt ON bt.tag_id=t.id GROUP BY t.id")),
+        authors=by_name(d.execute(
+            "SELECT a.name, count(*) AS n FROM authors a JOIN book_authors ba ON ba.author_id=a.id GROUP BY a.id")),
+        publishers=sorted((r[0] for r in d.execute(
+            "SELECT DISTINCT publisher FROM books WHERE publisher IS NOT NULL")), key=fold) if private else [],
         stats={"books": d.execute("SELECT count(*) FROM books").fetchone()[0],
                "recipes": d.execute("SELECT count(*) FROM recipes").fetchone()[0]},
     )
@@ -481,7 +530,7 @@ def me():
 
 # ------------------------------------------------------------- write API
 BOOK_FIELDS = ("title", "subtitle", "isbn", "publisher", "year", "cuisine", "format", "description", "location",
-               "status", "loaned_to", "signed", "private_notes", "needs_review")
+               "status", "loaned_to", "signed", "private_notes", "needs_review", "rating")
 
 
 def book_values(data):
@@ -500,6 +549,13 @@ def book_values(data):
                 abort(make_err(400, "That doesn't look like a valid ISBN"))
         elif k == "status":
             v = v if v in ("owned", "out", "loaned", "gone", "wanted") else "owned"
+        elif k == "rating":  # overall book rating: 0–5 stars in half stars, None = unrated
+            try:
+                v = float(v) if v not in (None, "") else None
+            except (TypeError, ValueError):
+                abort(make_err(400, "Rating must be a number"))
+            if v is not None and not (0 <= v <= 5 and (v * 2).is_integer()):
+                abort(make_err(400, "Rating is 0–5 stars, in half stars"))
         else:
             v = clean(v if isinstance(v, str) else (str(v) if v is not None else None))
         vals[k] = v
@@ -922,11 +978,12 @@ def export_csv():
     buf = io.StringIO()
     w = csv.writer(buf)
     cols = ["id", "title", "subtitle", "authors", "publisher", "year", "isbn", "cuisine", "tags", "status",
-            "location", "signed", "recipe_count"]
+            "location", "signed", "rating", "recipe_count"]
     w.writerow(cols)
     for b in rows:
         w.writerow(["; ".join(b[c]) if isinstance(b[c], list) else b[c] for c in cols])
-    return Response(buf.getvalue(), mimetype="text/csv",
+    # The byte-order mark tells Excel the file is UTF-8; without it "Pépin" opens as "PÃ©pin".
+    return Response("\ufeff" + buf.getvalue(), mimetype="text/csv",
                     headers={"Content-Disposition": "attachment; filename=cookbooks.csv"})
 
 

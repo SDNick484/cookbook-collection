@@ -1,14 +1,14 @@
 # Cookbook Collection
 
-The family cookbook catalog. Flask + SQLite, one small service on this server.
-On the container it's still called `cookbooks` (service, `/opt/cookbooks`, `/var/lib/cookbooks`, `/etc/conf.d/cookbooks`, port 8767), and Roasted reads that config, so those names stay.
+A family cookbook catalog: Flask + SQLite, running as one small service.
+On the server it's called `cookbooks`: the service, `/opt/cookbooks`, `/var/lib/cookbooks`, `/etc/conf.d/cookbooks`, and port 8767.
 
 - **Public** `https://cookbooks.example.com/` lets visitors browse and search books and recipe names.
 - **Editors** `https://cookbooks.example.com/admin` sit behind Cloudflare Access. From there you can add books by barcode, edit them, import indexes, and see ratings, notes, shelf location and the want-to-try list.
 
 ## Install / upgrade
 
-Build the one-file installer from this repo, then run it in the container:
+The installer targets **Alpine Linux** with OpenRC, e.g. a small container or VM. Build the one-file installer from this repo, copy it to the server, and run it as root:
 ```sh
 sh installer/build.sh                 # -> dist/setup-cookbooks.sh
 scp dist/setup-cookbooks.sh root@<server>:/root/
@@ -16,13 +16,13 @@ ssh root@<server> sh /root/setup-cookbooks.sh
 ```
 The script is safe to run again. It replaces the app but keeps `/var/lib/cookbooks` (the database and covers) and `/etc/conf.d/cookbooks`. `sh setup-cookbooks.sh --uninstall` removes the app and service and keeps the data.
 
-On a first install the database is seeded from `seed.json`: the 153 books and 64 recipe names from the original Google Sheet. Ratings and journal notes aren't in the repo.
+On a first install the database is seeded from `seed.json`, which holds the original collection's books and recipe names. To start your own catalog empty, replace `seed.json` with `{"books": [], "recipes": []}` before building.
 
-The Home Assistant webhook ID for health alerts isn't in the repo either. Existing installs already have it in `/etc/conf.d/app-ops`. For a new one, build with `HA_WEBHOOK_ID=… sh installer/build.sh` or set it in that file afterwards.
+Health alerts post to a Home Assistant webhook. To use them, build with `HA_WEBHOOK_ID=… sh installer/build.sh`, or set `HA_WEBHOOK_ID` in `/etc/conf.d/app-ops` after installing.
 
 ## Cloudflare (hybrid public + private)
 
-1. **Tunnel → Public hostname**: `cookbooks.example.com` → `http://<server IP>:8767`, on the same tunnel as Dinner Log and the wish list.
+1. **Tunnel → Public hostname**: `cookbooks.example.com` → `http://<server IP>:8767`.
 2. **Access → Applications → Add → Self-hosted**:
    - Domain `cookbooks.example.com`, **path `admin`**. Leave the root unprotected so the catalog stays public.
    - Policy: Allow → Emails → the people who should be able to edit, e.g. with a One-time PIN login.
@@ -32,7 +32,7 @@ The Home Assistant webhook ID for health alerts isn't in the repo either. Existi
 The path rule covers `/admin` and everything under it, including the `/admin/api/*` calls that do the editing. The app also verifies the Access JWT itself, so an unsigned request that reaches it through the tunnel can't edit. Requests that don't come through Cloudflare, i.e. directly on the LAN, can edit while `LAN_EDIT=1`.
 
 ## Adding books
-**Add book → Scan barcode** uses the phone camera. This needs Chrome on Android over HTTPS, so use the cookbooks.example.com address rather than the LAN IP. The ISBN is looked up on Open Library, then Google Books, and the title, authors, publisher, year and cover are filled in.
+**Add book → Scan barcode** uses the phone camera. This needs Chrome on Android over HTTPS, so use the public HTTPS address rather than the LAN IP. The ISBN is looked up on Open Library, then Google Books, and the title, authors, publisher, year and cover are filled in.
 
 For older books with no barcode, type the title and use **Find matches by title**.
 
@@ -42,8 +42,8 @@ Open a book, choose **Import index**, and paste the index text. Google Lens on A
 ## Photo index import
 Set `ANTHROPIC_API_KEY` in `/etc/conf.d/cookbooks` and restart the service. **Import index → Photos of index pages** sends each photo (grayscale, ≤1568px) to Claude, which returns the entries as structured rows for the usual preview.
 
-## Dinner Log link
-Cookbook Collection reads `/var/lib/dinner-log/meals.db` **read-only**. The installer adds the `cookbooks` user to the `dinnerlog` group so it can.
+## Dinner Log link (optional)
+If Dinner Log, a companion meal-journal app, runs on the same server, Cookbook Collection reads `/var/lib/dinner-log/meals.db` **read-only**. The installer adds the `cookbooks` user to the `dinnerlog` group so it can.
 - Every dinner logged with source "Cookbook" is matched to a book by title, then to a recipe by page number and name.
 - Recipes show cooked count, average rating and last made. **Stats** shows the overall picture.
 - When a name doesn't match, pick the book once on the Stats page. When a dinner matches the book but not a recipe, link it or add it as a recipe from the book's page.
@@ -62,8 +62,8 @@ EYB's ingredient search finds far more recipes than titles do: searching "chicke
 - Search matches every word against recipe names *or* ingredient tags, so "chicken curry" finds curries that use chicken.
 - Re-importing a list is safe. Removing an ingredient deletes only the tag, not the recipes.
 
-## Family wish list
-Set a book's status to **Want to buy** and use **Add to a wish list…** on its page. It adds the book to the chosen person's list with a shopping link built from the ISBN (`WISHLIST_BOOK_URL`). It does this through the wish list app's own API on localhost, so the wish list itself is unchanged. Purchase status is never shown here, so there are no spoilers.
+## Family wish list (optional)
+If a companion wish list app runs on the same server, set a book's status to **Want to buy** and use **Add to a wish list…** on its page. It adds the book to the chosen person's list with a shopping link built from the ISBN (`WISHLIST_BOOK_URL`). It does this through the wish list app's own API on localhost, so the wish list itself is unchanged. Purchase status is never shown here, so there are no spoilers.
 
 ## Dinner Log ⇄ Cookbook Collection
 - **In Dinner Log** (updated `setup-dinner-log.sh`): choosing a cookbook offers that book's indexed recipes, and picking one fills in the page and the dinner name. The data comes from Cookbook Collection over localhost, and the form works as before if it's down.
@@ -94,10 +94,11 @@ Editors can give each book an overall rating of 0–5 stars, in half stars.
 - The token is generated on install and lives in `/etc/conf.d/cookbooks`. Treat the private URL like a password.
 - `/mcp` must stay **outside** the Access app, which only protects `/admin`.
 
-## Backups and alerts (all apps on the server)
-- `/etc/periodic/daily/app-backup` takes consistent SQLite snapshots of Cookbook Collection, Dinner Log and the wish list into `/var/backups/apps`, kept `KEEP_DAYS` days.
-- Set `BACKUP_TARGET` in `/etc/conf.d/app-ops` to a mounted folder on other storage (e.g. a NAS over NFS). Snapshots plus photos and covers are copied there too.
-- `/etc/periodic/15min/app-health` checks all three apps. After ~30 minutes down it sends one alert to the Home Assistant automation **Server: app health alerts**, and one more on recovery. Set `HA_URL` in `/etc/conf.d/app-ops` to turn alerts on.
+## Backups and alerts
+The ops scripts cover Cookbook Collection and, if they're installed on the same server, Dinner Log and the wish list. Their settings live in `/etc/conf.d/app-ops`.
+- `/etc/periodic/daily/app-backup` takes consistent SQLite snapshots into `/var/backups/apps`, kept `KEEP_DAYS` days.
+- Set `BACKUP_TARGET` to a mounted folder on other storage, e.g. an NFS share from a NAS. Snapshots plus photos and covers are copied there too.
+- `/etc/periodic/15min/app-health` checks each app. After ~30 minutes down it sends one alert to a Home Assistant webhook automation, and one more on recovery. Set `HA_URL` and `HA_WEBHOOK_ID` to turn alerts on.
 - The app runs under `supervise-daemon`, so a crash restarts it automatically.
 
 ## Backup / restore by hand

@@ -439,7 +439,7 @@ async function addView() {
       <p class="small muted" style="margin-top:0">Scan the barcode on the back cover, or type the ISBN. Details and the cover are filled in for you.</p>
       <div class="isbnrow">${canScan ? `<button class="primary" id="scan">📷 Scan barcode</button>` : ""}
         <input id="isbn" inputmode="numeric" placeholder="ISBN (10 or 13 digits)"><button id="look">Look up</button></div>
-      ${!canScan ? `<p class="small muted">Barcode scanning needs Chrome on Android over HTTPS (cookbooks.example.com).</p>` : ""}
+      ${!canScan ? `<p class="small muted">Barcode scanning needs Chrome on Android over HTTPS (the site's public address, not the LAN IP).</p>` : ""}
       <div id="lookres" class="small" style="margin-top:10px"></div>
       <div id="newcover" class="coverpick" style="margin-top:10px"></div>
     </div>

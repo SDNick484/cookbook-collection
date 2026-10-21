@@ -110,8 +110,14 @@ async function homeView() {
     const nb = bk.books.length === bk.total ? `${bk.total} books` : bk.books.length ? `${bk.books.length} of ${bk.total} books` : "No matching books";
     $("#summary").innerHTML = `<span>${rc.count ? `${rc.count.toLocaleString()} recipe${rc.count > 1 ? "s" : ""} · ` : ""}${nb}</span>${chips.join("")}`;
     $$("[data-clear]").forEach((b) => b.onclick = () => { S[b.dataset.clear] = ""; homeView(); });
-    const row = (r) => `<li><div class="rn"><a href="#/book/${r.book_id}">${r.heading ? `<span class="rh">${esc(r.heading)} · </span>` : ""}${esc(r.name)}</a>
-        <div class="bk">${esc(r.book_title)}</div></div><span class="pg">${r.page ? "p. " + esc(r.page) : ""}</span></li>`;
+    // Results come back ordered by book, so group them under a heading per cookbook (carried across "Show more").
+    let lastBook = null;
+    const row = (r) => {
+      const head = r.book_id !== lastBook ? `<li class="grp"><a href="#/book/${r.book_id}">${esc(r.book_title)}</a></li>` : "";
+      lastBook = r.book_id;
+      return `${head}<li><div class="rn"><a href="#/book/${r.book_id}">${r.heading ? `<span class="rh">${esc(r.heading)} · </span>` : ""}${esc(r.name)}</a></div>
+        <span class="pg">${r.page ? "p. " + esc(r.page) : ""}</span></li>`;
+    };
     $("#recipes").innerHTML = rc.count ? `
       <div class="section-h"><h2>Recipes${S.ingredient ? ` using ${esc(S.ingredient.toLowerCase())}` : ""}</h2><span class="muted small" id="rcount">${rc.count > rc.recipes.length ? `${rc.recipes.length} of ${rc.count.toLocaleString()}` : rc.count.toLocaleString()}</span></div>
       <ul class="rlist" id="rl">${rc.recipes.map(row).join("")}</ul>

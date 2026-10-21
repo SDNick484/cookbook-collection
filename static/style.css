@@ -85,6 +85,17 @@ button:disabled { opacity: .5; cursor: default; }
 .rlist .bk { font-size: .85rem; color: var(--muted); }
 .rlist li.grp { display: block; padding: 16px 2px 6px; font-weight: 600; font-size: .95rem; }
 .rlist li.grp a { color: var(--accent); }
+.bookrecs { border-top: 1px solid var(--line); }
+.bookrecs details { border-bottom: 1px solid var(--line); }
+.bookrecs summary { display: flex; gap: 10px; align-items: baseline; padding: 11px 2px; cursor: pointer; list-style: none; }
+.bookrecs summary::-webkit-details-marker { display: none; }
+.bookrecs summary::before { content: "▸"; color: var(--muted); width: 1em; flex: none; }
+.bookrecs details[open] summary::before { content: "▾"; }
+.bookrecs summary .t { flex: 1; min-width: 0; font-weight: 600; color: var(--accent); }
+.bookrecs summary .n { color: var(--muted); font-size: .9rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.bookrecs .rlist { border-top: 0; margin: 0 0 8px 1.4em; }
+.bookrecs .rlist li:last-child { border-bottom: 0; }
+.bookrecs li.open { font-size: .9rem; }
 .rlist a { text-decoration: none; }
 .rlist .acts { display: flex; gap: 2px; }
 .rlist .acts button { padding: 2px 6px; border: 0; background: none; color: var(--muted); font-size: 1.05rem; }

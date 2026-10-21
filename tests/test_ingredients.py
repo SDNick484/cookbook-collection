@@ -97,6 +97,22 @@ def test_import_tags_and_search(c):
     assert page2["count"] == 4 and len(page2["recipes"]) == 2
     books = {b["title"] for b in c.get("/api/books?ingredient=Chicken").json["books"]}
     assert books == {"The Zuni Cafe Cookbook", "Pozole"}
+    # the per-book list shown when an ingredient is picked: titles A–Z ignoring "The", with counts
+    bb = c.get("/api/recipes/books?ingredient=Chicken").json
+    assert [(b["title"], b["n"]) for b in bb["books"]] == [("Pozole", 1), ("The Zuni Cafe Cookbook", 3)]
+    assert bb["count"] == 4
+    # search words and book filters narrow it too
+    assert [(b["title"], b["n"]) for b in c.get("/api/recipes/books?ingredient=Chicken&q=soup").json["books"]] == \
+        [("The Zuni Cafe Cookbook", 1)]
+    pozole = c.get("/api/books?ingredient=Chicken&q=pozole").json["books"][0]
+    if pozole.get("cuisine"):
+        cu = c.get("/api/recipes/books", query_string={"ingredient": "Chicken", "cuisine": pozole["cuisine"]}).json
+        assert pozole["id"] in {b["id"] for b in cu["books"]}
+        assert all(b["cuisine"] == pozole["cuisine"] for b in c.get("/api/books?cuisine=" + pozole["cuisine"]).json["books"]
+                   if b["id"] in {x["id"] for x in cu["books"]})
+    zuni = bb["books"][1]["id"]
+    assert c.get(f"/api/recipes?ingredient=Chicken&book={zuni}&limit=500").json["count"] == 3
+    assert c.get("/api/recipes/books").json == {"books": [], "count": 0}
     ing = c.get("/api/ingredients").json["ingredients"]
     assert ing == [{"id": ing[0]["id"], "name": "Chicken", "n": 4}]
     # importing again changes nothing

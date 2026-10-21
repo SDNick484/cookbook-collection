@@ -5,7 +5,7 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const view = $("#view");
-const S = { facets: null, q: "", cuisine: "", tag: "", author: "", ingredient: "", sort: "author", editor: ADMIN, ingredients: null };
+const S = { facets: null, q: "", cuisine: "", tag: "", author: "", publisher: "", ingredient: "", sort: "author", editor: ADMIN, ingredients: null };
 
 async function api(path, opts = {}) {
   const o = { headers: {}, ...opts };
@@ -59,7 +59,7 @@ async function route() {
     if (path === "cook" && ADMIN) return await cookView();
     if (path === "stats" && ADMIN) return await statsView();
     if (path === "eyb" && ADMIN) return await eybView();
-    if (qs) { const p = new URLSearchParams(qs); for (const k of ["q", "cuisine", "tag", "author", "ingredient"]) S[k] = p.get(k) || ""; }
+    if (qs) { const p = new URLSearchParams(qs); for (const k of ["q", "cuisine", "tag", "author", "publisher", "ingredient"]) S[k] = p.get(k) || ""; if (p.get("sort")) S.sort = p.get("sort"); }
     return await homeView();
   } catch (e) {
     view.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
@@ -93,10 +93,10 @@ async function homeView() {
   $("#sort").value = S.sort;
   const load = async () => {
     const p = new URLSearchParams();
-    for (const k of ["q", "cuisine", "tag", "author", "sort"]) if (S[k]) p.set(k, S[k]);
+    for (const k of ["q", "cuisine", "tag", "author", "publisher", "sort"]) if (S[k]) p.set(k, S[k]);
     if (S.ingredient) p.set("ingredient", S.ingredient);
     const rp = new URLSearchParams({ limit: 60 });
-    for (const k of ["q", "cuisine", "tag", "ingredient"]) if (S[k]) rp.set(k, S[k]);
+    for (const k of ["q", "cuisine", "tag", "publisher", "ingredient"]) if (S[k]) rp.set(k, S[k]);
     const wantRecipes = S.q.trim().length >= 2 || S.ingredient;
     // With an ingredient picked, start from the books that have it and how many recipes each; open one to list them.
     const byBook = !!S.ingredient;
@@ -106,6 +106,7 @@ async function homeView() {
     ]);
     const chips = [];
     if (S.author) chips.push(`<button class="chip x" data-clear="author">${esc(S.author)}</button>`);
+    if (S.publisher) chips.push(`<button class="chip x" data-clear="publisher">${esc(S.publisher)}</button>`);
     if (S.cuisine) chips.push(`<button class="chip x" data-clear="cuisine">${esc(S.cuisine)}</button>`);
     if (S.tag) chips.push(`<button class="chip x" data-clear="tag">${esc(S.tag)}</button>`);
     if (S.ingredient) chips.push(`<button class="chip x" data-clear="ingredient">Uses ${esc(S.ingredient.toLowerCase())}</button>`);
@@ -847,6 +848,14 @@ async function cookView() {
 }
 
 /* ---------- stats ---------- */
+// Top 12 as bars, with every row in a list underneath when there are more.
+function ranked(rows, href, empty) {
+  if (!rows.length) return `<p class="small muted">${empty}</p>`;
+  const books = (r) => (r.books === 1 ? " book" : " books");
+  return hbars(rows.slice(0, 12), (r) => r.name, (r) => r.books, href, books) + (rows.length > 12 ? `
+    <details style="margin-top:12px"><summary>All ${rows.length}</summary><ul class="rlist">${rows.map((r) =>
+      `<li><div class="rn"><a href="${href(r)}">${esc(r.name)}</a></div><span class="pg">${r.books}</span></li>`).join("")}</ul></details>` : "");
+}
 function hbars(rows, label, value, href, note) {
   const max = Math.max(1, ...rows.map(value));
   return `<div class="hbars">${rows.map((r) => `<a class="hb" href="${href ? href(r) : "#/stats"}" data-tip="${esc(label(r))}: ${value(r)}${note ? esc(note(r)) : ""}">
@@ -864,6 +873,8 @@ async function statsView() {
   }
   const mmax = Math.max(1, ...months.map((m) => m.n));
   let allBooks = null;
+  const missing = (k) => s.missing[k] ? `${s.missing[k]} book${s.missing[k] === 1 ? " has" : "s have"} no ${k === "year" ? "publication year" : k} recorded` : "";
+  const note = (k) => s.missing[k] ? `<p class="small muted" style="margin-top:0">${missing(k)}.</p>` : "";
   view.innerHTML = `<h1 style="margin-top:18px">Stats</h1>
     <div class="tiles">
       <div class="tile"><div class="tv">${s.books}</div><div class="tk">cookbooks</div></div>
@@ -882,12 +893,33 @@ async function statsView() {
         <details style="margin-top:14px"><summary>Never cooked from <span class="muted small">(${s.never_cooked.length})</span></summary>
         <ul class="rlist">${s.never_cooked.map((b) => `<li><div class="rn"><a href="#/book/${b.id}">${esc(b.title)}</a></div></li>`).join("")}</ul></details></div>
     </div>
+    <h2 class="stats-h">The collection</h2>
+    <div class="cols">
+      <div class="panel"><h3>By author <span class="muted small">${s.by_author.length}</span></h3>
+        <p class="small muted" style="margin-top:0">${s.by_author.filter((a) => a.books > 1).length} authors with more than one book. Books by several authors count for each.${s.missing.author ? ` ${missing("author")}.` : ""}</p>
+        ${ranked(s.by_author, (r) => `#/?author=${encodeURIComponent(r.name)}`, "No authors yet.")}</div>
+      <div class="panel"><h3>By publisher <span class="muted small">${s.by_publisher.length}</span></h3>
+        ${note("publisher")}
+        ${ranked(s.by_publisher, (r) => `#/?publisher=${encodeURIComponent(r.name)}`, "No publishers recorded yet.")}</div>
+      <div class="panel"><h3>By tag <span class="muted small">${s.by_tag.length}</span></h3>
+        ${ranked(s.by_tag, (r) => `#/?tag=${encodeURIComponent(r.name)}`, "No tags yet.")}</div>
+      <div class="panel"><h3>Book ratings</h3>${s.ratings.length ? `
+        <p class="small muted" style="margin-top:0">${s.ratings.reduce((t, r) => t + r.books, 0)} rated, averaging ${num(s.rating_avg)} stars</p>
+        ${hbars(s.ratings, (r) => starLabel(r.stars), (r) => r.books, () => "#/?sort=rating", (r) => (r.books === 1 ? " book" : " books"))}`
+        : `<p class="small muted">No books rated yet. Rate one with the stars on its page.</p>`}</div>
+      ${s.by_decade.length ? `<div class="panel"><h3>By decade published</h3>
+        ${note("year")}
+        ${hbars(s.by_decade, (r) => r.name, (r) => r.books, null, (r) => (r.books === 1 ? " book" : " books"))}</div>` : ""}
+      ${s.by_format.length ? `<div class="panel"><h3>By format</h3>
+        ${note("format")}
+        ${hbars(s.by_format, (r) => r.name, (r) => r.books, null, (r) => (r.books === 1 ? " book" : " books"))}</div>` : ""}
+    </div>
     <div class="panel wide" id="dlpanel"><h3>Dinner Log</h3>${dl.available ? `
       <p class="small muted" style="margin-top:0">${dl.meals} cookbook dinners · ${dl.recipe_matched} matched to a recipe · ${dl.book_only} matched to a book only · checked ${esc(dl.synced || "")}</p>
       ${dl.unmatched_titles.length ? `<p class="small">These cookbook names from Dinner Log don't match a book here. Pick the book once and every dinner with that name follows.</p>
         <ul class="rlist">${dl.unmatched_titles.map((t) => `<li data-title="${esc(t.title)}"><div class="rn">${esc(t.title)} <span class="muted small">${t.n} dinner${t.n > 1 ? "s" : ""}</span></div>
         <select class="alias" style="max-width:55%"><option value="">Pick a book…</option></select></li>`).join("")}</ul>` : `<p class="small">Every cookbook name in Dinner Log matches a book.</p>`}`
-      : `<p class="small muted" style="margin-top:0">Couldn't read Dinner Log at <code>${esc(dl.path)}</code>${dl.error ? ` (${esc(dl.error)})` : ""}. The installer gives this app read access when both run on this server.</p>`}</div>`;
+      : `<p class="small muted" style="margin-top:0">Couldn't read Dinner Log at <code>${esc(dl.path)}</code>${dl.error ? ` (${esc(dl.error)})` : ""}. The installer gives this app read access when both run on the same server.</p>`}</div>`;
   const sels = $$("select.alias");
   if (sels.length) {
     allBooks = (await api("books?sort=title")).books;

@@ -390,6 +390,9 @@ def list_books(private):
     if request.args.get("author"):
         sql += " AND b.id IN (SELECT ba.book_id FROM book_authors ba JOIN authors a ON a.id=ba.author_id WHERE a.name=?)"
         args.append(request.args["author"])
+    if request.args.get("publisher"):
+        sql += " AND fold(b.publisher) = fold(?)"
+        args.append(request.args["publisher"])
     if request.args.get("ingredient"):
         sql += (" AND b.id IN (SELECT r.book_id FROM recipes r JOIN recipe_ingredients ri ON ri.recipe_id=r.id "
                 "JOIN ingredients i ON i.id=ri.ingredient_id WHERE fold(i.name)=fold(?))")
@@ -467,6 +470,9 @@ def recipe_filter(params, private):
     if params.get("tag"):
         where.append("b.id IN (SELECT bt.book_id FROM book_tags bt JOIN tags t ON t.id=bt.tag_id WHERE t.name=?)")
         args.append(params["tag"])
+    if params.get("publisher"):
+        where.append("fold(b.publisher) = fold(?)")
+        args.append(params["publisher"])
     if private and params.get("want"):
         where.append("r.want_to_try=1")
     if private and params.get("made"):

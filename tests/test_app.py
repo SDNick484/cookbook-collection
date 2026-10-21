@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 TMP = Path(tempfile.mkdtemp())
 os.environ.update(DATA_DIR=str(TMP), CF_TEAM_DOMAIN="team.example.com", CF_AUD="aud123",
-                  ADMIN_EMAILS="nick@example.com,lauren@example.com", LAN_EDIT="1")
+                  ADMIN_EMAILS="alice@example.com,bob@example.com", LAN_EDIT="1")
 import app as A  # noqa: E402
 
 CF = {"Cf-Ray": "abc", "Cf-Connecting-Ip": "203.0.113.9"}
@@ -103,10 +103,10 @@ def _jwt_setup(monkeypatch):
 
 def test_access_jwt(c, monkeypatch):
     make = _jwt_setup(monkeypatch)
-    ok = c.get("/admin/api/me", headers={**CF, "Cf-Access-Jwt-Assertion": make("Lauren@example.com")})
-    assert ok.status_code == 200 and ok.json["email"] == "lauren@example.com"
-    for bad in (make("stranger@example.com"), make("nick@example.com", aud="other"),
-                make("nick@example.com", iss="https://evil.example.com"), make("nick@example.com", exp=-10)):
+    ok = c.get("/admin/api/me", headers={**CF, "Cf-Access-Jwt-Assertion": make("Bob@example.com")})
+    assert ok.status_code == 200 and ok.json["email"] == "bob@example.com"
+    for bad in (make("stranger@example.com"), make("alice@example.com", aud="other"),
+                make("alice@example.com", iss="https://evil.example.com"), make("alice@example.com", exp=-10)):
         assert c.get("/admin/api/me", headers={**CF, "Cf-Access-Jwt-Assertion": bad}).status_code == 401
     # a bogus token without Cloudflare headers must not fall back to LAN access
     assert c.get("/admin/api/me", headers={"Cf-Access-Jwt-Assertion": "garbage"}).status_code == 401
@@ -262,11 +262,11 @@ def test_auth_reasons(c, monkeypatch):
     make = _jwt_setup(monkeypatch)
     me = lambda h: c.get("/admin/api/me", headers=h).json
     assert "covers the path" in me(CF)["reason"]                                   # no token via Cloudflare
-    r = me({**CF, "Cf-Access-Jwt-Assertion": make("nick@example.com", aud="wishlist-aud")})
+    r = me({**CF, "Cf-Access-Jwt-Assertion": make("alice@example.com", aud="wishlist-aud")})
     assert "Audience" in r["reason"] and "wishlist-aud" in r["reason"] and "aud123" in r["reason"]
     assert "ADMIN_EMAILS" in me({**CF, "Cf-Access-Jwt-Assertion": make("stranger@example.com")})["reason"]
     monkeypatch.setattr(A, "CF_AUD", "")
-    assert "isn't configured" in me({**CF, "Cf-Access-Jwt-Assertion": make("nick@example.com")})["reason"]
+    assert "isn't configured" in me({**CF, "Cf-Access-Jwt-Assertion": make("alice@example.com")})["reason"]
 
 
 def test_team_domain_normalized(monkeypatch):

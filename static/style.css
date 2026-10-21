@@ -83,6 +83,8 @@ button:disabled { opacity: .5; cursor: default; }
 .rlist .rh { color: var(--muted); }
 .rlist .pg { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; font-size: .9rem; }
 .rlist .bk { font-size: .85rem; color: var(--muted); }
+.rlist li.grp { display: block; padding: 16px 2px 6px; font-weight: 600; font-size: .95rem; }
+.rlist li.grp a { color: var(--accent); }
 .rlist a { text-decoration: none; }
 .rlist .acts { display: flex; gap: 2px; }
 .rlist .acts button { padding: 2px 6px; border: 0; background: none; color: var(--muted); font-size: 1.05rem; }

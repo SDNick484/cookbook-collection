@@ -98,9 +98,11 @@ async function homeView() {
     const rp = new URLSearchParams({ limit: 60 });
     for (const k of ["q", "cuisine", "tag", "ingredient"]) if (S[k]) rp.set(k, S[k]);
     const wantRecipes = S.q.trim().length >= 2 || S.ingredient;
+    // With an ingredient picked, start from the books that have it and how many recipes each; open one to list them.
+    const byBook = !!S.ingredient;
     const [bk, rc] = await Promise.all([
       api("books?" + p),
-      wantRecipes ? api("recipes?" + rp) : Promise.resolve({ recipes: [], count: 0 }),
+      byBook ? api("recipes/books?" + rp) : wantRecipes ? api("recipes?" + rp) : Promise.resolve({ recipes: [], count: 0 }),
     ]);
     const chips = [];
     if (S.author) chips.push(`<button class="chip x" data-clear="author">${esc(S.author)}</button>`);
@@ -110,28 +112,49 @@ async function homeView() {
     const nb = bk.books.length === bk.total ? `${bk.total} books` : bk.books.length ? `${bk.books.length} of ${bk.total} books` : "No matching books";
     $("#summary").innerHTML = `<span>${rc.count ? `${rc.count.toLocaleString()} recipe${rc.count > 1 ? "s" : ""} · ` : ""}${nb}</span>${chips.join("")}`;
     $$("[data-clear]").forEach((b) => b.onclick = () => { S[b.dataset.clear] = ""; homeView(); });
-    // Results come back ordered by book, so group them under a heading per cookbook (carried across "Show more").
-    let lastBook = null;
-    const row = (r) => {
-      const head = r.book_id !== lastBook ? `<li class="grp"><a href="#/book/${r.book_id}">${esc(r.book_title)}</a></li>` : "";
-      lastBook = r.book_id;
-      return `${head}<li><div class="rn"><a href="#/book/${r.book_id}">${r.heading ? `<span class="rh">${esc(r.heading)} · </span>` : ""}${esc(r.name)}</a></div>
+    const recipeLine = (r) => `<li><div class="rn"><a href="#/book/${r.book_id}">${r.heading ? `<span class="rh">${esc(r.heading)} · </span>` : ""}${esc(r.name)}</a></div>
         <span class="pg">${r.page ? "p. " + esc(r.page) : ""}</span></li>`;
-    };
-    $("#recipes").innerHTML = rc.count ? `
-      <div class="section-h"><h2>Recipes${S.ingredient ? ` using ${esc(S.ingredient.toLowerCase())}` : ""}</h2><span class="muted small" id="rcount">${rc.count > rc.recipes.length ? `${rc.recipes.length} of ${rc.count.toLocaleString()}` : rc.count.toLocaleString()}</span></div>
-      <ul class="rlist" id="rl">${rc.recipes.map(row).join("")}</ul>
-      ${rc.count > rc.recipes.length ? `<div class="actions"><button id="more">Show more</button></div>` : ""}
-      ${bk.books.length ? `<div class="section-h"><h2>Books</h2></div>` : ""}` : (wantRecipes && S.ingredient ? `<div class="empty">No ${esc(S.ingredient.toLowerCase())} recipes match.</div>` : "");
-    let shown = rc.recipes.length;
-    if ($("#more")) $("#more").onclick = async () => {
-      rp.set("offset", shown); rp.set("limit", 200);
-      const more = await api("recipes?" + rp);
-      $("#rl").insertAdjacentHTML("beforeend", more.recipes.map(row).join(""));
-      shown += more.recipes.length;
-      $("#rcount").textContent = `${shown.toLocaleString()} of ${rc.count.toLocaleString()}`;
-      if (shown >= rc.count || !more.recipes.length) $("#more").remove();
-    };
+    if (byBook) {
+      const ing = esc(S.ingredient.toLowerCase());
+      $("#recipes").innerHTML = rc.count ? `
+        <div class="section-h"><h2>Recipes using ${ing}</h2><span class="muted small">${rc.count.toLocaleString()} in ${rc.books.length} book${rc.books.length > 1 ? "s" : ""}</span></div>
+        <div class="bookrecs">${rc.books.map((b) => `<details data-id="${b.id}"><summary><span class="t">${esc(b.title)}</span>
+          <span class="n">${b.n.toLocaleString()} recipe${b.n > 1 ? "s" : ""}</span></summary><ul class="rlist"></ul></details>`).join("")}</div>
+        ${bk.books.length ? `<div class="section-h"><h2>Books</h2></div>` : ""}` : `<div class="empty">No ${ing} recipes match.</div>`;
+      $$(".bookrecs details").forEach((d) => d.addEventListener("toggle", async () => {
+        if (!d.open || d.dataset.loaded) return;
+        d.dataset.loaded = "1";
+        const q = new URLSearchParams(rp); q.set("book", d.dataset.id); q.set("limit", 500);
+        const ul = $("ul", d);
+        ul.innerHTML = `<li class="muted small">Loading…</li>`;
+        try {
+          const { recipes } = await api("recipes?" + q);
+          ul.innerHTML = recipes.map(recipeLine).join("") + `<li class="open"><a href="#/book/${d.dataset.id}">Open the book →</a></li>`;
+        } catch (err) { ul.innerHTML = ""; delete d.dataset.loaded; toast(err.message); }
+      }));
+    } else {
+      // Search results come back ordered by book, so group them under a heading per cookbook (carried across "Show more").
+      let lastBook = null;
+      const row = (r) => {
+        const head = r.book_id !== lastBook ? `<li class="grp"><a href="#/book/${r.book_id}">${esc(r.book_title)}</a></li>` : "";
+        lastBook = r.book_id;
+        return head + recipeLine(r);
+      };
+      $("#recipes").innerHTML = rc.count ? `
+        <div class="section-h"><h2>Recipes</h2><span class="muted small" id="rcount">${rc.count > rc.recipes.length ? `${rc.recipes.length} of ${rc.count.toLocaleString()}` : rc.count.toLocaleString()}</span></div>
+        <ul class="rlist" id="rl">${rc.recipes.map(row).join("")}</ul>
+        ${rc.count > rc.recipes.length ? `<div class="actions"><button id="more">Show more</button></div>` : ""}
+        ${bk.books.length ? `<div class="section-h"><h2>Books</h2></div>` : ""}` : "";
+      let shown = rc.recipes.length;
+      if ($("#more")) $("#more").onclick = async () => {
+        rp.set("offset", shown); rp.set("limit", 200);
+        const more = await api("recipes?" + rp);
+        $("#rl").insertAdjacentHTML("beforeend", more.recipes.map(row).join(""));
+        shown += more.recipes.length;
+        $("#rcount").textContent = `${shown.toLocaleString()} of ${rc.count.toLocaleString()}`;
+        if (shown >= rc.count || !more.recipes.length) $("#more").remove();
+      };
+    }
     $("#grid").innerHTML = bk.books.length ? bk.books.map((b) => `
       <a class="card" href="#/book/${b.id}">${coverHTML(b)}
         <div class="meta"><div class="ttl">${esc(b.title)}</div><div class="by">${esc(byline(b))}</div>

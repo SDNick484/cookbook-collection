@@ -490,6 +490,19 @@ def search_recipes(private):
     return jsonify(recipes=[recipe_dict(r, private) for r in rows], count=count)
 
 
+def recipe_books(private):
+    """Each book with matching recipes and how many match: the list shown when an ingredient is picked.
+    Takes the same filters as search_recipes."""
+    p = request.args
+    if not (p.get("q", "").strip() or p.get("ingredient")):
+        return jsonify(books=[], count=0)
+    where, args = recipe_filter(p, private)
+    rows = db().execute("SELECT b.id, b.title, count(*) AS n FROM recipes r JOIN books b ON b.id=r.book_id WHERE 1=1"
+                        + "".join(" AND " + w for w in where) + " GROUP BY b.id", args).fetchall()
+    books = sorted((dict(r) for r in rows), key=lambda b: fold(re.sub(r"^(the|a|an)\s+", "", b["title"], flags=re.I)))
+    return jsonify(books=books, count=sum(b["n"] for b in books))
+
+
 def facets(private):
     d = db()
     by_name = lambda rows: sorted((dict(r) for r in rows), key=lambda x: fold(x["name"]))  # É with E, not after Z
@@ -514,6 +527,7 @@ for prefix, private in (("/api", False), ("/admin/api", True)):
     app.add_url_rule(f"{prefix}/books", f"books_{private}", _wrap(list_books))
     app.add_url_rule(f"{prefix}/books/<int:book_id>", f"book_{private}", _wrap(get_book))
     app.add_url_rule(f"{prefix}/recipes", f"recipes_{private}", _wrap(search_recipes))
+    app.add_url_rule(f"{prefix}/recipes/books", f"recipe_books_{private}", _wrap(recipe_books))
     app.add_url_rule(f"{prefix}/facets", f"facets_{private}", _wrap(facets))
 
 

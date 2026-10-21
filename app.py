@@ -367,6 +367,8 @@ def list_books(private):
         books.sort(key=lambda b: fold(re.sub(r"^(the|a|an)\s+", "", b["title"], flags=re.I)))
     elif sort == "cooked" and private:
         books.sort(key=lambda b: (-(b.get("cooked_count") or 0), fold(b["title"])))
+    elif sort == "rating" and private:  # unrated books last
+        books.sort(key=lambda b: (b["rating"] is None, -(b["rating"] or 0), fold(b["title"])))
     elif sort == "added":
         books.sort(key=lambda b: -b["id"])
     else:
@@ -481,7 +483,7 @@ def me():
 
 # ------------------------------------------------------------- write API
 BOOK_FIELDS = ("title", "subtitle", "isbn", "publisher", "year", "cuisine", "format", "description", "location",
-               "status", "loaned_to", "signed", "private_notes", "needs_review")
+               "status", "loaned_to", "signed", "private_notes", "needs_review", "rating")
 
 
 def book_values(data):
@@ -500,6 +502,13 @@ def book_values(data):
                 abort(make_err(400, "That doesn't look like a valid ISBN"))
         elif k == "status":
             v = v if v in ("owned", "out", "loaned", "gone", "wanted") else "owned"
+        elif k == "rating":  # overall book rating: 0–5 stars in half stars, None = unrated
+            try:
+                v = float(v) if v not in (None, "") else None
+            except (TypeError, ValueError):
+                abort(make_err(400, "Rating must be a number"))
+            if v is not None and not (0 <= v <= 5 and (v * 2).is_integer()):
+                abort(make_err(400, "Rating is 0–5 stars, in half stars"))
         else:
             v = clean(v if isinstance(v, str) else (str(v) if v is not None else None))
         vals[k] = v
@@ -922,7 +931,7 @@ def export_csv():
     buf = io.StringIO()
     w = csv.writer(buf)
     cols = ["id", "title", "subtitle", "authors", "publisher", "year", "isbn", "cuisine", "tags", "status",
-            "location", "signed", "recipe_count"]
+            "location", "signed", "rating", "recipe_count"]
     w.writerow(cols)
     for b in rows:
         w.writerow(["; ".join(b[c]) if isinstance(b[c], list) else b[c] for c in cols])

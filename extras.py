@@ -45,6 +45,8 @@ def migrate(con):
     cols = [r[1] for r in con.execute("PRAGMA table_info(books)")]
     if "out_since" not in cols:
         con.execute("ALTER TABLE books ADD COLUMN out_since TEXT")
+    if "rating" not in cols:
+        con.execute("ALTER TABLE books ADD COLUMN rating REAL")  # 0–5 in half stars, editors only
 
 
 # ======================================================== Dinner Log link
@@ -541,7 +543,7 @@ MCP_INSTRUCTIONS = ("Search Nick and Lauren's home cookbook collection: books, a
 def _book_out(b, private):
     keys = ["id", "title", "subtitle", "authors", "publisher", "year", "cuisine", "tags", "recipe_count"]
     if private:
-        keys += ["status", "location", "cooked_count", "cooked_last", "want_count"]
+        keys += ["status", "location", "rating", "cooked_count", "cooked_last", "want_count"]
     return {k: b.get(k) for k in keys if b.get(k) not in (None, [], "")}
 
 

@@ -36,6 +36,37 @@ def test_guess_name():
     assert I.guess_name("IngredientList.csv") == ""
     assert I.guess_name("IngredientList-lamb.csv") == "Lamb"
     assert I.guess_name("chicken (2).csv") == "Chicken"
+    assert I.guess_name("Chicken - all pages combined.csv") == "Chicken"
+    assert I.guess_name("lamb pages 1-4.csv") == "Lamb"
+    assert I.guess_name("pork_combined.csv") == "Pork"
+    assert I.guess_name("Jalapeño part 2.csv") == "Jalapeño"  # accented letters kept
+
+
+def test_tidy_names():
+    con = A.connect()
+    rid = con.execute("SELECT id FROM recipes LIMIT 1").fetchone()[0]
+    ids = {}
+    for n in ("Tidy test all pages combined", "Tidy dup", "Tidy dup - all pages combined", "Tidy 7-Up",
+              "Tidy lamb (all pages combined)"):
+        ids[n] = A.name_id(con, "ingredients", n)
+        con.execute("INSERT OR IGNORE INTO recipe_ingredients VALUES (?,?)", (rid, ids[n]))
+    rid2 = con.execute("SELECT id FROM recipes WHERE id<>? LIMIT 1", (rid,)).fetchone()[0]
+    con.execute("INSERT INTO recipe_ingredients VALUES (?,?)", (rid2, ids["Tidy dup - all pages combined"]))
+    I.tidy_names(con)
+    name = lambda i: (con.execute("SELECT name FROM ingredients WHERE id=?", (i,)).fetchone() or [None])[0]
+    assert name(ids["Tidy test all pages combined"]) == "Tidy test"
+    # merged into the existing tag, keeping both recipes
+    assert name(ids["Tidy dup - all pages combined"]) is None
+    tagged = {r[0] for r in con.execute("SELECT recipe_id FROM recipe_ingredients WHERE ingredient_id=?", (ids["Tidy dup"],))}
+    assert tagged == {rid, rid2}
+    assert name(ids["Tidy 7-Up"]) == "Tidy 7-Up"  # ordinary names untouched
+    assert name(ids["Tidy lamb (all pages combined)"]) == "Tidy lamb"
+    I.tidy_names(con)  # idempotent
+    assert name(ids["Tidy test all pages combined"]) == "Tidy test"
+    for i in ids.values():
+        con.execute("DELETE FROM ingredients WHERE id=?", (i,))
+    con.commit()
+    con.close()
 
 
 def test_import_tags_and_search(c):

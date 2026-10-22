@@ -569,7 +569,7 @@ async function tryView() {
       <span class="pg">${r.page ? "p. " + esc(r.page) : ""}</span></li>`).join("")}</ul>`).join("") || `<div class="empty">Star recipes on a book's page to add them here.</div>`}`;
 }
 async function reviewView() {
-  const { books } = await api("books?review=1&sort=title");
+  const [{ books }, { recipes: garbled, merged }] = await Promise.all([api("books?review=1&sort=title"), api("recipes/garbled")]);
   const why = (b) => [b.needs_review, !b.isbn && "no ISBN", !b.cover && "no cover"].filter(Boolean).join(" · ");
   const flagged = books.filter((b) => b.needs_review);
   const rest = books.filter((b) => !b.needs_review);
@@ -577,6 +577,11 @@ async function reviewView() {
     <div class="bk">${esc(byline(b))}</div><div class="small review">${esc(why(b))}</div></div></li>`).join("")}</ul>`;
   view.innerHTML = `<h1 style="margin-top:18px">Needs review</h1>
     <p class="muted small">Open a book and use <em>Find matches on Open Library</em> to fill in the ISBN, year and cover in one step.</p>
+    ${merged ? `<p class="small">Merged ${merged.n.toLocaleString()} garbled duplicate ${merged.n === 1 ? "recipe into its correctly spelled copy" : "recipes into their correctly spelled copies"} on ${esc(merged.at)}, keeping their ingredient tags, stars and notes.</p>` : ""}
+    ${garbled.length ? `<div class="section-h"><h2>Recipes with garbled letters <span class="muted small">${garbled.length}</span></h2></div>
+      <p class="muted small">These were imported with “�” where accented letters were lost, and there's no correctly spelled copy to merge them into. Open the book and use ✎ to type the name in again.</p>
+      <ul class="rlist">${garbled.map((r) => `<li><div class="rn"><a href="#/book/${r.book_id}">${esc(r.name)}</a><div class="bk">${esc(r.book_title)}</div></div>
+        <span class="pg">${r.page ? "p. " + esc(r.page) : ""}</span></li>`).join("")}</ul>` : ""}
     ${flagged.length ? `<div class="section-h"><h2>Flagged during import <span class="muted small">${flagged.length}</span></h2></div>${list(flagged)}` : ""}
     <div class="section-h"><h2>Missing ISBN or cover <span class="muted small">${rest.length}</span></h2></div>${list(rest)}`;
 }

@@ -43,6 +43,53 @@ def decode(raw):
     return unicodedata.normalize("NFC", text).translate(core.LIGATURES)
 
 
+# ---------------------------------------------------------- garbled names
+# A file whose accented letters were already lost before import has "�" (U+FFFD) in their place:
+# "Stir-fried potato and green chili threads (Qingjiāo chao tud�usi)". Such a row is the same recipe as
+# "...tudòusi" on the same page, so imports treat it as a duplicate, and merge_garbled() folds earlier
+# garbled copies into their good twin.
+GARBLED = "\ufffd"
+
+
+def garbled_twin(garbled, good):
+    """True if `garbled` is `good` with some letters replaced by �: each run of � stands for 1–3 lost characters."""
+    if GARBLED not in (garbled or "") or GARBLED in (good or ""):
+        return False
+    parts = re.split(f"({GARBLED}+)", unicodedata.normalize("NFC", garbled))
+    rx = "".join(f".{{1,{3 * len(p)}}}" if p.startswith(GARBLED) else re.escape(p) for p in parts)
+    return re.fullmatch(rx, unicodedata.normalize("NFC", good), re.I) is not None
+
+
+def merge_recipe(con, src, dst):
+    """Fold recipe `src` into `dst`, keeping its ingredient tags, star, rating, notes and Dinner Log links."""
+    con.execute("INSERT OR IGNORE INTO recipe_ingredients(recipe_id, ingredient_id) "
+                "SELECT ?, ingredient_id FROM recipe_ingredients WHERE recipe_id=?", (dst, src))
+    con.execute("""UPDATE recipes SET
+        want_to_try = max(want_to_try, (SELECT want_to_try FROM recipes WHERE id=:s)),
+        rating = coalesce(rating, (SELECT rating FROM recipes WHERE id=:s)),
+        notes = coalesce(notes, (SELECT notes FROM recipes WHERE id=:s)),
+        heading = coalesce(heading, (SELECT heading FROM recipes WHERE id=:s)),
+        last_made = nullif(max(coalesce(last_made, ''), coalesce((SELECT last_made FROM recipes WHERE id=:s), '')), '')
+        WHERE id=:d""", {"s": src, "d": dst})
+    con.execute("UPDATE cooked SET recipe_id=? WHERE recipe_id=?", (dst, src))
+    con.execute("UPDATE dl_link SET recipe_id=? WHERE recipe_id=?", (dst, src))
+    con.execute("DELETE FROM recipes WHERE id=?", (src,))
+
+
+def merge_garbled(con):
+    """Merge every garbled recipe that has exactly one good twin (same book and page) into it. Returns how many."""
+    merged = 0
+    for rid, book_id, name, page in con.execute(
+            "SELECT id, book_id, name, page FROM recipes WHERE instr(name, ?) > 0", (GARBLED,)).fetchall():
+        twins = [tid for tid, other in con.execute(
+            "SELECT id, name FROM recipes WHERE book_id=? AND coalesce(page, '')=coalesce(?, '') AND instr(name, ?)=0",
+            (book_id, page, GARBLED)) if garbled_twin(name, other)]
+        if len(twins) == 1:
+            merge_recipe(con, rid, twins[0])
+            merged += 1
+    return merged
+
+
 def split_authors(s):
     s = clean(s) or ""
     return [a.strip() for a in re.split(r"\s+and\s+|\s*&\s*|;\s*", s) if a.strip()]
@@ -258,14 +305,17 @@ class RecipeIndex:
     ("Poached eggs with duxelles" / "Poached eggs with creamed spinach")."""
 
     def __init__(self, con, book_id):
-        self.exact, self.by_page = set(), {}
+        self.exact, self.by_page, self.names = set(), {}, {}
         for name, page, source in con.execute("SELECT name, page, source FROM recipes WHERE book_id=?", (book_id,)):
             self.exact.add((fold(name), page or ""))
-            if page and source != "eyb":
+            self.names.setdefault(page or "", []).append(name)
+            if page and source != "eyb" and GARBLED not in name:  # a good copy should replace a garbled one
                 self.by_page.setdefault(page, []).append(name)
 
     def has(self, name, page):
         if (fold(name), page or "") in self.exact:
+            return True
+        if GARBLED in name and any(garbled_twin(name, other) for other in self.names.get(page or "", [])):
             return True
         ta = toks(name)
         for other in self.by_page.get(page or "", []) if page else []:
@@ -277,9 +327,22 @@ class RecipeIndex:
 
     def add(self, name, page):
         self.exact.add((fold(name), page or ""))
+        self.names.setdefault(page or "", []).append(name)
 
 
 # ------------------------------------------------------------------ routes
+@app.get("/admin/api/recipes/garbled")
+@editor_required
+def garbled_recipes():
+    """Garbled recipes with no good copy to merge into: these need the lost letters typed back in."""
+    rows = db().execute("SELECT r.id, r.name, r.page, b.id AS book_id, b.title AS book_title FROM recipes r "
+                        "JOIN books b ON b.id=r.book_id WHERE instr(r.name, ?) > 0 ORDER BY b.title, r.page_sort",
+                        (GARBLED,)).fetchall()
+    last = db().execute("SELECT value FROM meta WHERE key='garbled_merged'").fetchone()
+    return jsonify(recipes=[dict(r) for r in rows], merged=json.loads(last[0]) if last else None)
+
+
+
 @app.post("/admin/api/eyb/preview")
 @editor_required
 def eyb_preview():
@@ -433,6 +496,7 @@ def eyb_commit():
         con.execute("INSERT INTO recipes(book_id, name, page, page_sort, source) VALUES (?,?,?,?, 'eyb')",
                     (bid, r["name"], r["page"], page_sort(r["page"])))
         added += 1
+    merge_garbled(con)  # a good copy just added replaces any garbled one already here
     con.commit()
     return jsonify(kind="recipes", added=added, duplicates=dup, skipped=skipped, books=len(existing_cache),
                    created_books=len(created))

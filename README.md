@@ -60,7 +60,9 @@ EYB's ingredient search finds far more recipes than titles do: searching "chicke
 - Recipes already in the catalog get tagged; ones that aren't yet get added.
 - The catalog shows a chip per ingredient. Picking one lists the books that use it, with how many matching recipes each has; open a book to see those recipes. Chips combine with search words, cuisine and tag, which narrow both the books and the counts.
 - Search matches every word against recipe names *or* ingredient tags, so "chicken curry" finds curries that use chicken.
+- The tags are a few major ingredients, not a full ingredient list. Only some recipes carry them, so picking an ingredient (a chip, or `ingredient` in the MCP) finds recipes tagged with it **or** with it in the title. A more specific ingredient uses the tag inside it: "ground beef" uses Beef, "egg" uses Eggs, "cherry tomatoes" uses Tomatoes. One with no tag, like "turkey", matches titles only. The MCP's `search_recipes` lists the tags and says which one it used.
 - Re-importing a list is safe. Removing an ingredient deletes only the tag, not the recipes.
+- If an export's accented letters were lost before import ("tud�usi" for "tudòusi"), the rows are recognized as recipes already in the catalog instead of being added again. Garbled copies already in the catalog are merged into their correctly spelled twin on the same page when the app starts, keeping their tags, stars, notes and Dinner Log links. Ones with no twin are listed on **Needs review** to retype.
 
 ## Family wish list (optional)
 If a companion wish list app runs on the same server, set a book's status to **Want to buy** and use **Add to a wish list…** on its page. It adds the book to the chosen person's list with a shopping link built from the ISBN (`WISHLIST_BOOK_URL`). It does this through the wish list app's own API on localhost, so the wish list itself is unchanged. Purchase status is never shown here, so there are no spoilers.

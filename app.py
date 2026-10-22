@@ -115,6 +115,10 @@ def init_db():
     extras.migrate(con)
     eyb.migrate(con)
     ingredients.migrate(con)
+    merged = eyb.merge_garbled(con)  # recipes imported with "�" for lost letters, merged into their good copy
+    if merged:  # shown on Needs review
+        con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('garbled_merged', ?)",
+                    (json.dumps({"n": merged, "at": time.strftime("%Y-%m-%d %H:%M")}),))
     old = con.execute("SELECT sql FROM sqlite_master WHERE name='recipes_fts'").fetchone()
     if old and "content=" in old[0]:  # the old index read unfolded text straight from recipes; replace it
         con.executescript("DROP TRIGGER IF EXISTS recipes_ai; DROP TRIGGER IF EXISTS recipes_ad; "
@@ -394,9 +398,10 @@ def list_books(private):
         sql += " AND fold(b.publisher) = fold(?)"
         args.append(request.args["publisher"])
     if request.args.get("ingredient"):
-        sql += (" AND b.id IN (SELECT r.book_id FROM recipes r JOIN recipe_ingredients ri ON ri.recipe_id=r.id "
-                "JOIN ingredients i ON i.id=ri.ingredient_id WHERE fold(i.name)=fold(?))")
-        args.append(request.args["ingredient"])
+        import ingredients
+        cond, a = ingredients.ingredient_condition(db(), request.args["ingredient"])
+        sql += f" AND b.id IN (SELECT r.book_id FROM recipes r WHERE {cond})"
+        args += a
     if private and request.args.get("status"):
         sql += " AND b.status = ?"
         args.append(request.args["status"])
@@ -448,7 +453,7 @@ def get_book(book_id, private):
 
 def recipe_filter(params, private):
     """WHERE clause + args for recipe search. Each word of q must match the recipe's name/index heading or
-    one of its ingredient tags; ingredient= limits to recipes tagged with that ingredient."""
+    one of its ingredient tags; ingredient= limits to recipes that use it (see ingredients.ingredient_condition)."""
     import ingredients
     where, args = [], []
     q = (params.get("q") or "").strip()
@@ -457,10 +462,10 @@ def recipe_filter(params, private):
         sql, a = ingredients.token_condition(tok)
         where.append(sql)
         args += a
-    if params.get("ingredient"):
-        where.append("r.id IN (SELECT ri.recipe_id FROM recipe_ingredients ri JOIN ingredients i "
-                     "ON i.id=ri.ingredient_id WHERE fold(i.name)=fold(?))")
-        args.append(params["ingredient"])
+    if params.get("ingredient"):  # tagged with it, or it's in the title
+        cond, a = ingredients.ingredient_condition(db(), params["ingredient"])
+        where.append(cond)
+        args += a
     if params.get("book"):
         where.append("r.book_id=?")
         args.append(int(params["book"]))

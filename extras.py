@@ -612,7 +612,22 @@ def t_search_recipes(a, private):
         st = cooked_stats_for([r["id"] for r in rows])
         for r in rows:
             r.update(st.get(r["id"], {}))
-    return {"count": len(rows), "recipes": [_recipe_out(r, private) for r in rows]}
+    out = {"count": len(rows), "recipes": [_recipe_out(r, private) for r in rows]}
+    if a.get("ingredient"):  # say how the ingredient was read, so a miss isn't a silent 0
+        import ingredients
+        tags = [t for _, t in ingredients.resolve(db(), a["ingredient"])]
+        out["ingredient_tags"] = tags
+        out["ingredient_note"] = (
+            f"Matched recipes tagged {' and '.join(tags)}, or with '{a['ingredient']}' in the title." if tags else
+            f"No ingredient tag for '{a['ingredient']}', so it was matched against recipe titles only. "
+            f"Tags: {', '.join(ingredient_tag_names())}.")
+    return out
+
+
+def ingredient_tag_names():
+    return [r[0] for r in db().execute(
+        "SELECT i.name FROM ingredients i JOIN recipe_ingredients ri ON ri.ingredient_id=i.id "
+        "GROUP BY i.id ORDER BY count(*) DESC")]
 
 
 def t_search_books(a, private):
@@ -705,12 +720,14 @@ def t_set_want(a, private):
 _S = lambda **p: {"type": "object", "properties": p}
 TOOLS = [
     ("search_recipes", False, t_search_recipes,
-     "Search recipes indexed from our cookbooks. Each word must match the recipe name, its index heading, or an "
-     "ingredient it's tagged with (from Eat Your Books ingredient lists), so 'chicken' finds recipes that use "
-     "chicken even if the title doesn't say so. Returns recipe name, heading, page and book.",
+     "Search recipes indexed from our cookbooks. Each word must match the recipe name, its index heading, or one "
+     "of the major ingredient tags ({tags}), so 'chicken' finds recipes that use chicken even if the title doesn't "
+     "say so. Only some recipes are tagged, so other ingredients are found through titles. Returns recipe name, "
+     "heading, page and book.",
      {**_S(query={"type": "string", "description": "Words to match, e.g. 'braised short rib' or 'fennel'"},
            cuisine={"type": "string"}, book_id={"type": "integer"},
-           ingredient={"type": "string", "description": "Only recipes tagged with this ingredient, e.g. 'Lamb'"},
+           ingredient={"type": "string", "description": "Only recipes using this ingredient: tagged with the major "
+                       "tag it names ('ground beef' uses Beef) or with it in the title. Tags: {tags}."},
            limit={"type": "integer", "description": "Max results, default 25"})}),
     ("search_books", False, t_search_books,
      "Find cookbooks in the collection by words (title, author, publisher, tags), cuisine, tag or author.",
@@ -771,8 +788,10 @@ def handle_rpc(msg, private):
     if method == "ping":
         return rpc_result(mid, {})
     if method == "tools/list":
+        tags = ", ".join(ingredient_tag_names()) or "none yet"
+        fill = lambda x: json.loads(json.dumps(x).replace("{tags}", tags.replace('"', "'")))
         return rpc_result(mid, {"tools": [
-            {"name": n, "description": d, "inputSchema": s,
+            {"name": n, "description": fill(d), "inputSchema": fill(s),
              "annotations": {"readOnlyHint": n != "set_want_to_try"}}
             for n, priv_only, _, d, s in TOOLS if private or not priv_only]})
     if method == "tools/call":

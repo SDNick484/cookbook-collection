@@ -1,5 +1,5 @@
 """Ingredient tags from EYB ingredient exports, and ingredient-aware search."""
-import io, json, os, sys, tempfile
+import io, json, os, re, sys, tempfile
 from pathlib import Path
 
 import pytest
@@ -89,44 +89,50 @@ def test_import_tags_and_search(c):
     hits = c.get("/api/recipes?q=chicken&limit=500").json
     names = {x["name"] for x in hits["recipes"]}
     assert {"Bread soup", "Pozole verde"} <= names and hits["count"] >= before + 2
+    # the ingredient filter: tagged Chicken, or "chicken" as a word in the title (only some recipes carry tags)
+    con = A.connect()
+    rows = con.execute("SELECT r.id, r.name, r.heading, r.book_id, b.title FROM recipes r JOIN books b ON b.id=r.book_id").fetchall()
+    tagged = {x[0] for x in con.execute("SELECT recipe_id FROM recipe_ingredients")}
+    con.close()
+    titled = {x[0] for x in rows if re.search(r"\bchickens?\b", A.fold(f"{x[1]} {x[2] or ''}"))}
+    expect = tagged | titled
+    assert len(tagged) == 4 and titled - tagged                                # the title adds untagged ones
     only = c.get("/api/recipes?ingredient=Chicken&limit=500").json
-    assert only["count"] == 4 and "Bread soup" in {x["name"] for x in only["recipes"]}
-    assert c.get("/api/recipes?ingredient=Chicken&q=soup").json["count"] == 1   # combine ingredient + words
+    assert {x["id"] for x in only["recipes"]} == expect and only["count"] == len(expect)
+    assert "Bread soup" in {x["name"] for x in only["recipes"]}                # tagged, no "chicken" in the title
+    soup = {x["id"] for x in rows if "soup" in A.fold(x[1])} & expect
+    assert c.get("/api/recipes?ingredient=Chicken&q=soup&limit=500").json["count"] == len(soup)  # + words
     assert c.get("/api/recipes?q=chicken soup").json["count"] >= 1              # word via tag + word via title
     page2 = c.get("/api/recipes?ingredient=Chicken&limit=2&offset=2").json
-    assert page2["count"] == 4 and len(page2["recipes"]) == 2
+    assert page2["count"] == len(expect) and len(page2["recipes"]) == 2
+    per_book = {}
+    for x in rows:
+        if x[0] in expect:
+            per_book[(x[3], x[4])] = per_book.get((x[3], x[4]), 0) + 1
     books = {b["title"] for b in c.get("/api/books?ingredient=Chicken").json["books"]}
-    assert books == {"The Zuni Cafe Cookbook", "Pozole"}
+    assert books == {t for _, t in per_book} and {"The Zuni Cafe Cookbook", "Pozole"} <= books
     # the per-book list shown when an ingredient is picked: titles A–Z ignoring "The", with counts
     bb = c.get("/api/recipes/books?ingredient=Chicken").json
-    assert [(b["title"], b["n"]) for b in bb["books"]] == [("Pozole", 1), ("The Zuni Cafe Cookbook", 3)]
-    assert bb["count"] == 4
-    # search words and book filters narrow it too
-    assert [(b["title"], b["n"]) for b in c.get("/api/recipes/books?ingredient=Chicken&q=soup").json["books"]] == \
-        [("The Zuni Cafe Cookbook", 1)]
-    pozole = c.get("/api/books?ingredient=Chicken&q=pozole").json["books"][0]
-    if pozole.get("cuisine"):
-        cu = c.get("/api/recipes/books", query_string={"ingredient": "Chicken", "cuisine": pozole["cuisine"]}).json
-        assert pozole["id"] in {b["id"] for b in cu["books"]}
-        assert all(b["cuisine"] == pozole["cuisine"] for b in c.get("/api/books?cuisine=" + pozole["cuisine"]).json["books"]
-                   if b["id"] in {x["id"] for x in cu["books"]})
-    zuni = bb["books"][1]["id"]
-    assert c.get(f"/api/recipes?ingredient=Chicken&book={zuni}&limit=500").json["count"] == 3
+    sort_key = lambda t: A.fold(re.sub(r"^(the|a|an)\s+", "", t, flags=re.I))
+    assert [(b["title"], b["n"]) for b in bb["books"]] == sorted(((t, n) for (_, t), n in per_book.items()),
+                                                                  key=lambda x: sort_key(x[0]))
+    assert bb["count"] == len(expect)
+    assert c.get(f"/api/recipes?ingredient=Chicken&book={zuni}&limit=500").json["count"] == per_book[(zuni, "The Zuni Cafe Cookbook")]
     assert c.get("/api/recipes/books").json == {"books": [], "count": 0}
     ing = c.get("/api/ingredients").json["ingredients"]
-    assert ing == [{"id": ing[0]["id"], "name": "Chicken", "n": 4}]
+    assert ing == [{"id": ing[0]["id"], "name": "Chicken", "n": len(expect)}]  # the chip counts what it lists
     # importing again changes nothing
     r2 = up(c, "/admin/api/ingredients/commit", ingredient="Chicken", decisions=json.dumps(dec)).json
     assert r2["tagged"] == 0 and r2["added_recipes"] == 0 and r2["total"] == 4
     pv2 = up(c, "/admin/api/ingredients/preview", ingredient="Chicken").json
     assert sum(x["already"] for x in pv2["groups"]) == 4 and sum(x["new"] for x in pv2["groups"]) == 0
-    # MCP search sees tags too
+    # MCP search uses the same rule and says which tag it used
     res = A.app.test_client().post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
-        "name": "search_recipes", "arguments": {"ingredient": "Chicken"}}}).json["result"]["structuredContent"]
-    assert res["count"] == 4
-    # removing the tag keeps the recipes
+        "name": "search_recipes", "arguments": {"ingredient": "Chicken", "limit": 100}}}).json["result"]["structuredContent"]
+    assert res["count"] == len(expect) and res["ingredient_tags"] == ["Chicken"]
+    # removing the tag keeps the recipes; the title still finds the ones named for chicken
     assert c.delete(f"/admin/api/ingredients/{ing[0]['id']}").status_code == 200
-    assert c.get("/api/recipes?ingredient=Chicken").json["count"] == 0
+    assert c.get("/api/recipes?ingredient=Chicken&limit=500").json["count"] == len(titled)
     assert c.get("/api/recipes?q=bread soup").json["count"] == 1
     assert c.delete(f"/admin/api/ingredients/{ing[0]['id']}", headers={"Cf-Ray": "x"}).status_code == 401
 

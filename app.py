@@ -111,10 +111,11 @@ def init_db():
     COVER_DIR.mkdir(parents=True, exist_ok=True)
     con = connect()
     con.executescript(SCHEMA)
-    import extras, eyb, ingredients
+    import extras, eyb, ingredients, photos
     extras.migrate(con)
     eyb.migrate(con)
     ingredients.migrate(con)
+    photos.migrate(con)
     merged = eyb.merge_garbled(con)  # recipes imported with "�" for lost letters, merged into their good copy
     if merged:  # shown on Needs review
         con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('garbled_merged', ?)",
@@ -448,6 +449,8 @@ def get_book(book_id, private):
             r.update(cr.get(r["id"], {}))
         book.update(extras.cooked_by_book([book_id]).get(book_id, {}))
         book["wishes"] = extras.wishes_for_book(book_id)
+        import photos
+        book["photos"] = photos.for_book(book_id)
     return jsonify(book)
 
 
@@ -663,6 +666,8 @@ def delete_book(book_id):
     row = con.execute("SELECT cover FROM books WHERE id=?", (book_id,)).fetchone()
     if not row:
         abort(404)
+    import photos
+    photo_files = photos.files_where(con, "recipe_id IN (SELECT id FROM recipes WHERE book_id=?)", book_id)
     con.execute("DELETE FROM books WHERE id=?", (book_id,))
     if HAS_FTS:
         con.execute("DELETE FROM books_fts WHERE rowid=?", (book_id,))
@@ -671,6 +676,7 @@ def delete_book(book_id):
     con.commit()
     if row["cover"]:
         (COVER_DIR / row["cover"]).unlink(missing_ok=True)
+    photos.unlink(photo_files)
     return jsonify(ok=True)
 
 
@@ -778,8 +784,11 @@ def update_recipe(rid):
 @app.delete("/admin/api/recipes/<int:rid>")
 @editor_required
 def delete_recipe(rid):
+    import photos
+    files = photos.files_where(db(), "recipe_id=?", rid)
     db().execute("DELETE FROM recipes WHERE id=?", (rid,))
     db().commit()
+    photos.unlink(files)
     return jsonify(ok=True)
 
 
@@ -991,6 +1000,13 @@ def export_json():
     for b in books:
         b["recipes"] = [dict(r) for r in db().execute("SELECT * FROM recipes WHERE book_id=? ORDER BY page_sort",
                                                       (b["id"],))]
+        photos = {}  # file names in DATA_DIR/photos
+        for p in db().execute("SELECT p.recipe_id, p.file, p.taken_on, p.caption FROM recipe_photos p "
+                              "JOIN recipes r ON r.id=p.recipe_id WHERE r.book_id=?", (b["id"],)):
+            photos.setdefault(p["recipe_id"], []).append({k: p[k] for k in ("file", "taken_on", "caption")})
+        for r in b["recipes"]:
+            if r["id"] in photos:
+                r["photos"] = photos[r["id"]]
     body = json.dumps({"exported": time.strftime("%Y-%m-%dT%H:%M:%S"), "books": books}, ensure_ascii=False, indent=1)
     return Response(body, mimetype="application/json",
                     headers={"Content-Disposition": "attachment; filename=cookbooks.json"})
@@ -1019,4 +1035,5 @@ else:
     import extras  # noqa: E402,F401 — registers v2 routes
     import eyb  # noqa: E402,F401 — Eat Your Books import
     import ingredients  # noqa: E402,F401 — ingredient tags
+    import photos  # noqa: E402,F401 — photos of dishes cooked from the books
     init_db()

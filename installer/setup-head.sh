@@ -33,6 +33,17 @@ if ! python3 -c "import sqlite3; c=sqlite3.connect(':memory:'); c.execute('creat
   echo "    note: this sqlite has no FTS5; search will fall back to simple matching"
 fi
 
+# an upgrade can clean up data when it first starts, so keep a copy of the database as it was
+if [ -f "$DATA_DIR/cookbooks.db" ]; then
+  PRE=/var/backups/apps/cookbooks-before-upgrade-$(date +%Y%m%d-%H%M%S).db
+  mkdir -p /var/backups/apps
+  if sqlite3 "$DATA_DIR/cookbooks.db" ".backup '$PRE'" && gzip "$PRE"; then
+    echo "==> Saved the database as it was before this upgrade: $PRE.gz"
+  else
+    echo "    couldn't save a pre-upgrade copy of the database; stopping so nothing changes"; exit 1
+  fi
+fi
+
 # stop with the *old* init script before replacing it (v1 used start-stop-daemon, v2 supervise-daemon)
 [ -x /etc/init.d/cookbooks ] && rc-service cookbooks stop >/dev/null 2>&1 || true
 

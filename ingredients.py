@@ -95,12 +95,76 @@ def ingredient_id(name):
     return row[0] if row else None
 
 
+# An ingredient filter means: tagged with the major ingredient tag it names, or the ingredient is in the recipe's
+# title. Only some recipes carry tags, so the title catches the rest ("Best ground beef chili").
+STOPWORDS = {"a", "an", "and", "the", "of", "with", "in", "or"}
+
+
+def stem(w):
+    """Singular form, close enough to compare: tomatoes -> tomato, cherries -> cherry, eggs -> egg."""
+    if len(w) > 3 and w.endswith("oes"):
+        return w[:-2]
+    if len(w) > 3 and w.endswith("ies"):
+        return w[:-3] + "y"
+    if len(w) > 2 and w.endswith("s") and not w.endswith("ss"):
+        return w[:-1]
+    return w
+
+
+def ingredient_words(s):
+    return [stem(w) for w in re.findall(r"\w+", fold(s)) if w not in STOPWORDS]
+
+
+def resolve(con, name):
+    """The ingredient tags `name` refers to: the tag itself, or every tag whose words it contains
+    ("ground beef" -> Beef, "egg" -> Eggs, "cherry tomatoes" -> Tomatoes). [(id, name)]"""
+    want = set(ingredient_words(name))
+    out = []
+    for iid, tag in con.execute("SELECT id, name FROM ingredients"):
+        words = set(ingredient_words(tag))
+        if fold(tag) == fold(name) or (words and words <= want):
+            out.append((iid, tag))
+    return out
+
+
+def title_condition(name):
+    """Recipe name or index heading contains every word of `name` as a whole word, singular or plural."""
+    conds, args = [], []
+    for w in ingredient_words(name):
+        forms = sorted({w, w + "s", w + "es"} | ({w[:-1] + "ies"} if w.endswith("y") else set()))
+        if core.HAS_FTS:
+            conds.append("r.id IN (SELECT rowid FROM recipes_fts WHERE recipes_fts MATCH ?)")
+            args.append(" OR ".join(f'"{f}"' for f in forms))
+        else:
+            conds.append("(" + " OR ".join(["(' ' || fold(r.name) || ' ' || fold(r.heading) || ' ') LIKE ?"] * len(forms)) + ")")
+            args += [f"% {f} %" for f in forms]
+    return " AND ".join(conds), args
+
+
+def ingredient_condition(con, name):
+    """SQL + args for "uses this ingredient": tagged with each tag it names, or has it in the title."""
+    tags = resolve(con, name)
+    parts, args = [], []
+    if tags:
+        parts.append(" AND ".join(["r.id IN (SELECT recipe_id FROM recipe_ingredients WHERE ingredient_id=?)"] * len(tags)))
+        args += [iid for iid, _ in tags]
+    tsql, targs = title_condition(name)
+    if tsql:
+        parts.append(tsql)
+        args += targs
+    if not parts:
+        return "0", []
+    return "(" + " OR ".join(f"({p})" for p in parts) + ")", args
+
+
 @app.get("/api/ingredients")
 def list_ingredients():
-    rows = db().execute(
-        "SELECT i.id, i.name, count(ri.recipe_id) AS n FROM ingredients i "
-        "LEFT JOIN recipe_ingredients ri ON ri.ingredient_id=i.id GROUP BY i.id").fetchall()
-    return jsonify(ingredients=sorted((dict(r) for r in rows), key=lambda r: fold(r["name"])))
+    out = []
+    for r in db().execute("SELECT id, name FROM ingredients").fetchall():
+        cond, args = ingredient_condition(db(), r["name"])  # n = what picking the chip lists: tagged or in the title
+        out.append({"id": r["id"], "name": r["name"],
+                    "n": db().execute(f"SELECT count(*) FROM recipes r WHERE {cond}", args).fetchone()[0]})
+    return jsonify(ingredients=sorted(out, key=lambda r: fold(r["name"])))
 
 
 @app.delete("/admin/api/ingredients/<int:iid>")
@@ -117,7 +181,7 @@ class BookRecipes:
     else a re-worded copy on the same page of a recipe that came from elsewhere (sheet, photo, typed)."""
 
     def __init__(self, con, book_id):
-        self.exact, self.by_name, self.by_page = {}, {}, {}
+        self.exact, self.by_name, self.by_page, self.on_page = {}, {}, {}, {}
         for rid, name, page, source in con.execute(
                 "SELECT id, name, page, source FROM recipes WHERE book_id=?", (book_id,)):
             self.add(rid, name, page, source)
@@ -125,13 +189,18 @@ class BookRecipes:
     def add(self, rid, name, page, source="eyb"):
         self.exact[(fold(name), page or "")] = rid
         self.by_name.setdefault(fold(name), []).append(rid)
-        if page and source != "eyb":
+        self.on_page.setdefault(page or "", []).append((rid, name))
+        if page and source != "eyb" and eyb.GARBLED not in name:
             self.by_page.setdefault(page, []).append((rid, name))
 
     def find(self, name, page):
         rid = self.exact.get((fold(name), page or ""))
         if rid:
             return rid
+        if eyb.GARBLED in name:  # "tud�usi" is the "tudòusi" already on that page
+            twins = [rid for rid, other in self.on_page.get(page or "", []) if eyb.garbled_twin(name, other)]
+            if len(twins) == 1:
+                return twins[0]
         same = self.by_name.get(fold(name), [])
         if len(same) == 1 and not page:
             return same[0]
@@ -237,6 +306,7 @@ def ingredient_commit():
             books[bid].add(rid, r["name"], r["page"])
             added += 1
         tagged += con.execute("INSERT OR IGNORE INTO recipe_ingredients VALUES (?,?)", (rid, iid)).rowcount
+    eyb.merge_garbled(con)  # a good copy just added replaces any garbled one already here
     con.commit()
     total = con.execute("SELECT count(*) FROM recipe_ingredients WHERE ingredient_id=?", (iid,)).fetchone()[0]
     return jsonify(kind="ingredient", ingredient=name, tagged=tagged, added_recipes=added, skipped=skipped,

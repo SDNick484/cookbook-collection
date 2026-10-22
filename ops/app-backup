@@ -1,5 +1,5 @@
 #!/bin/sh
-# Nightly backup of the the server family apps (installed by setup-cookbooks.sh).
+# Nightly backup of the family apps on this server (installed by setup-cookbooks.sh).
 # - Consistent SQLite snapshots (sqlite3 .backup) of Cookbooks, Dinner Log and the wish list,
 #   kept for $KEEP_DAYS days in $LOCAL_DIR (small: databases only).
 # - If BACKUP_TARGET is set (e.g. an NFS/SMB mount from a NAS), the snapshots *and* the photo/cover

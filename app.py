@@ -232,7 +232,11 @@ UNSPACED = re.compile(r"[\u0e00-\u0eff\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\ua
 
 def fold(s):
     """Search and matching key: "Crème Brûlée" -> "creme brulee", "Œufs" -> "oeufs", "Straße" -> "strasse"."""
-    s = unicodedata.normalize("NFKD", (s or "").casefold())
+    if not s:
+        return ""
+    if s.isascii():  # most names: nothing to fold but case
+        return s.lower()
+    s = unicodedata.normalize("NFKD", s.casefold())
     return "".join(c for c in s if not unicodedata.combining(c)).translate(FOLD_EXTRA)
 
 
@@ -500,13 +504,24 @@ def search_recipes(private):
     if not (p.get("q", "").strip() or p.get("ingredient") or p.get("book")
             or (private and (p.get("want") or p.get("made")))):
         return jsonify(recipes=[], count=0)
+    import ingredients
     where, args = recipe_filter(p, private)
-    sql = ("SELECT r.*, b.title AS book_title FROM recipes r JOIN books b ON b.id=r.book_id WHERE 1=1"
-           + "".join(" AND " + w for w in where))
-    count = db().execute(f"SELECT count(*) FROM ({sql})", args).fetchone()[0]
-    sql += " ORDER BY b.title, r.page_sort IS NULL, r.page_sort, r.name LIMIT ? OFFSET ?"
-    rows = db().execute(sql, args + [limit, offset]).fetchall()
-    return jsonify(recipes=[recipe_dict(r, private) for r in rows], count=count)
+    base = " FROM recipes r JOIN books b ON b.id=r.book_id WHERE 1=1" + "".join(" AND " + w for w in where)
+    # best matches first, each book's recipes kept together for the headings on the results page
+    order = ingredients.ranked(db(), base, args, ingredients.search_terms(p.get("q", ""), p.get("ingredient")),
+                               by_book=True)
+    rows = recipes_by_id([x["id"] for x in order[offset:offset + limit]])
+    return jsonify(recipes=[recipe_dict(r, private) for r in rows], count=len(order))
+
+
+def recipes_by_id(ids):
+    """Full recipe rows (with book_title) for these ids, in this order."""
+    if not ids:
+        return []
+    got = {r["id"]: r for r in db().execute(
+        f"SELECT r.*, b.title AS book_title FROM recipes r JOIN books b ON b.id=r.book_id "
+        f"WHERE r.id IN ({','.join('?' * len(ids))})", ids)}
+    return [got[i] for i in ids if i in got]
 
 
 def recipe_books(private):

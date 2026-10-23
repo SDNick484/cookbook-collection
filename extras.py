@@ -6,7 +6,7 @@
 - "What should we cook?" suggestions, stats, off-the-shelf tracking
 - MCP endpoint (Streamable HTTP, stateless JSON) at /mcp
 """
-import base64, difflib, hmac, io, json, os, random, re, sqlite3, threading, time, urllib.request
+import base64, difflib, hmac, io, json, os, random, re, secrets, sqlite3, threading, time, urllib.error, urllib.request
 from datetime import date, timedelta
 
 from flask import abort, g, jsonify, request, Response
@@ -17,6 +17,7 @@ from app import app, db, editor_required, fold, make_err, page_sort, clean
 DINNERLOG_DB = os.environ.get("DINNERLOG_DB", "/var/lib/dinner-log/meals.db")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5-5").strip()
+ANTHROPIC_EFFORT = os.environ.get("ANTHROPIC_EFFORT", "low").strip()  # empty: the model's default
 MCP_TOKEN = os.environ.get("MCP_TOKEN", "").strip()
 MCP_PUBLIC = os.environ.get("MCP_PUBLIC", "1") == "1"
 
@@ -40,6 +41,7 @@ CREATE TABLE IF NOT EXISTS dl_link (meal_id INTEGER PRIMARY KEY, recipe_id INTEG
 def migrate(con):
     con.executescript(MIGRATIONS)
     con.execute(WISH_SCHEMA)
+    con.execute(PHOTO_SCHEMA)
     if "meal_key" not in [r[1] for r in con.execute("PRAGMA table_info(dl_link)")]:
         con.execute("ALTER TABLE dl_link ADD COLUMN meal_key TEXT")
     cols = [r[1] for r in con.execute("PRAGMA table_info(books)")]
@@ -497,70 +499,140 @@ def stats_route():
 
 
 # ======================================================== photo index import
-PHOTO_PROMPT = """This is a photo of a page from a cookbook's index. Transcribe every index entry that has a page number.
+# A dense index page (three columns, 250+ entries) takes Claude a minute or two to transcribe: longer than
+# Cloudflare lets a request wait. So a photo becomes a job: the upload returns at once, a thread does the work,
+# and the browser checks back. Jobs live in the database because gunicorn runs more than one worker process.
+PHOTO_PROMPT = """This is a photo of a page from a cookbook's index. Transcribe every index entry that has a page number. A full page can have 250 or more; don't skip any.
 
 Rules:
 - Read in the book's order: the whole first column top to bottom, then the next column.
-- A main entry with no page number (e.g. "Chicken") is a heading; the indented entries under it are sub-entries. For each sub-entry, set "heading" to that main entry. Headings carry over from the previous page/column when the first lines are indented continuations.
-- A main entry that has its own page number is an entry with heading null; it may also be the heading for sub-entries below it.
-- Join entries that wrap onto a second line.
+- A main entry with no page number (e.g. "Chicken") is a heading; the indented entries under it are sub-entries. For each sub-entry, give that main entry as its heading. Headings carry over from the previous page/column when the first lines are indented continuations.
+- A main entry that has its own page number has no heading; it may also be the heading for sub-entries below it.
+- Some indexes put the first sub-entry on the heading's line after a colon: "abalone: abalone sarsa 52" is heading "abalone", name "abalone sarsa", and the indented lines below it share that heading.
+- Join entries that wrap onto a second line, including a page number alone on the next line.
 - Keep page numbers exactly as printed, including ranges and lists ("42", "342–44", "51, 88"). Drop "see also" cross-references and letter dividers.
 - Keep the wording as printed; don't add or invent anything. If a word is unreadable, give your best reading.
 
-Reply with only JSON, no prose: {"entries": [{"heading": string|null, "name": string, "page": string}]}"""
+Reply with one entry per line and nothing else, as: heading | name | page
+Leave the heading empty when there is none. For example:
+Chicken | braised with figs | 350
+ | Ceviche, classic | 42"""
+
+PHOTO_SCHEMA = """CREATE TABLE IF NOT EXISTS photo_jobs (
+  id TEXT PRIMARY KEY, book_id INTEGER, status TEXT,  -- running | done | error
+  rows TEXT, warning TEXT, error TEXT, created REAL)"""
+PHOTO_JOB_LIMIT = 600  # seconds; a job still "running" after this died with its worker
 
 
-def call_claude(image_jpeg, media_type="image/jpeg"):
+def call_claude(image_jpeg, media_type="image/jpeg", effort=None):
+    """Returns (text, stop_reason)."""
+    effort = ANTHROPIC_EFFORT if effort is None else effort
     body = {
-        "model": ANTHROPIC_MODEL, "max_tokens": 8000,
+        "model": ANTHROPIC_MODEL, "max_tokens": 16000,
         "messages": [{"role": "user", "content": [
             {"type": "image", "source": {"type": "base64", "media_type": media_type,
                                          "data": base64.b64encode(image_jpeg).decode()}},
             {"type": "text", "text": PHOTO_PROMPT}]}],
     }
+    if effort:  # transcription needs little thinking, and thinking is slow
+        body["output_config"] = {"effort": effort}
     req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=json.dumps(body).encode(), headers={
         "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=170) as r:
+        with urllib.request.urlopen(req, timeout=PHOTO_JOB_LIMIT - 30) as r:
             data = json.load(r)
     except urllib.error.HTTPError as e:
         detail = e.read().decode(errors="replace")[:300]
+        if e.code == 400 and effort and ("effort" in detail or "output_config" in detail):
+            return call_claude(image_jpeg, media_type, effort="")  # a model without effort settings
         raise RuntimeError(f"Claude API error {e.code}: {detail}")
-    return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+    text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+    return text, data.get("stop_reason")
 
 
-def parse_claude_rows(text):
-    m = re.search(r"\{.*\}|\[.*\]", text, re.S)
-    if not m:
-        raise ValueError("No JSON in the response")
-    data = json.loads(m.group())
-    entries = data.get("entries", []) if isinstance(data, dict) else data
+def _photo_row(heading, name, page):
+    name, page = clean(str(name or "")), clean(str(page or ""))
+    if not name or not page or not re.search(r"\d", page):
+        return None
+    page = re.sub(r"\s*[-—]\s*", "–", re.sub(r"\s*,\s*", ", ", page))
+    return {"heading": clean(str(heading or "")) or None, "name": name, "page": page}
+
+
+def parse_claude_rows(text, truncated=False):
+    """Reads "heading | name | page" lines (or the JSON older prompts asked for). When the reply was cut off,
+    its last line may be partial ("Ceviche | 34" of "342"), so it's dropped."""
+    s = text.strip()
+    if s.startswith(("{", "[")) or s.startswith("```json"):
+        m = re.search(r"\{.*\}|\[.*\]", s, re.S)
+        if m:
+            try:
+                data = json.loads(m.group())
+            except ValueError:
+                data = None
+            if data is not None:
+                entries = data.get("entries", []) if isinstance(data, dict) else data
+                return [r for e in entries if isinstance(e, dict)
+                        for r in [_photo_row(e.get("heading"), e.get("name"), e.get("page"))] if r]
+    lines = [ln for ln in s.splitlines() if "|" in ln]
+    if truncated and lines and not text.endswith("\n"):
+        lines = lines[:-1]
     rows = []
-    for e in entries:
-        if not isinstance(e, dict):
-            continue
-        name, page = clean(str(e.get("name") or "")), clean(str(e.get("page") or ""))
-        if not name or not page or not re.search(r"\d", page):
-            continue
-        page = re.sub(r"\s*[-—]\s*", "–", re.sub(r"\s*,\s*", ", ", page))
-        heading = clean(str(e.get("heading") or "")) if e.get("heading") else None
-        rows.append({"heading": heading, "name": name, "page": page})
+    for ln in lines:
+        parts = [p.strip() for p in ln.strip().split("|")]
+        if len(parts) >= 5 and not parts[0] and not parts[-1]:
+            parts = parts[1:-1]  # a markdown table row: | heading | name | page |
+        heading, name, page = (None, parts[0], parts[1]) if len(parts) == 2 else (parts[0], "|".join(parts[1:-1]), parts[-1])
+        if fold(name) == "name" and fold(page) == "page":
+            continue  # a header line
+        r = _photo_row(re.sub(r"^[-*•]\s+", "", heading or ""), name, page)
+        if r:
+            rows.append(r)
     return rows
 
 
 def prepare_photo(raw):
     from PIL import Image, ImageOps
     img = ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert("L")  # grayscale: text only, smaller
-    img.thumbnail((1568, 1568))
-    out = io.BytesIO()
-    img.save(out, "JPEG", quality=88)
+    # Current models read images up to 2576px on the long side; a dense three-column index needs all of it
+    # (older models scale it down themselves).
+    img.thumbnail((2576, 2576))
+    img = ImageOps.autocontrast(img, cutoff=1)
+    for q in (88, 75, 60):
+        out = io.BytesIO()
+        img.save(out, "JPEG", quality=q)
+        if out.tell() < 3_500_000:  # the API takes up to 5 MB of base64 per image
+            break
     return out.getvalue()
+
+
+def run_photo_job(job_id, jpeg):
+    con = core.connect()
+    try:
+        try:
+            text, stop = call_claude(jpeg)
+            cut = stop == "max_tokens"
+            rows = parse_claude_rows(text, truncated=cut)
+            if not rows:
+                if stop == "refusal":
+                    raise RuntimeError("Claude declined to read that photo")
+                raise RuntimeError("no entries with page numbers found" + (f": {clean(text)[:200]}" if text.strip() else ""))
+            warning = (f"This page was cut off after {len(rows)} entries. Photograph the rest of the page "
+                       "(a column or two at a time) to get the remaining entries.") if cut else None
+            con.execute("UPDATE photo_jobs SET status='done', rows=?, warning=? WHERE id=?",
+                        (json.dumps(rows), warning, job_id))
+        except Exception as e:  # noqa: BLE001
+            con.execute("UPDATE photo_jobs SET status='error', error=? WHERE id=?",
+                        (f"Couldn't read the index from that photo: {e}", job_id))
+        con.commit()
+    finally:
+        con.close()
 
 
 @app.post("/admin/api/books/<int:book_id>/index/photo")
 @editor_required
 def index_photo(book_id):
-    if not db().execute("SELECT 1 FROM books WHERE id=?", (book_id,)).fetchone():
+    con = db()
+    if not con.execute("SELECT 1 FROM books WHERE id=?", (book_id,)).fetchone():
         abort(404)
     if not ANTHROPIC_API_KEY:
         return make_err(503, "Photo import needs ANTHROPIC_API_KEY in /etc/conf.d/cookbooks")
@@ -571,11 +643,29 @@ def index_photo(book_id):
         jpeg = prepare_photo(f.read())
     except Exception as e:  # noqa: BLE001
         return make_err(400, f"Couldn't read that image: {e}")
-    try:
-        rows = parse_claude_rows(call_claude(jpeg))
-    except Exception as e:  # noqa: BLE001
-        return make_err(502, f"Couldn't read the index from that photo: {e}")
-    return jsonify(rows=core.mark_duplicates(book_id, rows))
+    job_id = secrets.token_urlsafe(12)
+    con.execute("DELETE FROM photo_jobs WHERE created < ?", (time.time() - 86400,))
+    con.execute("INSERT INTO photo_jobs (id, book_id, status, created) VALUES (?,?,'running',?)",
+                (job_id, book_id, time.time()))
+    con.commit()
+    threading.Thread(target=run_photo_job, args=(job_id, jpeg), daemon=True).start()
+    return jsonify(job=job_id), 202
+
+
+@app.get("/admin/api/index/photo/<job_id>")
+@editor_required
+def index_photo_job(job_id):
+    j = db().execute("SELECT * FROM photo_jobs WHERE id=?", (job_id,)).fetchone()
+    if not j:
+        abort(404)
+    elapsed = int(time.time() - j["created"])
+    if j["status"] == "running":
+        if elapsed > PHOTO_JOB_LIMIT:
+            return jsonify(status="error", error="Reading that photo stopped partway (the server may have restarted). Try it again.")
+        return jsonify(status="running", elapsed=elapsed)
+    if j["status"] == "error":
+        return jsonify(status="error", error=j["error"])
+    return jsonify(status="done", warning=j["warning"], rows=core.mark_duplicates(j["book_id"], json.loads(j["rows"])))
 
 
 @app.get("/admin/api/features")

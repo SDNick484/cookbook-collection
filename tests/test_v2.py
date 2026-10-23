@@ -1,5 +1,5 @@
 """v2 features: Dinner Log link, photo import, suggestions, stats, shelf, MCP."""
-import io, json, os, sqlite3, sys, tempfile
+import io, json, os, sqlite3, sys, tempfile, time, urllib.error
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -175,30 +175,102 @@ def jpeg():
     return b.getvalue()
 
 
+def photo_job(c, bid, timeout=10):
+    """Uploads a photo and waits for its job, as the browser does."""
+    r = c.post(f"/admin/api/books/{bid}/index/photo", data={"file": (io.BytesIO(jpeg()), "p.jpg")},
+               content_type="multipart/form-data")
+    if r.status_code != 202:
+        return r.status_code, r.json
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        j = c.get(f"/admin/api/index/photo/{r.json['job']}").json
+        if j["status"] != "running":
+            return 202, j
+        time.sleep(0.05)
+    raise AssertionError("photo job never finished")
+
+
 def test_photo_import(c, monkeypatch):
     bid = c.post("/admin/api/books", json={"title": "Photo Book"}).json["id"]
-    up = lambda: c.post(f"/admin/api/books/{bid}/index/photo", data={"file": (io.BytesIO(jpeg()), "p.jpg")},
-                        content_type="multipart/form-data")
     monkeypatch.setattr(X, "ANTHROPIC_API_KEY", "")
-    assert up().status_code == 503
+    assert photo_job(c, bid)[0] == 503
     monkeypatch.setattr(X, "ANTHROPIC_API_KEY", "sk-test")
     seen = {}
 
     def fake(img, media_type="image/jpeg"):
         from PIL import Image
         seen["size"] = Image.open(io.BytesIO(img)).size
-        return 'Here you go:\n```json\n{"entries": [' \
-               '{"heading": "Chicken", "name": "roast, with bread salad", "page": "342 - 44"},' \
-               '{"heading": null, "name": "Braised Fennel", "page": "255"},' \
-               '{"heading": null, "name": "Braised Fennel", "page": "255"},' \
-               '{"heading": null, "name": "See also Potatoes", "page": ""}]}\n```'
+        return ("Chicken | roast, with bread salad | 342 - 44\n"
+                " | Braised Fennel | 255\n"
+                "| Braised Fennel | 255\n"
+                "Ají amarillo | Causa limeña | 51 ,88\n"
+                " | See also Potatoes | \n"), "end_turn"
     monkeypatch.setattr(X, "call_claude", fake)
-    rows = up().json["rows"]
-    assert max(seen["size"]) == 1568
+    _, j = photo_job(c, bid)
+    rows = j["rows"]
+    assert max(seen["size"]) == 2576 and j["warning"] is None
     assert rows[0] == {"heading": "Chicken", "name": "roast, with bread salad", "page": "342–44", "duplicate": False}
-    assert len(rows) == 3 and rows[2]["duplicate"] is True   # repeated within the same photo
-    monkeypatch.setattr(X, "call_claude", lambda *a, **k: "sorry, can't read that")
-    assert up().status_code == 502
+    assert rows[1] == {"heading": None, "name": "Braised Fennel", "page": "255", "duplicate": False}
+    assert rows[2]["duplicate"] is True   # repeated within the same photo
+    assert rows[3]["page"] == "51, 88" and len(rows) == 4
+
+    # an answer cut off at the output limit keeps every complete line, and says so
+    monkeypatch.setattr(X, "call_claude", lambda *a, **k: ("Anticuchos | de corazón | 101\nCeviche | clásico | 4", "max_tokens"))
+    _, j = photo_job(c, bid)
+    assert [r["name"] for r in j["rows"]] == ["de corazón"] and "cut off after 1 entries" in j["warning"]
+
+    monkeypatch.setattr(X, "call_claude", lambda *a, **k: ("sorry, can't read that", "end_turn"))
+    _, j = photo_job(c, bid)
+    assert j["status"] == "error" and "no entries" in j["error"]
+
+    def boom(*a, **k):
+        raise RuntimeError("Claude API error 529: overloaded")
+    monkeypatch.setattr(X, "call_claude", boom)
+    _, j = photo_job(c, bid)
+    assert j["status"] == "error" and "529" in j["error"]
+    assert c.get("/admin/api/index/photo/nope").status_code == 404
+
+
+def test_photo_rows_formats():
+    # the JSON the earlier prompt asked for still reads
+    rows = X.parse_claude_rows('```json\n{"entries": [{"heading": null, "name": "Lomo saltado", "page": "212"}]}\n```')
+    assert rows == [{"heading": None, "name": "Lomo saltado", "page": "212"}]
+    # a markdown table, with its header and divider lines
+    rows = X.parse_claude_rows("| heading | name | page |\n|---|---|---|\n| Potatoes | Papa a la huancaína | 66 |\n")
+    assert rows == [{"heading": "Potatoes", "name": "Papa a la huancaína", "page": "66"}]
+
+
+def test_photo_job_left_running(c):
+    """A job whose worker died (a restart mid-read) reports an error instead of waiting forever."""
+    con = A.connect()
+    con.execute("INSERT INTO photo_jobs (id, book_id, status, created) VALUES ('stale', 1, 'running', ?)",
+                (time.time() - X.PHOTO_JOB_LIMIT - 5,))
+    con.commit()
+    con.close()
+    j = c.get("/admin/api/index/photo/stale").json
+    assert j["status"] == "error" and "Try it again" in j["error"]
+
+
+def test_effort_falls_back(monkeypatch):
+    """A model that doesn't take an effort setting gets the request again without one."""
+    sent = []
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+    def urlopen(req, timeout):
+        body = json.loads(req.data)
+        sent.append(body.get("output_config"))
+        if "output_config" in body:
+            raise urllib.error.HTTPError(req.full_url, 400, "bad", {}, io.BytesIO(b'{"error": "output_config.effort: not supported"}'))
+        return Resp(json.dumps({"content": [{"type": "text", "text": "A | b | 1"}], "stop_reason": "end_turn"}).encode())
+    monkeypatch.setattr(X.urllib.request, "urlopen", urlopen)
+    assert X.call_claude(b"jpeg") == ("A | b | 1", "end_turn")
+    assert sent == [{"effort": "low"}, None]
 
 
 # ------------------------------------------------------------ MCP

@@ -111,7 +111,8 @@ def init_db():
     COVER_DIR.mkdir(parents=True, exist_ok=True)
     con = connect()
     con.executescript(SCHEMA)
-    import extras, eyb, ingredients, photos
+    import extras, eyb, ingredients, photos, online
+    online.migrate(con)
     extras.migrate(con)
     eyb.migrate(con)
     ingredients.migrate(con)
@@ -246,6 +247,7 @@ def search_words(q):
 
 PUBLIC_BOOK = ("id", "title", "subtitle", "isbn", "publisher", "year", "cuisine", "description", "cover", "signed", "format")
 PUBLIC_RECIPE = ("id", "book_id", "name", "heading", "page")
+PUBLIC_BOOKS = "b.kind IS NULL"  # cookbooks; recipe websites (kind 'online') are for editors only
 
 
 def book_dicts(rows, private):
@@ -375,6 +377,8 @@ def healthz():
 def list_books(private):
     q = request.args.get("q", "").strip()
     sql, args = "SELECT b.* FROM books b WHERE 1=1", []
+    if not private:
+        sql += " AND " + PUBLIC_BOOKS
     words, runs = search_words(q)
     if words:
         if HAS_FTS:
@@ -430,12 +434,13 @@ def list_books(private):
             a = b["authors"][0] if b["authors"] else "~"
             return fold(a.split()[-1] if " " in a else a), fold(b["title"])
         books.sort(key=sname)
-    return jsonify(books=books, total=db().execute("SELECT count(*) FROM books").fetchone()[0])
+    return jsonify(books=books, total=db().execute(
+        "SELECT count(*) FROM books b" + ("" if private else " WHERE " + PUBLIC_BOOKS)).fetchone()[0])
 
 
 def get_book(book_id, private):
     row = db().execute("SELECT * FROM books WHERE id=?", (book_id,)).fetchone()
-    if not row:
+    if not row or (not private and row["kind"]):
         abort(404)
     book = book_dicts([row], private)[0]
     recs = db().execute("SELECT * FROM recipes WHERE book_id=? ORDER BY page_sort IS NULL, page_sort, name",
@@ -458,7 +463,7 @@ def recipe_filter(params, private):
     """WHERE clause + args for recipe search. Each word of q must match the recipe's name/index heading or
     one of its ingredient tags; ingredient= limits to recipes that use it (see ingredients.ingredient_condition)."""
     import ingredients
-    where, args = [], []
+    where, args = ([] if private else [PUBLIC_BOOKS]), []
     q = (params.get("q") or "").strip()
     words, runs = search_words(q)
     for tok in (words + runs)[:8]:
@@ -529,8 +534,9 @@ def facets(private):
             "SELECT a.name, count(*) AS n FROM authors a JOIN book_authors ba ON ba.author_id=a.id GROUP BY a.id")),
         publishers=sorted((r[0] for r in d.execute(
             "SELECT DISTINCT publisher FROM books WHERE publisher IS NOT NULL")), key=fold) if private else [],
-        stats={"books": d.execute("SELECT count(*) FROM books").fetchone()[0],
-               "recipes": d.execute("SELECT count(*) FROM recipes").fetchone()[0]},
+        stats={"books": d.execute(f"SELECT count(*) FROM books b WHERE {PUBLIC_BOOKS}").fetchone()[0],  # cookbooks
+               "recipes": d.execute("SELECT count(*) FROM recipes r JOIN books b ON b.id=r.book_id"
+                                    + ("" if private else f" WHERE {PUBLIC_BOOKS}")).fetchone()[0]},
     )
 
 
@@ -1036,4 +1042,5 @@ else:
     import eyb  # noqa: E402,F401 — Eat Your Books import
     import ingredients  # noqa: E402,F401 — ingredient tags
     import photos  # noqa: E402,F401 — photos of dishes cooked from the books
+    import online  # noqa: E402,F401 — recipes from websites
     init_db()

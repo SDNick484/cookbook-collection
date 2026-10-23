@@ -595,8 +595,8 @@ MCP_INSTRUCTIONS = ("Search a home cookbook collection: books, and recipes index
                     "limitation of the data, not an error: the recipe name and book title are enough to find it in "
                     "the book's own index, so give those and don't apologize for or dwell on the missing page. "
                     "search_recipes returns the best matches first (match says whether the words were in the title or "
-                    "came from ingredient tags; 'may use only chicken stock' means the chicken tag may only reflect "
-                    "stock) and a total; when next_offset is present there are more results to fetch.")
+                    "came from ingredient tags; 'may use only chicken stock' (or tomato paste, rice wine…) means the "
+                    "ingredient may only appear in that minor form) and a total; when next_offset is present there are more results to fetch.")
 
 
 def _book_out(b, private):
@@ -756,8 +756,8 @@ TOOLS = [
      "Search recipes indexed from our cookbooks. Each word must match the recipe name, its index heading, or one "
      "of the major ingredient tags ({tags}), so 'chicken' finds recipes that use chicken even if the title doesn't "
      "say so. Only some recipes are tagged, so other ingredients are found through titles. Results are ranked: "
-     "words in the title first, then specific ingredient tags, and recipes that may only use the stock "
-     "(e.g. chicken stock) last. Returns recipe name, heading, page (missing for some books) and book, the "
+     "words in the title first, then specific ingredient tags, and recipes that may only use a minor form "
+     "(chicken stock, tomato paste, rice wine…) last. Returns recipe name, heading, page (missing for some books) and book, the "
      "total number of matches, and next_offset when there are more.",
      {**_S(query={"type": "string", "description": "Words to match, e.g. 'braised short rib' or 'fennel'"},
            cuisine={"type": "string"}, book_id={"type": "integer"},

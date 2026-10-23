@@ -343,25 +343,27 @@ def ingredient_commit():
 
 # ------------------------------------------------------------------ ranking
 # Search finds recipes by title or tag; ranking puts the ones that clearly use what was asked for first.
-# EYB's list for an ingredient includes recipes that only use its stock ("chicken" brings in osso buco made
-# with chicken stock). A tag named "<X> stock" or "<X> broth" marks those, so a recipe tagged Chicken *and*
-# Chicken stock (and with no chicken in its title or a more specific tag) ranks low: it may use only the stock.
-# It is never dropped, since most chicken soups and braises use both.
-STOCK_WORDS = {"stock", "broth"}
+# EYB's list for an ingredient includes recipes that only use a minor form of it: "chicken" brings in osso buco
+# made with chicken stock, "tomatoes" anything with a spoonful of tomato paste, "rice" Chinese dishes seasoned
+# with rice wine. A tag named "<main tag> <form>" (Chicken stock, Tomato paste, Rice wine, Duck fat…) marks
+# those, so a recipe tagged Chicken *and* Chicken stock, with no chicken in its title or a more specific tag,
+# ranks low: it may use only the stock. It is never dropped, since most chicken soups use both.
+MINOR_FORMS = {"stock", "broth", "fat", "paste", "sauce", "vinegar", "wine", "flour", "starch"}
 
 
 def tag_kinds(con):
-    """{tag id: (stemmed words, kind)}, kind 'stock' ("Chicken stock"), 'broad' (a tag that has a stock tag,
-    like Chicken) or 'plain'; and {broad tag id: its stock tag ids}."""
-    words = {iid: set(ingredient_words(name)) for iid, name in con.execute("SELECT id, name FROM ingredients")}
-    stocks = {iid: frozenset(w - STOCK_WORDS) for iid, w in words.items() if w & STOCK_WORDS and w - STOCK_WORDS}
-    kinds, stock_of = {}, {}
+    """{tag id: (stemmed words, kind, name)}, kind 'minor' (Chicken stock, Tomato paste), 'broad' (a tag that
+    has a minor form, like Chicken) or 'plain'; and {broad tag id: its minor-form tag ids}."""
+    names = dict(con.execute("SELECT id, name FROM ingredients").fetchall())
+    words = {iid: set(ingredient_words(name)) for iid, name in names.items()}
+    minors = {iid: frozenset(w - MINOR_FORMS) for iid, w in words.items() if w & MINOR_FORMS and w - MINOR_FORMS}
+    kinds, minor_of = {}, {}
     for iid, w in words.items():
-        mine = {sid for sid, base in stocks.items() if base == frozenset(w)}
-        kinds[iid] = (w, "stock" if iid in stocks else "broad" if mine else "plain")
+        mine = {mid for mid, base in minors.items() if base == frozenset(w)}
+        kinds[iid] = (w, "minor" if iid in minors else "broad" if mine else "plain", names[iid])
         if mine:
-            stock_of[iid] = mine
-    return kinds, stock_of
+            minor_of[iid] = mine
+    return kinds, minor_of
 
 
 def search_terms(q, ingredient):
@@ -386,41 +388,51 @@ def in_title(term, text):
 def ranked(con, base_sql, args, terms, by_book=False):
     """Every recipe matching `base_sql` (a "FROM recipes r JOIN books b ... WHERE ..." clause), best first, as
     [{id, score, match}]. Per term: 2 if it's in the title or index heading; 1½ if a tag gives it (Leeks, Chicken
-    pieces, or Chicken without Chicken stock); ¼ if only Chicken + Chicken stock do. +1 if every term is in the
-    title. So for "chicken leeks": both in the title (5), one in the title and one from a tag (3½), both from
-    tags (3), leeks in the title but the chicken maybe only stock (2¼). Ties, and searches without terms, go by book and page. by_book keeps each book's recipes together,
-    books with the best matches first (the website groups results under a heading per book)."""
+    pieces, Chicken without Chicken stock, or Chicken stock when the search names the stock too); ¼ if only
+    Chicken + one of its minor forms do. +1 if every term is in the title. So for "chicken leeks": both in the
+    title (5), one in the title and one from a tag (3½), both from tags (3), leeks in the title but the chicken
+    maybe only stock (2¼). Ties, and searches without terms, go by book and page. by_book keeps each book's
+    recipes together, books with the best matches first (the website groups results under a heading per book)."""
     rows = con.execute("SELECT r.id, r.name, r.heading, r.page_sort, b.id AS book_id, b.title" + base_sql, args).fetchall()
     tags = {}
     if terms and rows:
         for rid, iid in con.execute("SELECT ri.recipe_id, ri.ingredient_id FROM recipe_ingredients ri "
                                     "WHERE ri.recipe_id IN (SELECT r.id" + base_sql + ")", args):
             tags.setdefault(rid, set()).add(iid)
-    kinds, stock_of = tag_kinds(con) if terms else ({}, {})
+    kinds, minor_of = tag_kinds(con) if terms else ({}, {})
+    asked = set(terms)
     out = []
     for r in rows:
         text = fold(f"{r['name']} {r['heading'] or ''}")
         mine = tags.get(r["id"], set())
-        points, titled, maybe_stock = [], 0, []
+        points, titled, maybe_minor = [], 0, []
         for t in terms:
             if in_title(t, text):
                 points.append(2)
                 titled += 1
                 continue
-            best = 0
+            best, minor_names = 0, []
             for iid in mine:
-                w, kind = kinds.get(iid, (set(), "plain"))
-                if t in w and kind != "stock":
-                    best = max(best, 0.25 if kind == "broad" and stock_of[iid] & mine else 1.5)
+                w, kind, _ = kinds.get(iid, (set(), "plain", ""))
+                if t not in w:
+                    continue
+                if kind == "minor":  # Tomato paste counts only for a search that names the paste
+                    if w <= asked:
+                        best = max(best, 1.5)
+                elif kind == "broad" and minor_of[iid] & mine:  # Tomatoes + Tomato paste: maybe only the paste
+                    best = max(best, 0.25)
+                    minor_names += [kinds[m][2].lower() for m in sorted(minor_of[iid] & mine)]
+                else:
+                    best = max(best, 1.5)
             points.append(best)
             if best == 0.25:
-                maybe_stock.append(t)
+                maybe_minor += minor_names
         score = sum(points) + (1 if terms and titled == len(terms) else 0)
         match = None
         if terms:  # for the MCP: why it matched
             match = "title" if titled == len(terms) else "title and tags" if titled else "tags"
-            if maybe_stock:
-                match += "; may use only " + " and ".join(f"{t} stock" for t in maybe_stock)
+            if maybe_minor:
+                match += "; may use only " + " or ".join(dict.fromkeys(maybe_minor))
         out.append({"id": r["id"], "score": score, "match": match, "_book": r["book_id"],
                     "_key": (r["title"], r["page_sort"] is None, r["page_sort"] or 0, r["name"])})
     if by_book:

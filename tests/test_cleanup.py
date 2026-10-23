@@ -232,3 +232,51 @@ def test_ranking_chicken_and_leeks(c, book):
             con.execute("DELETE FROM ingredients WHERE id=?", (iid,))
         con.commit()
         con.close()
+
+
+def test_minor_forms_rank_low(c, book):
+    """Tomato paste, rice wine, chicken stock…: a recipe that may only use a minor form of the ingredient ranks
+    after ones that clearly use it, unless the search asks for that form."""
+    con = A.connect()
+    names = ("Tomatoes", "Tomato paste", "Rice", "Rice wine", "Rice vinegar", "Chicken", "Chicken stock", "Duck", "Duck fat")
+    ids = {n: A.name_id(con, "ingredients", n) for n in names}
+    con.execute(f"UPDATE ingredients SET hint=1 WHERE id IN ({','.join('?' * 5)})",
+                [ids[n] for n in ("Tomato paste", "Rice wine", "Rice vinegar", "Chicken stock", "Duck fat")])
+    con.commit()
+    recipes = {
+        "Panzanella": ["Tomatoes"],                                   # really tomatoes
+        "Braised short ribs": ["Tomatoes", "Tomato paste"],           # a spoonful of paste
+        "Red-cooked pork": ["Rice", "Rice wine"],                     # Shaoxing wine, no rice
+        "Sushi rice salad": ["Rice", "Rice vinegar"],                 # rice in the title: real rice
+        "Clay pot rice": ["Rice", "Rice wine"],                       # rice in the title: real rice
+        "Hot and sour soup": ["Chicken", "Chicken stock", "Rice", "Rice vinegar"],
+    }
+    rid = {}
+    try:
+        for name, tags in recipes.items():
+            rid[name] = c.post(f"/admin/api/books/{book}/recipes", json={"name": name}).json["id"]
+            for t in tags:
+                con.execute("INSERT INTO recipe_ingredients VALUES (?,?)", (rid[name], ids[t]))
+            con.commit()
+        order = lambda **q: [r["name"] for r in c.get("/api/recipes", query_string={"book": book, **q}).json["recipes"]]
+        assert order(q="tomatoes") == ["Panzanella", "Braised short ribs"]
+        assert order(q="tomato paste") == ["Braised short ribs"]          # asking for the paste: it counts fully
+        rice = order(q="rice")
+        assert rice[:2] == ["Clay pot rice", "Sushi rice salad"] and set(rice[2:]) == {"Hot and sour soup", "Red-cooked pork"}
+        # asking for rice wine: both recipes that use it, nothing that only has rice or vinegar
+        assert set(order(q="rice wine")) == {"Red-cooked pork", "Clay pot rice"}
+        assert set(order(ingredient="rice wine")) == {"Red-cooked pork", "Clay pot rice"}  # Rice wine, not Rice
+        mcp = lambda q: {r["name"]: r["match"] for r in A.app.test_client().post("/mcp", json={
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "search_recipes", "arguments": {
+                "query": q, "book_id": book}}}).json["result"]["structuredContent"]["recipes"]}
+        assert mcp("tomatoes")["Braised short ribs"] == "tags; may use only tomato paste"
+        assert mcp("rice")["Hot and sour soup"] == "tags; may use only rice vinegar"
+        assert mcp("chicken rice")["Hot and sour soup"] == "tags; may use only chicken stock or rice vinegar"
+        assert mcp("chicken stock")["Hot and sour soup"] == "tags"
+    finally:
+        for r in rid.values():
+            c.delete(f"/admin/api/recipes/{r}")
+        for iid in ids.values():
+            con.execute("DELETE FROM ingredients WHERE id=?", (iid,))
+        con.commit()
+        con.close()

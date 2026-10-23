@@ -12,7 +12,7 @@ Recipes in the file that aren't in the catalog yet (but whose book is) are added
 """
 import json, re
 
-from flask import abort, jsonify, request
+from flask import abort, jsonify, request, Response
 
 import app as core
 from app import app, db, editor_required, fold, make_err, page_sort, clean
@@ -246,34 +246,30 @@ def read_upload():
     return f.filename, rows
 
 
-@app.post("/admin/api/ingredients/preview")
-@editor_required
-def ingredient_preview():
-    filename, rows = read_upload()
-    name = clean_name(request.form.get("ingredient")) or guess_name(filename)
-    books = eyb.catalog()
-    groups = {}
+def book_groups(rows):
+    """EYB rows by book title: ({title: {author, count}}, {title: [rows]})."""
+    groups, by_title = {}, {}
     for r in rows:
         g = groups.setdefault(r["book_title"], {"author": r["author"], "count": 0})
         g["count"] += 1
-    matched = eyb.match_recipe_books(groups, books)
-    by_title = {}
-    for r in rows:
         by_title.setdefault(r["book_title"], []).append(r)
-    iid = ingredient_id(name) if name else None
-    tagged_already = {r[0] for r in db().execute(
-        "SELECT recipe_id FROM recipe_ingredients WHERE ingredient_id=?", (iid,))} if iid else set()
+    return groups, by_title
+
+
+def preview_groups(groups, by_title, matched, tagged_already, indexes):
+    """Per EYB book: which catalog book it matched and how many of its recipes would be tagged (existing),
+    added (new) or are tagged already. `indexes` caches BookRecipes per book between calls."""
     out = []
     for t, g in groups.items():
         b, method = matched[t]
         existing = new = already = 0
         if b:
-            idx = BookRecipes(db(), b["id"])
+            idx = indexes.get(b["id"]) or indexes.setdefault(b["id"], BookRecipes(db(), b["id"]))
             for r in by_title[t]:
                 rid = idx.find(r["name"], r["page"])
-                if rid is None:
+                if rid is None:  # would be added; a stand-in id (negative: never a real one) so repeats count once
                     new += 1
-                    idx.add(-new, r["name"], r["page"])
+                    idx.add(-1 - sum(len(x.exact) for x in indexes.values()), r["name"], r["page"])
                 elif rid in tagged_already:
                     already += 1
                 else:
@@ -281,6 +277,24 @@ def ingredient_preview():
         out.append({"eyb_title": t, "author": g["author"], "count": g["count"], "match": eyb.brief(b),
                     "method": method, "existing": existing, "new": new, "already": already})
     out.sort(key=lambda g: (g["match"] is not None, fold(g["eyb_title"])))
+    return out
+
+
+def tagged_with(name):
+    iid = ingredient_id(name) if name else None
+    return iid, ({r[0] for r in db().execute("SELECT recipe_id FROM recipe_ingredients WHERE ingredient_id=?", (iid,))}
+                 if iid else set())
+
+
+@app.post("/admin/api/ingredients/preview")
+@editor_required
+def ingredient_preview():
+    filename, rows = read_upload()
+    name = clean_name(request.form.get("ingredient")) or guess_name(filename)
+    books = eyb.catalog()
+    groups, by_title = book_groups(rows)
+    iid, tagged_already = tagged_with(name)
+    out = preview_groups(groups, by_title, eyb.match_recipe_books(groups, books), tagged_already, {})
     hint = db().execute("SELECT hint FROM ingredients WHERE id=?", (iid,)).fetchone()[0] if iid else None
     return jsonify(kind="ingredient", ingredient=name, exists=bool(iid), hint=None if hint is None else bool(hint),
                    groups=out, total=len(rows),
@@ -303,8 +317,23 @@ def ingredient_commit():
     if request.form.get("hint") in ("0", "1"):  # search hint only, or a chip on the catalog page
         con.execute("UPDATE ingredients SET hint=? WHERE id=?", (int(request.form["hint"]), iid))
     name, hint = con.execute("SELECT name, hint FROM ingredients WHERE id=?", (iid,)).fetchone()
+    created = {}
+    res = tag_rows(con, iid, rows, decisions, {}, created)
+    if isinstance(res, Response):
+        return res
+    tagged, added, skipped = res
+    eyb.merge_garbled(con)  # a good copy just added replaces any garbled one already here
+    con.commit()
+    total = con.execute("SELECT count(*) FROM recipe_ingredients WHERE ingredient_id=?", (iid,)).fetchone()[0]
+    return jsonify(kind="ingredient", ingredient=name, hint=bool(hint), tagged=tagged, added_recipes=added,
+                   skipped=skipped, created_books=len(created), total=total)
+
+
+def tag_rows(con, iid, rows, decisions, books, created):
+    """Tag EYB `rows` with ingredient `iid`, adding recipes that aren't in their book yet. decisions maps an EYB
+    book title to a book id, "create" or "skip"; `books` caches BookRecipes per book, `created` new books.
+    Returns (tagged, added, skipped), or an error response."""
     tagged = added = skipped = 0
-    books, created = {}, {}
     for r in rows:
         d = decisions.get(r["book_title"], "skip")
         if d == "create":
@@ -334,11 +363,157 @@ def ingredient_commit():
             books[bid].add(rid, r["name"], r["page"])
             added += 1
         tagged += con.execute("INSERT OR IGNORE INTO recipe_ingredients VALUES (?,?)", (rid, iid)).rowcount
-    eyb.merge_garbled(con)  # a good copy just added replaces any garbled one already here
+    return tagged, added, skipped
+
+
+# ------------------------------------------------------------------ zip of ingredient lists
+# Many EYB ingredient exports at once. Each CSV goes into the tag named after it ("Kale - all pages combined.csv"
+# -> Kale) unless the preview gives it another name; files given the same name are combined into one tag
+# ("chicken broth" and "white stock" -> Chicken stock). A tags.csv in the zip (columns file, tag, hint) can set
+# those names up front, and may list a file twice to feed two tags. Only books already in the catalog are used:
+# recipes from other books are skipped, so a bulk import never adds books.
+ZIP_MAX_FILES, ZIP_MAX_BYTES = 500, 100 * 1024 * 1024
+
+
+def read_zip():
+    """The uploaded zip -> ({file name: rows}, [manifest entries], [problems])."""
+    import io, zipfile
+    f = request.files.get("file")
+    if not f:
+        abort(make_err(400, "Choose a zip of CSV files exported from Eat Your Books"))
+    try:
+        z = zipfile.ZipFile(io.BytesIO(f.read()))
+    except zipfile.BadZipFile:
+        abort(make_err(400, "That isn't a zip file"))
+    entries = [i for i in z.infolist() if not i.is_dir() and i.filename.lower().endswith(".csv")
+               and "__MACOSX" not in i.filename and not i.filename.rsplit("/", 1)[-1].startswith(".")]
+    if len(entries) > ZIP_MAX_FILES or sum(i.file_size for i in entries) > ZIP_MAX_BYTES:
+        abort(make_err(400, f"That zip is too big (at most {ZIP_MAX_FILES} CSVs, 100 MB unzipped)"))
+    files, manifest, problems = {}, [], []
+    for i in sorted(entries, key=lambda i: fold(i.filename)):
+        name = i.filename.rsplit("/", 1)[-1]
+        raw = z.read(i)
+        head = eyb.decode(raw[:2000]).splitlines()[0].lower() if raw else ""
+        if "file" in head and "tag" in head and "recipe title" not in head:  # tags.csv: how to group the files
+            import csv
+            for row in csv.DictReader(io.StringIO(eyb.decode(raw))):
+                row = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
+                if row.get("file") and row.get("tag"):
+                    manifest.append({"file": row["file"], "tag": clean_name(row["tag"]),
+                                     "hint": row.get("hint", "").lower() not in ("no", "n", "0", "false", "chip")})
+            continue
+        try:
+            kind, rows = eyb.parse(raw)
+        except Exception:  # noqa: BLE001 — report it, keep going
+            kind, rows = None, []
+        if kind != "recipes":
+            problems.append(f"{name}: not an EYB recipe export")
+            continue
+        files[name] = rows
+    return files, manifest, problems
+
+
+def file_key(name):
+    """How tags.csv refers to a file: "demi-glace", "Demi-glace - all pages combined.csv" and "demi glace"
+    are all the same file."""
+    name = FILE_NOISE.sub(" ", re.sub(r"\.csv$", "", name, flags=re.I))
+    return " ".join(re.findall(r"[^\W_]+", fold(name)))
+
+
+def zip_plan(files, manifest, problems):
+    """[{file, tag, hint}] for the preview: from tags.csv where it names the file, else one per file, named
+    after it, a search hint unless the tag already exists as a catalog chip."""
+    keys = {file_key(f): f for f in files}
+    plan, covered = [], set()
+    for m in manifest:
+        f = keys.get(file_key(m["file"]))
+        if f:
+            plan.append({"file": f, "tag": m["tag"], "hint": m["hint"]})
+            covered.add(f)
+        else:
+            problems.append(f"tags.csv: no file for \u201c{m['file']}\u201d")
+    for f in files:
+        if f not in covered:
+            name = guess_name(f)
+            row = db().execute("SELECT hint FROM ingredients WHERE fold(name)=fold(?)", (name,)).fetchone()
+            plan.append({"file": f, "tag": name, "hint": bool(row[0]) if row else True})
+    return plan
+
+
+@app.post("/admin/api/ingredients/zip/preview")
+@editor_required
+def ingredient_zip_preview():
+    files, manifest, problems = read_zip()
+    if not files:
+        return make_err(400, "No EYB recipe exports in that zip" + (f" ({problems[0]})" if problems else ""))
+    books = eyb.catalog()
+    per_file = {f: book_groups(rows) for f, rows in files.items()}
+    all_groups = {}
+    for groups, _ in per_file.values():
+        for t, g in groups.items():
+            all_groups.setdefault(t, g)
+    matched = eyb.match_recipe_books(all_groups, books)  # one pass for every book named in the zip
+    tags = {}
+    out = []
+    for item in zip_plan(files, manifest, problems):
+        groups, by_title = per_file[item["file"]]
+        key = fold(item["tag"])
+        if key not in tags:
+            iid, already = tagged_with(item["tag"])
+            tags[key] = (iid, already, {})
+        iid, already, indexes = tags[key]
+        g = preview_groups(groups, by_title, matched, already, indexes)
+        unmatched = [x for x in g if not x["match"]]
+        out.append({**item, "exists": bool(iid), "recipes": sum(x["count"] for x in g),
+                    "existing": sum(x["existing"] for x in g), "new": sum(x["new"] for x in g),
+                    "already": sum(x["already"] for x in g), "skipped": sum(x["count"] for x in unmatched),
+                    "skipped_books": [x["eyb_title"] for x in unmatched]})
+    return jsonify(files=out, problems=problems, manifest=bool(manifest))
+
+
+@app.post("/admin/api/ingredients/zip/commit")
+@editor_required
+def ingredient_zip_commit():
+    """Tag everything in one go. plan: [{file, tag, hint}] from the preview (as edited); a file can appear twice."""
+    files, _, _ = read_zip()
+    try:
+        plan = json.loads(request.form.get("plan") or "[]")
+    except ValueError:
+        return make_err(400, "Bad plan")
+    plan = [p for p in plan if p.get("file") in files and clean_name(p.get("tag"))]
+    if not plan:
+        return make_err(400, "Nothing to import: give at least one file a tag name")
+    con = db()
+    books = eyb.catalog()
+    all_groups = {}
+    for p in plan:
+        for t, g in book_groups(files[p["file"]])[0].items():
+            all_groups.setdefault(t, g)
+    decisions = {t: (b["id"] if b else "skip") for t, (b, _) in eyb.match_recipe_books(all_groups, books).items()}
+    results, indexes = {}, {}
+    for p in plan:
+        name = clean_name(p["tag"])
+        key = fold(name)
+        if key not in results:
+            iid = core.name_id(con, "ingredients", name)
+            con.execute("UPDATE ingredients SET hint=? WHERE id=?", (1 if p.get("hint") else 0, iid))
+            results[key] = {"iid": iid, "files": [], "tagged": 0, "added": 0, "skipped": 0}
+        res = results[key]
+        out = tag_rows(con, res["iid"], files[p["file"]], decisions, indexes, {})
+        if isinstance(out, Response):
+            return out
+        res["files"].append(p["file"])
+        for k, v in zip(("tagged", "added", "skipped"), out):
+            res[k] += v
+    eyb.merge_garbled(con)
     con.commit()
-    total = con.execute("SELECT count(*) FROM recipe_ingredients WHERE ingredient_id=?", (iid,)).fetchone()[0]
-    return jsonify(kind="ingredient", ingredient=name, hint=bool(hint), tagged=tagged, added_recipes=added,
-                   skipped=skipped, created_books=len(created), total=total)
+    summary = []
+    for res in results.values():
+        name, hint = con.execute("SELECT name, hint FROM ingredients WHERE id=?", (res["iid"],)).fetchone()
+        total = con.execute("SELECT count(*) FROM recipe_ingredients WHERE ingredient_id=?", (res["iid"],)).fetchone()[0]
+        summary.append({"tag": name, "hint": bool(hint), "files": res["files"], "tagged": res["tagged"],
+                        "added_recipes": res["added"], "skipped": res["skipped"], "total": total})
+    return jsonify(tags=sorted(summary, key=lambda x: fold(x["tag"])))
 
 
 # ------------------------------------------------------------------ ranking

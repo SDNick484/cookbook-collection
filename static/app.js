@@ -771,7 +771,11 @@ async function eybView() {
         <label class="btn primary">Choose ingredient CSV<input id="ingfile" type="file" accept=".csv,text/csv" hidden></label></div>
       <label class="chk"><input type="checkbox" id="inghint" checked> Search hint only (no chip on the catalog page)</label>
       <datalist id="dl-ing"></datalist>
-      <div id="ingprev"></div><div id="inglist" style="margin-top:12px"></div></div>
+      <div id="ingprev"></div>
+      <div class="zipimp"><label class="btn">Choose a zip of CSVs<input id="ingzip" type="file" accept=".zip,application/zip" hidden></label>
+        <span class="small muted">Many lists at once, one CSV per ingredient. Files given the same tag name are combined into one tag
+        (“chicken broth” and “white stock” → Chicken stock). Or add a <code>tags.csv</code> to the zip with columns <code>file,tag,hint</code>.</span></div>
+      <div id="zipprev"></div><div id="inglist" style="margin-top:12px"></div></div>
     <div class="panel"><h3>Covers & details</h3><p class="small muted" id="enrichmsg" style="margin-top:0">Checking…</p>
       <div class="actions" style="margin:0"><button id="enrich">Fetch covers & details</button></div></div>`;
   const status = async () => {
@@ -791,8 +795,10 @@ async function eybView() {
     }
     toast(`Done: ${covers} covers added`); S.facets = null; status();
   };
+  let ingNames = [];
   const ingList = async () => {
     const { ingredients } = await api("ingredients");
+    ingNames = ingredients.map((i) => i.name);
     $("#dl-ing").innerHTML = ingredients.map((i) => `<option value="${esc(i.name)}">`).join("");
     $("#inglist").innerHTML = ingredients.length ? `<ul class="rlist">${ingredients.map((i) => `<li data-id="${i.id}" data-hint="${i.hint ? 1 : 0}"><div class="rn">
       <a href="#/?ingredient=${encodeURIComponent(i.name)}">${esc(i.name)}</a>${i.hint ? ` <span class="small muted">· search hint</span>` : ""}</div><span class="pg">${i.n.toLocaleString()} recipes</span>
@@ -846,6 +852,64 @@ async function eybView() {
     };
   };
   $("#ingfile").onchange = (e) => { ingfile = e.target.files[0]; e.target.value = ""; if (ingfile) ingPreview(); };
+  // A zip of ingredient lists: preview every file with an editable tag name, then tag them all at once.
+  const MINOR = /^(.+)\s(stock|broth|fat|paste|sauce|vinegar|wine|flour|starch)$/i;  // see MINOR_FORMS in ingredients.py
+  const sing = (w) => w.toLowerCase().replace(/(oe|ie)?s$/, (m, x) => (x === "ie" ? "y" : x === "oe" ? "o" : ""));
+  // "Tomato paste" -> "Tomatoes", when that tag exists (only then does it demote anything)
+  const minorOf = (tag) => { const m = tag.trim().match(MINOR); return m ? ingNames.find((n) => sing(n) === sing(m[1])) : null; };
+  let zipfile = null;
+  const zipPreview = async () => {
+    const box = $("#zipprev");
+    box.innerHTML = `<p class="small muted">Reading the zip…</p>`;
+    const fd = new FormData(); fd.append("file", zipfile);
+    let r;
+    try { r = await api("ingredients/zip/preview", { method: "POST", body: fd }); } catch (err) { box.innerHTML = ""; toast(err.message); return; }
+    const short = (f) => f.replace(/\s*-\s*all pages combined/i, "").replace(/\.csv$/i, "");
+    const key = (t) => t.trim().toLowerCase();
+    box.innerHTML = `<p class="small" id="zipsum"></p>
+      ${r.problems.length ? `<p class="small review">${r.problems.map(esc).join("<br>")}</p>` : ""}
+      <div class="overflow"><table class="preview zip"><thead><tr><th></th><th>File</th><th>Tag</th><th>Search hint</th><th>Recipes</th></tr></thead><tbody>
+      ${r.files.map((f, i) => `<tr data-i="${i}"><td><input type="checkbox" class="zin" checked aria-label="Import this file"></td>
+        <td>${esc(short(f.file))}</td>
+        <td><input class="ztag" list="dl-ing" value="${esc(f.tag)}" aria-label="Tag name"><div class="small muted zminor"></div></td>
+        <td><input type="checkbox" class="zhint" ${f.hint ? "checked" : ""} aria-label="Search hint only"></td>
+        <td class="small">${f.recipes.toLocaleString()}: ${(f.existing + f.new).toLocaleString()} to tag${f.new ? ` (${f.new.toLocaleString()} new)` : ""}${f.already ? `, ${f.already.toLocaleString()} already` : ""}${f.skipped ? `, <span title="${esc(f.skipped_books.join(", "))}">${f.skipped.toLocaleString()} skipped</span>` : ""}</td></tr>`).join("")}
+      </tbody></table></div>
+      <p class="small muted">“Skipped” recipes are from books that aren't in your catalog (hover to see which); a zip import never adds books.</p>
+      <div class="actions"><button class="primary" id="zipgo">Tag recipes</button></div>`;
+    const rows = $$("#zipprev tr[data-i]");
+    const refresh = () => {
+      const on = rows.filter((tr) => $(".zin", tr).checked && $(".ztag", tr).value.trim());
+      const tags = new Set(on.map((tr) => key($(".ztag", tr).value)));
+      $("#zipsum").innerHTML = `<strong>${on.length} of ${rows.length} files</strong> → ${tags.size} tag${tags.size === 1 ? "" : "s"}.`;
+      rows.forEach((tr) => { const m = minorOf($(".ztag", tr).value); $(".zminor", tr).textContent = m ? `↓ minor form of ${m}` : ""; });
+    };
+    rows.forEach((tr) => {
+      $(".zin", tr).onchange = refresh;
+      $(".ztag", tr).oninput = refresh;
+      $(".zhint", tr).onchange = () => {  // one tag is either a hint or a chip: keep its files in step
+        const k = key($(".ztag", tr).value);
+        rows.forEach((o) => { if (key($(".ztag", o).value) === k) $(".zhint", o).checked = $(".zhint", tr).checked; });
+      };
+    });
+    refresh();
+    $("#zipgo").onclick = async () => {
+      const plan = rows.filter((tr) => $(".zin", tr).checked && $(".ztag", tr).value.trim())
+        .map((tr) => ({ file: r.files[+tr.dataset.i].file, tag: $(".ztag", tr).value.trim(), hint: $(".zhint", tr).checked }));
+      if (!plan.length) { toast("Nothing selected"); return; }
+      const fd2 = new FormData(); fd2.append("file", zipfile); fd2.append("plan", JSON.stringify(plan));
+      $("#zipgo").disabled = true; $("#zipgo").textContent = "Tagging…";
+      try {
+        const res = await api("ingredients/zip/commit", { method: "POST", body: fd2 });
+        box.innerHTML = `<div class="panel" style="margin:12px 0 0"><strong>Done:</strong> ${res.tags.length} tag${res.tags.length === 1 ? "" : "s"} updated.
+          <ul class="rlist">${res.tags.map((t) => `<li><div class="rn"><a href="#/?ingredient=${encodeURIComponent(t.tag)}">${esc(t.tag)}</a>${t.hint ? ` <span class="small muted">· search hint</span>` : ""}
+            <div class="bk">${t.files.length} file${t.files.length === 1 ? "" : "s"} · ${t.tagged.toLocaleString()} tagged${t.added_recipes ? ` (${t.added_recipes.toLocaleString()} new recipes)` : ""}</div></div>
+            <span class="pg">${t.total.toLocaleString()} in all</span></li>`).join("")}</ul></div>`;
+        S.ingredients = null; S.facets = null; zipfile = null; ingList();
+      } catch (err) { toast(err.message); $("#zipgo").disabled = false; $("#zipgo").textContent = "Tag recipes"; }
+    };
+  };
+  $("#ingzip").onchange = (e) => { zipfile = e.target.files[0]; e.target.value = ""; if (zipfile) zipPreview(); };
   let file = null;
   $("#eybfile").onchange = async (e) => {
     file = e.target.files[0]; e.target.value = "";

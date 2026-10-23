@@ -31,6 +31,9 @@ CREATE INDEX IF NOT EXISTS recipe_ingredients_ing ON recipe_ingredients(ingredie
 
 def migrate(con):
     con.executescript(SCHEMA)
+    if "hint" not in [r[1] for r in con.execute("PRAGMA table_info(ingredients)")]:
+        # 1 = a search hint (zucchini, kale…): found by search and the MCP, but no chip on the catalog page
+        con.execute("ALTER TABLE ingredients ADD COLUMN hint INTEGER NOT NULL DEFAULT 0")
     tidy_names(con)
 
 
@@ -158,18 +161,31 @@ def ingredient_condition(con, name):
 
 
 def list_ingredients(private=False):
+    """The ingredient tags with how many recipes each finds. Search hints are listed for editors only
+    (to manage them); the public catalog only ever shows the major tags as chips."""
     out = []
-    for r in db().execute("SELECT id, name FROM ingredients").fetchall():
+    for r in db().execute("SELECT id, name, hint FROM ingredients" + ("" if private else " WHERE hint=0")).fetchall():
         cond, args = ingredient_condition(db(), r["name"])  # n = what picking the chip lists: tagged or in the title
         if not private:
             cond += f" AND r.book_id IN (SELECT b.id FROM books b WHERE {core.PUBLIC_BOOKS})"
-        out.append({"id": r["id"], "name": r["name"],
+        out.append({"id": r["id"], "name": r["name"], "hint": bool(r["hint"]),
                     "n": db().execute(f"SELECT count(*) FROM recipes r WHERE {cond}", args).fetchone()[0]})
     return jsonify(ingredients=sorted(out, key=lambda r: fold(r["name"])))
 
 
 app.add_url_rule("/api/ingredients", "ingredients_public", list_ingredients)
 app.add_url_rule("/admin/api/ingredients", "ingredients_private", editor_required(lambda: list_ingredients(True)))
+
+
+@app.put("/admin/api/ingredients/<int:iid>")
+@editor_required
+def update_ingredient(iid):
+    """Switch a tag between a catalog chip and a search hint: {"hint": true|false}."""
+    hint = 1 if (request.get_json(force=True) or {}).get("hint") else 0
+    if not db().execute("UPDATE ingredients SET hint=? WHERE id=?", (hint, iid)).rowcount:
+        return make_err(404, "No such ingredient")
+    db().commit()
+    return jsonify(id=iid, hint=bool(hint))
 
 
 @app.delete("/admin/api/ingredients/<int:iid>")
@@ -262,7 +278,9 @@ def ingredient_preview():
         out.append({"eyb_title": t, "author": g["author"], "count": g["count"], "match": eyb.brief(b),
                     "method": method, "existing": existing, "new": new, "already": already})
     out.sort(key=lambda g: (g["match"] is not None, fold(g["eyb_title"])))
-    return jsonify(kind="ingredient", ingredient=name, exists=bool(iid), groups=out, total=len(rows),
+    hint = db().execute("SELECT hint FROM ingredients WHERE id=?", (iid,)).fetchone()[0] if iid else None
+    return jsonify(kind="ingredient", ingredient=name, exists=bool(iid), hint=None if hint is None else bool(hint),
+                   groups=out, total=len(rows),
                    books=[{"id": b["id"], "title": b["title"]} for b in sorted(books, key=lambda b: fold(b["title"]))])
 
 
@@ -279,7 +297,9 @@ def ingredient_commit():
         return make_err(400, "Bad decisions")
     con = db()
     iid = core.name_id(con, "ingredients", name)
-    name = con.execute("SELECT name FROM ingredients WHERE id=?", (iid,)).fetchone()[0]
+    if request.form.get("hint") in ("0", "1"):  # search hint only, or a chip on the catalog page
+        con.execute("UPDATE ingredients SET hint=? WHERE id=?", (int(request.form["hint"]), iid))
+    name, hint = con.execute("SELECT name, hint FROM ingredients WHERE id=?", (iid,)).fetchone()
     tagged = added = skipped = 0
     books, created = {}, {}
     for r in rows:
@@ -314,5 +334,5 @@ def ingredient_commit():
     eyb.merge_garbled(con)  # a good copy just added replaces any garbled one already here
     con.commit()
     total = con.execute("SELECT count(*) FROM recipe_ingredients WHERE ingredient_id=?", (iid,)).fetchone()[0]
-    return jsonify(kind="ingredient", ingredient=name, tagged=tagged, added_recipes=added, skipped=skipped,
-                   created_books=len(created), total=total)
+    return jsonify(kind="ingredient", ingredient=name, hint=bool(hint), tagged=tagged, added_recipes=added,
+                   skipped=skipped, created_books=len(created), total=total)

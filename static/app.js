@@ -29,6 +29,7 @@ const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = se
 const SPINES = ["#7a3b2e", "#2f5d50", "#3f4e78", "#8a6a2c", "#5b3a5e", "#2d5a73", "#6b4a32", "#4a6a3a", "#8b3c4f", "#355c5c"];
 function spine(t) { let h = 0; for (const c of t || "") h = (h * 31 + c.charCodeAt(0)) >>> 0; return SPINES[h % SPINES.length]; }
 function coverHTML(b) {
+  if (b.kind === "online" && !b.cover) return `<div class="cover ph web"><span class="t">${esc(b.title)}</span><span class="a">🌐 ${esc(b.site || "")}</span></div>`;
   if (b.cover) return `<div class="cover"><img loading="lazy" src="/covers/${esc(b.cover)}" alt=""></div>`;
   return `<div class="cover ph" style="background:${spine(b.title)}"><span class="t">${esc(b.title)}</span><span class="a">${esc((b.authors || [])[0] || "")}</span></div>`;
 }
@@ -59,6 +60,7 @@ async function route() {
     if (path === "cook" && ADMIN) return await cookView();
     if (path === "stats" && ADMIN) return await statsView();
     if (path === "eyb" && ADMIN) return await eybView();
+    if (path === "links" && ADMIN) return await linksView();
     if (qs) { const p = new URLSearchParams(qs); for (const k of ["q", "cuisine", "tag", "author", "publisher", "ingredient"]) S[k] = p.get(k) || ""; if (p.get("sort")) S.sort = p.get("sort"); }
     return await homeView();
   } catch (e) {
@@ -70,7 +72,7 @@ window.addEventListener("hashchange", route);
 /* ---------- home ---------- */
 async function homeView() {
   if (!S.facets) S.facets = await api("facets");
-  if (!S.ingredients) { try { S.ingredients = (await api("/api/ingredients")).ingredients.filter((i) => i.n); } catch { S.ingredients = []; } }
+  if (!S.ingredients) { try { S.ingredients = (await api("ingredients")).ingredients.filter((i) => i.n); } catch { S.ingredients = []; } }
   const f = S.facets;
   const opt = (arr, cur, label) => `<option value="">${label}</option>` +
     arr.map((x) => `<option value="${esc(x.name)}" ${x.name === cur ? "selected" : ""}>${esc(x.name)} (${x.n})</option>`).join("");
@@ -114,7 +116,7 @@ async function homeView() {
     $("#summary").innerHTML = `<span>${rc.count ? `${rc.count.toLocaleString()} recipe${rc.count > 1 ? "s" : ""} · ` : ""}${nb}</span>${chips.join("")}`;
     $$("[data-clear]").forEach((b) => b.onclick = () => { S[b.dataset.clear] = ""; homeView(); });
     const recipeLine = (r) => `<li><div class="rn"><a href="#/book/${r.book_id}">${r.heading ? `<span class="rh">${esc(r.heading)} · </span>` : ""}${esc(r.name)}</a></div>
-        <span class="pg">${r.page ? "p. " + esc(r.page) : ""}</span></li>`;
+        ${whereHTML(r)}</li>`;
     if (byBook) {
       const ing = esc(S.ingredient.toLowerCase());
       $("#recipes").innerHTML = rc.count ? `
@@ -210,6 +212,9 @@ function rateWidget(el, value, save) {
   };
   $(".clear", el).onclick = () => set(null);
 }
+// Where to find a recipe: the page in the book, or a link for one saved from a website.
+const whereHTML = (r) => r.url ? `<a class="pg web" href="${esc(r.url)}" target="_blank" rel="noopener" title="Open the recipe on ${esc(r.book_title || S.bookTitle || "the site")}">Open ↗</a>`
+  : `<span class="pg">${r.page ? "p. " + esc(r.page) : ""}</span>`;
 function recipeRow(r) {
   const extra = [];
   if (r.cooked_count) extra.push(`<span class="cooked">Cooked ${r.cooked_count}×${r.cooked_avg != null ? ` · <span class="rating">${num(r.cooked_avg)}/10</span>` : ""} · ${fmtDay(r.cooked_last)}</span>`);
@@ -219,9 +224,9 @@ function recipeRow(r) {
   const nph = (S.bookPhotos || []).filter((p) => p.recipe_id === r.id).length;
   return `<li data-id="${r.id}"><div class="rn">${r.heading ? `<span class="rh">${esc(r.heading)} · </span>` : ""}${esc(r.name)}
     ${ADMIN && extra.length ? `<div class="extra">${extra.join(" · ")}</div>` : ""}</div>
-    <span class="pg">${r.page ? "p. " + esc(r.page) : ""}</span>
+    ${whereHTML(r)}
     ${ADMIN ? `<span class="acts">${S.features && S.features.dinnerlog_url && S.bookTitle ? `<a class="log" title="Log this dinner in Dinner Log" target="_blank" rel="noopener"
-        href="${esc(S.features.dinnerlog_url)}/new?source_type=cookbook&source_title=${encodeURIComponent(S.bookTitle)}&source_detail=${encodeURIComponent(r.page || "")}&name=${encodeURIComponent(r.heading && r.name[0] === r.name[0].toLowerCase() ? r.heading + ", " + r.name : r.name)}">🍽</a>` : ""}
+        href="${esc(S.features.dinnerlog_url)}/new?source_type=cookbook&source_title=${encodeURIComponent(S.bookTitle)}&source_detail=${encodeURIComponent(r.page || r.url || "")}&name=${encodeURIComponent(r.heading && r.name[0] === r.name[0].toLowerCase() ? r.heading + ", " + r.name : r.name)}">🍽</a>` : ""}
       <button title="${nph ? `${nph} photo${nph > 1 ? "s" : ""}` : "Add photos"}" class="pho ${nph ? "on" : ""}">📷${nph ? `<span class="n">${nph}</span>` : ""}</button>
       <button title="Want to try" class="want ${r.want_to_try ? "on" : ""}">${r.want_to_try ? "★" : "☆"}</button>
       <button title="Edit" class="edit">✎</button></span>` : ""}</li>`;
@@ -238,6 +243,7 @@ async function bookView(id) {
   if (b.isbn) rows.push(["ISBN", esc(b.isbn)]);
   if (b.format) rows.push(["Format", esc(b.format)]);
   if (b.signed) rows.push(["", "Signed copy"]);
+  if (b.kind === "online") rows.push(["Website", `<a href="https://${esc(b.site)}" target="_blank" rel="noopener">${esc(b.site)} ↗</a>`]);
   const priv = ADMIN ? [
     b.status && b.status !== "owned" ? `<div><strong>${STATUS[b.status]}</strong>${b.status === "out" && b.out_since ? " since " + fmtDay(b.out_since) : ""}${b.loaned_to ? " to " + esc(b.loaned_to) : ""}</div>` : "",
     b.cooked_count ? `<div>Cooked from ${b.cooked_count}× (Dinner Log), last ${fmtDay(b.cooked_last)}</div>` : "",
@@ -254,7 +260,7 @@ async function bookView(id) {
       <div>
         <h1>${esc(b.title)}</h1>
         <div class="muted">${(b.authors || []).map((a) => `<a href="#/?author=${encodeURIComponent(a)}">${esc(a)}</a>`).join(", ")}</div>
-        ${ADMIN ? `<div class="rate" id="rate">
+        ${ADMIN && b.kind !== "online" ? `<div class="rate" id="rate">
           <span class="stars big" role="slider" tabindex="0" aria-label="Book rating" aria-valuemin="0" aria-valuemax="5"
             aria-valuenow="${b.rating ?? 0}" aria-valuetext="${starLabel(b.rating)}"><span class="on" style="width:${(b.rating || 0) * 20}%">★★★★★</span>☆☆☆☆☆</span>
           <span class="ratev small muted">${b.rating == null ? "Not rated" : num(b.rating)}</span>
@@ -263,7 +269,9 @@ async function bookView(id) {
         ${b.tags.length ? `<div class="tags">${b.tags.map((t) => `<a class="chip" href="#/?tag=${encodeURIComponent(t)}">${esc(t)}</a>`).join("")}</div>` : ""}
         ${b.description ? `<p class="desc">${esc(b.description)}</p>` : ""}
         ${priv ? `<div class="private">${priv}</div>` : ""}
-        ${ADMIN ? `<div class="actions"><button id="shelf" class="${b.status === "out" ? "primary" : ""}">${b.status === "out" ? "Put back on shelf" : "Pulled out"}</button>
+        ${ADMIN && b.kind === "online" ? `<p class="small muted">Recipes saved from this website: each one opens on the site, where you're signed in.</p>
+          <div class="actions"><a class="btn primary" href="#/links">Add recipes from links</a><a class="btn" href="#/book/${id}/edit">Edit</a></div>` : ""}
+        ${ADMIN && b.kind !== "online" ? `<div class="actions"><button id="shelf" class="${b.status === "out" ? "primary" : ""}">${b.status === "out" ? "Put back on shelf" : "Pulled out"}</button>
           ${b.status === "wanted" ? `<button id="wish" class="primary">Add to a wish list…</button>` : ""}
           <a class="btn" href="#/book/${id}/edit">Edit book</a>
           <a class="btn" href="#/book/${id}/index">Import index</a><button id="addr">Add recipe</button></div>` : ""}
@@ -284,9 +292,9 @@ async function bookView(id) {
   };
   if (!ADMIN) return;
   $$(".photos .ph").forEach((el) => el.onclick = () => lightbox(S.bookPhotos, +el.dataset.i));
-  rateWidget($("#rate"), b.rating, (v) => api("books/" + id, { method: "PUT", body: { rating: v } }));
-  $("#addr").onclick = () => recipeDialog(null, id, () => bookView(id));
-  $("#shelf").onclick = async () => {
+  if ($("#rate")) rateWidget($("#rate"), b.rating, (v) => api("books/" + id, { method: "PUT", body: { rating: v } }));
+  if ($("#addr")) $("#addr").onclick = () => recipeDialog(null, id, () => bookView(id));
+  if ($("#shelf")) $("#shelf").onclick = async () => {  // cookbooks only, not websites
     await api(`books/${id}/shelf`, { method: "POST", body: { out: b.status !== "out" } });
     toast(b.status === "out" ? "Back on the shelf" : "Marked as pulled out"); bookView(id);
   };
@@ -644,7 +652,7 @@ async function tryView() {
   view.innerHTML = `<h1 style="margin-top:18px">Want to try <span class="muted small">${count}</span></h1>
     ${Object.entries(by).map(([t, g]) => `<div class="section-h"><h2><a href="#/book/${g.id}">${esc(t)}</a></h2></div>
       <ul class="rlist">${g.list.map((r) => `<li><div class="rn">${r.heading ? `<span class="rh">${esc(r.heading)} · </span>` : ""}${esc(r.name)}</div>
-      <span class="pg">${r.page ? "p. " + esc(r.page) : ""}</span></li>`).join("")}</ul>`).join("") || `<div class="empty">Star recipes on a book's page to add them here.</div>`}`;
+      ${whereHTML(r)}</li>`).join("")}</ul>`).join("") || `<div class="empty">Star recipes on a book's page to add them here.</div>`}`;
 }
 async function reviewView() {
   const [{ books }, { recipes: garbled, merged }] = await Promise.all([api("books?review=1&sort=title"), api("recipes/garbled")]);
@@ -670,6 +678,9 @@ async function moreView() {
     <div class="panel"><h3>Import from Eat Your Books</h3>
       <p class="small muted" style="margin-top:0">Bring in your EYB Bookshelf (ISBNs, formats) and indexed recipes, then fetch covers.</p>
       <a class="btn primary" href="#/eyb">Open importer</a></div>
+    <div class="panel"><h3>Recipes from websites</h3>
+      <p class="small muted" style="margin-top:0">Save recipes from NYT Cooking and other sites by their links: your whole Recipe Box at once, or one at a time from your phone's share sheet.</p>
+      <a class="btn primary" href="#/links">Add from links</a></div>
     <div class="panel"><h3>Lists</h3><div class="actions" style="margin:0">
       <a class="btn" href="#/try">Want to try</a><a class="btn" href="#/review">Needs review</a>
       <a class="btn" href="#/stats">Dinner Log matching</a></div></div>
@@ -779,7 +790,7 @@ async function eybView() {
     toast(`Done: ${covers} covers added`); S.facets = null; status();
   };
   const ingList = async () => {
-    const { ingredients } = await api("/api/ingredients");
+    const { ingredients } = await api("ingredients");
     $("#dl-ing").innerHTML = ingredients.map((i) => `<option value="${esc(i.name)}">`).join("");
     $("#inglist").innerHTML = ingredients.length ? `<ul class="rlist">${ingredients.map((i) => `<li data-id="${i.id}"><div class="rn">
       <a href="#/?ingredient=${encodeURIComponent(i.name)}">${esc(i.name)}</a></div><span class="pg">${i.n.toLocaleString()} recipes</span>
@@ -915,8 +926,8 @@ async function cookView() {
     const p = new URLSearchParams({ mode: c.mode, n: 5 }); if (c.cuisine) p.set("cuisine", c.cuisine); if (c.tag) p.set("tag", c.tag);
     const r = await api("suggest?" + p);
     $("#pool").textContent = r.pool ? `${r.label}: ${r.pool.toLocaleString()} recipes to choose from` : "";
-    $("#ideas").innerHTML = r.recipes.length ? r.recipes.map((x) => `<a class="idea" href="#/book/${x.book_id}">
-        <div class="ib">${esc(x.book_title)}${x.page ? ` · p. ${esc(x.page)}` : ""}</div>
+    $("#ideas").innerHTML = r.recipes.length ? r.recipes.map((x) => `<a class="idea" ${x.url ? `href="${esc(x.url)}" target="_blank" rel="noopener"` : `href="#/book/${x.book_id}"`}>
+        <div class="ib">${esc(x.book_title)}${x.page ? ` · p. ${esc(x.page)}` : x.url ? " ↗" : ""}</div>
         <div class="in">${x.heading ? `<span class="rh">${esc(x.heading)} · </span>` : ""}${esc(x.name)}</div>
         <div class="extra">${[x.cooked_count ? `cooked ${x.cooked_count}×, last ${fmtDay(x.cooked_last)}` : "",
           x.cooked_avg != null ? `<span class="rating">${num(x.cooked_avg)}/10</span>` : x.rating != null ? `<span class="rating">${num(x.rating)}/10</span>` : "",
@@ -964,6 +975,7 @@ async function statsView() {
       <div class="tile"><div class="tv">${s.recipes.toLocaleString()}</div><div class="tk">recipes indexed${s.books_indexed ? ` from ${s.books_indexed} indexes` : ""}</div></div>
       <div class="tile"><div class="tv">${s.dinners_last_year}</div><div class="tk">cookbook dinners, last 12 months</div></div>
       <div class="tile"><div class="tv">${s.books_cooked_from}</div><div class="tk">books cooked from, ever</div></div>
+      ${s.online.length ? `<div class="tile"><div class="tv">${s.online.reduce((t, o) => t + o.recipes, 0).toLocaleString()}</div><div class="tk">recipes saved from ${s.online.map((o) => `<a href="#/book/${o.id}">${esc(o.title)}</a>`).join(", ")}</div></div>` : ""}
     </div>
     ${dl.available ? `<div class="panel wide"><h3>Cookbook dinners per month</h3>
       <div class="vbars" role="img" aria-label="Cookbook dinners per month, last 12 months">${months.map((m) => `<div class="vb" tabindex="0" data-tip="${m.label}: ${m.n} dinner${m.n === 1 ? "" : "s"}">
@@ -1017,7 +1029,64 @@ async function statsView() {
   }
 }
 
+/* ---------- recipes from websites ---------- */
+// Bookmarklet: copies every NYT Cooking recipe link on the page (e.g. your Recipe Box) to the clipboard.
+const BOOKMARKLET = String.raw`javascript:(()=>{const s=new Set();document.querySelectorAll('a[href]').forEach(a=>{const h=a.href.split(/[?#]/)[0];if(/cooking\.nytimes\.com\/recipes\/\d+/.test(h))s.add(h)});if(!s.size){alert('No NYT Cooking recipe links on this page.');return}const t=[...s].join('\n');navigator.clipboard.writeText(t).then(()=>alert(s.size+' recipe links copied. Paste them into Cookbook Collection: More, Recipes from websites.'),()=>prompt('Copy these '+s.size+' links:',t))})()`;
+// "Spicy Chili With Beans Recipe - NYT Cooking" -> "Spicy Chili With Beans": the title a share sheet passes along.
+const sharedTitle = (t) => (t || "").replace(/\s*[-–|]\s*(NYT Cooking|The New York Times|Serious Eats|Bon App[ée]tit|Epicurious|Food52)\b.*$/i, "")
+  .replace(/\s+Recipe$/i, "").trim();
+async function linksView() {
+  const prefill = S.shared ? S.shared.text : "";
+  const shareTitle = S.shared ? sharedTitle(S.shared.title) : "";
+  S.shared = null;
+  view.innerHTML = `<h1 style="margin-top:18px">Recipes from websites</h1>
+    <p class="muted small">Paste links to recipes from NYT Cooking, Serious Eats or other sites: one or many, in any text. Each is saved with its name and link under its website, like a cookbook's index, and opens on the site where you're signed in. Nothing is downloaded from the site, so the name comes from the link: check it below.</p>
+    <div class="panel"><textarea id="lt" rows="6" placeholder="https://cooking.nytimes.com/recipes/1017256-french-onion-soup">${esc(prefill)}</textarea>
+      <div class="actions"><button class="primary" id="lp">Preview</button></div><div id="lres"></div></div>
+    <div class="panel"><h3>Your whole NYT Cooking Recipe Box</h3>
+      <ol class="small"><li>On a computer, drag this button to the browser's bookmarks bar: <a class="btn" href="${esc(BOOKMARKLET)}" onclick="event.preventDefault()">Copy recipe links</a></li>
+        <li>Open your Recipe Box on cooking.nytimes.com and scroll to the bottom, so every recipe has loaded.</li>
+        <li>Click <b>Copy recipe links</b> in the bookmarks bar, paste here and preview.</li></ol>
+      <p class="small muted" style="margin-bottom:0">It only reads the links already on the page, in your own signed-in browser. Saving again skips recipes that are already here, so you can repeat it whenever you've saved more.</p></div>
+    <div class="panel"><h3>From your phone</h3>
+      <p class="small muted" style="margin:0">Open Cookbook Collection's editor page in Chrome on Android and use <b>Add to Home screen</b> (install). Then <b>Share → Cookbook Collection</b> from the NYT Cooking app or any recipe page brings the link straight here.</p></div>`;
+  const preview = async () => {
+    let r;
+    try { r = await api("online/preview", { method: "POST", body: { text: $("#lt").value } }); } catch (e) { toast(e.message); return; }
+    const fresh = r.items.filter((x) => !x.recipe_id), saved = r.items.length - fresh.length;
+    if (fresh.length === 1 && shareTitle) fresh[0].title = shareTitle;  // the site's own title beats one rebuilt from the link
+    const plural = (n, w) => `${n.toLocaleString()} ${w}${n === 1 ? "" : "s"}`;
+    $("#lres").innerHTML = `<p class="small">${plural(r.items.length, "recipe link")}${saved ? ` · ${saved.toLocaleString()} already saved` : ""}${r.skipped.length ? ` · ${plural(r.skipped.length, "other link")} skipped (not a recipe page)` : ""}</p>
+      ${fresh.length ? `<ul class="rlist links">${fresh.map((x, i) => `<li data-i="${i}"><input type="checkbox" class="inc" checked aria-label="Save this one">
+        <div class="rn"><input class="ln" value="${esc(x.title)}" aria-label="Recipe name"><div class="bk">${esc(x.site_name)} · <a href="${esc(x.url)}" target="_blank" rel="noopener">open ↗</a></div></div></li>`).join("")}</ul>
+        <label class="chk"><input type="checkbox" id="lw"> Star them as want to try</label>
+        <div class="actions"><button class="primary" id="ls">Save ${plural(fresh.length, "recipe")}</button></div>` : ""}`;
+    if ($("#ls")) $("#ls").onclick = async () => {
+      const items = $$("#lres li[data-i]").filter((li) => $(".inc", li).checked)
+        .map((li) => ({ url: fresh[+li.dataset.i].url, title: $(".ln", li).value, want_to_try: $("#lw").checked }));
+      if (!items.length) { toast("Nothing selected"); return; }
+      try {
+        const res = await api("online/commit", { method: "POST", body: { items } });
+        S.facets = null; S.ingredients = null;
+        $("#lres").innerHTML = `<p>Saved ${plural(res.added, "recipe")}${res.duplicates ? ` (${res.duplicates.toLocaleString()} already here)` : ""}.
+          ${res.books.map((b) => `<a href="#/book/${b.id}">Open ${esc(b.title)}</a>`).join(" · ")}</p>`;
+        $("#lt").value = "";
+      } catch (e) { toast(e.message); }
+    };
+  };
+  $("#lp").onclick = preview;
+  if (prefill) preview();
+}
+
 /* ---------- boot ---------- */
+// Opened from the phone's share sheet (manifest share_target): /admin?title=…&text=…&url=…
+if (ADMIN) {
+  const sp = new URLSearchParams(location.search);
+  if (sp.get("url") || sp.get("text")) {
+    S.shared = { title: sp.get("title") || "", text: [sp.get("text"), sp.get("url")].filter(Boolean).join("\n") };
+    history.replaceState(null, "", location.pathname + "#/links");
+  }
+}
 (async () => {
   if (!ADMIN) {
     try { S.editor = (await api("/api/me")).editor; } catch { /* ignore */ }

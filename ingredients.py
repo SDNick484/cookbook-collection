@@ -157,14 +157,19 @@ def ingredient_condition(con, name):
     return "(" + " OR ".join(f"({p})" for p in parts) + ")", args
 
 
-@app.get("/api/ingredients")
-def list_ingredients():
+def list_ingredients(private=False):
     out = []
     for r in db().execute("SELECT id, name FROM ingredients").fetchall():
         cond, args = ingredient_condition(db(), r["name"])  # n = what picking the chip lists: tagged or in the title
+        if not private:
+            cond += f" AND r.book_id IN (SELECT b.id FROM books b WHERE {core.PUBLIC_BOOKS})"
         out.append({"id": r["id"], "name": r["name"],
                     "n": db().execute(f"SELECT count(*) FROM recipes r WHERE {cond}", args).fetchone()[0]})
     return jsonify(ingredients=sorted(out, key=lambda r: fold(r["name"])))
+
+
+app.add_url_rule("/api/ingredients", "ingredients_public", list_ingredients)
+app.add_url_rule("/admin/api/ingredients", "ingredients_private", editor_required(lambda: list_ingredients(True)))
 
 
 @app.delete("/admin/api/ingredients/<int:iid>")

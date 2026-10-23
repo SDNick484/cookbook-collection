@@ -162,8 +162,9 @@ def sync_dinnerlog(con, force=False):
             src.row_factory = sqlite3.Row
             cols = {r[1] for r in src.execute("PRAGMA table_info(meals)")}
             rating = "rating" if "rating" in cols else "NULL AS rating"
-            meals = src.execute(f"SELECT id, day, name, source_title, source_detail, {rating} FROM meals "
-                                f"WHERE source_type='cookbook'").fetchall()
+            meals = src.execute(f"SELECT id, day, name, source_type, source_title, source_detail, {rating} FROM meals "
+                                f"WHERE source_type='cookbook' OR source_detail LIKE '%://%' "
+                                f"OR source_title LIKE '%://%'").fetchall()
             src.close()
         except sqlite3.Error as e:
             app.logger.warning("Dinner Log read failed: %s", e)
@@ -173,7 +174,11 @@ def sync_dinnerlog(con, force=False):
         links = {r[0]: (r[1], r[2]) for r in con.execute("SELECT meal_id, recipe_id, meal_key FROM dl_link")}
         rec_cache = {}
         con.execute("DELETE FROM cooked")
+        import online
         for m in meals:
+            web_bid, web_rid = online.match_meal(con, m["source_detail"], m["source_title"])
+            if m["source_type"] != "cookbook" and not web_rid:
+                continue  # a website we haven't saved, or no source at all
             bid = match_book(m["source_title"], books, aliases)
             rid, how = None, "none"
             link = links.get(m["id"])
@@ -185,6 +190,8 @@ def sync_dinnerlog(con, force=False):
                 if rid:
                     row = con.execute("SELECT book_id FROM recipes WHERE id=?", (rid,)).fetchone()
                     bid = row[0] if row else bid
+            elif web_rid:  # a link to a recipe saved from a website
+                bid, rid, how = web_bid, web_rid, "auto"
             elif bid:
                 if bid not in rec_cache:
                     rec_cache[bid] = con.execute(
@@ -351,7 +358,7 @@ def suggest(mode="want", cuisine=None, tag=None, n=5, seed=None):
         args.append(months3)
     else:
         raise ValueError("unknown mode")
-    sql = ("SELECT r.id, r.name, r.heading, r.page, r.want_to_try, r.rating, r.notes, r.last_made, "
+    sql = ("SELECT r.id, r.name, r.heading, r.page, r.url, r.want_to_try, r.rating, r.notes, r.last_made, "
            "b.id AS book_id, b.title AS book_title, b.cuisine, b.status FROM recipes r JOIN books b ON b.id=r.book_id "
            "WHERE b.status NOT IN ('gone','wanted') " + "".join(" AND " + w for w in where))
     rows = [dict(r) for r in con.execute(sql, args)]
@@ -396,7 +403,7 @@ def suggest_route():
 
 
 # ======================================================== stats
-OWNED = "b.status NOT IN ('gone','wanted')"  # books on the shelves (or out/loaned), not wishes or ones let go
+OWNED = "b.status NOT IN ('gone','wanted') AND b.kind IS NULL"  # cookbooks on the shelves (or out/loaned)
 
 
 def by_name(con, column):
@@ -448,7 +455,10 @@ def stats():
                          ((date.today().replace(day=1) - timedelta(days=335)).isoformat(),)):
         months.append(dict(r))
     return {
-        "books": one("SELECT count(*) FROM books WHERE status NOT IN ('gone','wanted')"),
+        "books": one(f"SELECT count(*) FROM books b WHERE {OWNED}"),
+        "online": [dict(r) for r in con.execute(  # recipe websites: not counted as cookbooks
+            "SELECT b.id, b.title, count(r.id) AS recipes FROM books b LEFT JOIN recipes r ON r.book_id=b.id "
+            "WHERE b.kind='online' GROUP BY b.id ORDER BY recipes DESC")],
         "books_indexed": one("SELECT count(DISTINCT book_id) FROM recipes WHERE source='index'"),
         "recipes": one("SELECT count(*) FROM recipes"),
         "want_to_try": one("SELECT count(*) FROM recipes WHERE want_to_try=1"),
@@ -467,10 +477,10 @@ def stats():
             "GROUP BY r.id HAVING avg >= 7 ORDER BY avg DESC, n DESC LIMIT 10")],
         "cuisines": [dict(r) for r in con.execute(
             "SELECT coalesce(b.cuisine,'(none)') AS name, count(DISTINCT b.id) AS books, count(c.meal_id) AS cooked "
-            "FROM books b LEFT JOIN cooked c ON c.book_id=b.id WHERE b.status NOT IN ('gone','wanted') "
+            f"FROM books b LEFT JOIN cooked c ON c.book_id=b.id WHERE {OWNED} "
             "GROUP BY 1 ORDER BY books DESC")],
         "never_cooked": [dict(r) for r in con.execute(
-            "SELECT b.id, b.title FROM books b WHERE b.status NOT IN ('gone','wanted') "
+            f"SELECT b.id, b.title FROM books b WHERE {OWNED} "
             "AND b.id NOT IN (SELECT book_id FROM cooked WHERE book_id IS NOT NULL) "
             "AND b.id NOT IN (SELECT book_id FROM recipes WHERE last_made IS NOT NULL OR rating IS NOT NULL) "
             "ORDER BY b.title")],
@@ -591,7 +601,7 @@ def _book_out(b, private):
 
 
 def _recipe_out(r, private):
-    keys = ["id", "name", "heading", "page", "book_id", "book_title"]
+    keys = ["id", "name", "heading", "page", "url", "book_id", "book_title"]
     if private:
         keys += ["want_to_try", "rating", "notes", "cooked_count", "cooked_avg", "cooked_last", "last_made"]
     return {k: r.get(k) for k in keys if r.get(k) not in (None, "", 0) or k == "page"}
@@ -633,7 +643,7 @@ def ingredient_tag_names():
 def t_search_books(a, private):
     sql, args = "SELECT b.* FROM books b WHERE 1=1", []
     if not private:
-        sql += " AND b.status NOT IN ('gone')"
+        sql += " AND b.status NOT IN ('gone') AND " + core.PUBLIC_BOOKS
     q = (a.get("query") or "").strip()
     if q:
         sql += " AND b.id IN (SELECT rowid FROM books_fts WHERE books_fts MATCH ?)" if core.HAS_FTS else " AND fold(b.title) LIKE ?"
@@ -665,7 +675,7 @@ def t_get_book(a, private):
                               "LIMIT 1", (core.fts_query(a["title"]),)).fetchone()
     else:
         raise ValueError("book_id or title is required")
-    if not row:
+    if not row or (not private and row["kind"]):
         raise ValueError("No such book")
     b = core.book_dicts([row], private)[0]
     recs = [dict(r) for r in con.execute("SELECT * FROM recipes WHERE book_id=? ORDER BY page_sort", (b["id"],))]
@@ -692,8 +702,9 @@ def t_list_categories(a, private):
             "SELECT cuisine AS name, count(*) AS books FROM books WHERE cuisine IS NOT NULL GROUP BY 1 ORDER BY 2 DESC")],
         "tags": [dict(r) for r in con.execute(
             "SELECT t.name, count(*) AS books FROM tags t JOIN book_tags bt ON bt.tag_id=t.id GROUP BY t.id ORDER BY 2 DESC")],
-        "totals": {"books": con.execute("SELECT count(*) FROM books").fetchone()[0],
-                   "recipes": con.execute("SELECT count(*) FROM recipes").fetchone()[0]},
+        "totals": {"books": con.execute(f"SELECT count(*) FROM books b WHERE {core.PUBLIC_BOOKS}").fetchone()[0],
+                   "recipes": con.execute("SELECT count(*) FROM recipes r JOIN books b ON b.id=r.book_id"
+                                          + ("" if private else f" WHERE {core.PUBLIC_BOOKS}")).fetchone()[0]},
     }
 
 
@@ -783,7 +794,10 @@ def handle_rpc(msg, private):
             "protocolVersion": want if want in MCP_VERSIONS else MCP_VERSIONS[0],
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": "cookbooks", "title": "Cookbook Collection", "version": "2.0"},
-            "instructions": MCP_INSTRUCTIONS + ("" if private else " (Public view: no ratings or cooking history.)"),
+            "instructions": MCP_INSTRUCTIONS + (
+                " Some recipes come from recipe websites instead of a book: their book is the site (e.g. NYT Cooking) "
+                "and they have a url instead of a page, so give the link." if private
+                else " (Public view: no ratings or cooking history.)"),
         })
     if method == "ping":
         return rpc_result(mid, {})

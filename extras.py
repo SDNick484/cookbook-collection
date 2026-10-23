@@ -590,7 +590,13 @@ def features():
 MCP_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 MCP_INSTRUCTIONS = ("Search a home cookbook collection: books, and recipes indexed from those books "
                     "(name, index heading such as a main ingredient, and page). Recipes are physical: tell the user the "
-                    "book and page. Index headings are often ingredients, so ingredient searches work well.")
+                    "book and page. Index headings are often ingredients, so ingredient searches work well. "
+                    "Some books were indexed without page numbers, so page is missing for their recipes. That's a "
+                    "limitation of the data, not an error: the recipe name and book title are enough to find it in "
+                    "the book's own index, so give those and don't apologize for or dwell on the missing page. "
+                    "search_recipes returns the best matches first (match says whether the words were in the title or "
+                    "came from ingredient tags; 'may use only chicken stock' means the chicken tag may only reflect "
+                    "stock) and a total; when next_offset is present there are more results to fetch.")
 
 
 def _book_out(b, private):
@@ -601,7 +607,7 @@ def _book_out(b, private):
 
 
 def _recipe_out(r, private):
-    keys = ["id", "name", "heading", "page", "url", "book_id", "book_title"]
+    keys = ["id", "name", "heading", "page", "url", "book_id", "book_title", "match"]
     if private:
         keys += ["want_to_try", "rating", "notes", "cooked_count", "cooked_avg", "cooked_last", "last_made"]
     return {k: r.get(k) for k in keys if r.get(k) not in (None, "", 0) or k == "page"}
@@ -611,18 +617,27 @@ def t_search_recipes(a, private):
     q = (a.get("query") or "").strip()
     if not q and not a.get("ingredient"):
         raise ValueError("query (or ingredient) is required")
+    import ingredients
     where, args = core.recipe_filter({"q": q, "cuisine": a.get("cuisine"), "book": a.get("book_id"),
                                       "ingredient": a.get("ingredient")}, private)
-    sql = ("SELECT r.*, b.title AS book_title FROM recipes r JOIN books b ON b.id=r.book_id WHERE 1=1"
-           + "".join(" AND " + w for w in where))
+    base = " FROM recipes r JOIN books b ON b.id=r.book_id WHERE 1=1" + "".join(" AND " + w for w in where)
+    order = ingredients.ranked(db(), base, args, ingredients.search_terms(q, a.get("ingredient")))  # best first
     limit = max(1, min(int(a.get("limit") or 25), 100))
-    rows = [dict(r) for r in db().execute(sql + " ORDER BY b.title, r.page_sort LIMIT ?", args + [limit])]
+    offset = max(0, int(a.get("offset") or 0))
+    page = order[offset:offset + limit]
+    match = {x["id"]: x["match"] for x in page}
+    rows = [dict(r) for r in core.recipes_by_id(list(match))]
+    for r in rows:
+        r["match"] = match[r["id"]]
     if private:
         ensure_synced()
         st = cooked_stats_for([r["id"] for r in rows])
         for r in rows:
             r.update(st.get(r["id"], {}))
-    out = {"count": len(rows), "recipes": [_recipe_out(r, private) for r in rows]}
+    out = {"total": len(order), "count": len(rows), "offset": offset,
+           "recipes": [_recipe_out(r, private) for r in rows]}
+    if offset + len(rows) < len(order):
+        out["next_offset"] = offset + len(rows)  # more results: call again with this offset
     if a.get("ingredient"):  # say how the ingredient was read, so a miss isn't a silent 0
         import ingredients
         tags = [t for _, t in ingredients.resolve(db(), a["ingredient"])]
@@ -740,13 +755,17 @@ TOOLS = [
     ("search_recipes", False, t_search_recipes,
      "Search recipes indexed from our cookbooks. Each word must match the recipe name, its index heading, or one "
      "of the major ingredient tags ({tags}), so 'chicken' finds recipes that use chicken even if the title doesn't "
-     "say so. Only some recipes are tagged, so other ingredients are found through titles. Returns recipe name, "
-     "heading, page and book.",
+     "say so. Only some recipes are tagged, so other ingredients are found through titles. Results are ranked: "
+     "words in the title first, then specific ingredient tags, and recipes that may only use the stock "
+     "(e.g. chicken stock) last. Returns recipe name, heading, page (missing for some books) and book, the "
+     "total number of matches, and next_offset when there are more.",
      {**_S(query={"type": "string", "description": "Words to match, e.g. 'braised short rib' or 'fennel'"},
            cuisine={"type": "string"}, book_id={"type": "integer"},
            ingredient={"type": "string", "description": "Only recipes using this ingredient: tagged with the major "
                        "tag it names ('ground beef' uses Beef) or with it in the title. Tags: {tags}."},
-           limit={"type": "integer", "description": "Max results, default 25"})}),
+           limit={"type": "integer", "description": "Max results, default 25, at most 100"},
+           offset={"type": "integer", "description": "Skip this many results: pass next_offset from the previous "
+                   "call to get the next page"})}),
     ("search_books", False, t_search_books,
      "Find cookbooks in the collection by words (title, author, publisher, tags), cuisine, tag or author.",
      _S(query={"type": "string"}, cuisine={"type": "string"}, tag={"type": "string"}, author={"type": "string"},

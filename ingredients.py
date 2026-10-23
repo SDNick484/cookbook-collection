@@ -551,6 +551,26 @@ def search_terms(q, ingredient):
     return out
 
 
+# Words that make "<ingredient> ___" in a title a stock, fat or seasoning rather than the ingredient itself:
+# "Chicken stock", "Basic chicken broth", "Chicken jus", "Duck-fat potatoes".
+TITLE_FORMS = MINOR_FORMS | {"jus", "bouillon", "consomme", "glace", "fumet"}
+
+
+def minor_in_title(term, text, asked):
+    """The phrase if `term` is in the title only as a stock/fat/paste of it ("chicken stock", "chicken or turkey
+    stock", "stock for chicken", "duck-fat"), and the search didn't ask for that form; else None."""
+    word = re.escape(term) + "(?:s|es)?"
+    forms = "|".join(sorted(f for f in TITLE_FORMS if f not in asked))
+    if not forms:
+        return None
+    phrase = re.compile(rf"(?<!\w){word}(?:\s+(?:or|and|&)\s+\w+)?[\s-]+(?:{forms})(?!\w)"
+                        rf"|(?<!\w)(?:{forms})\s+(?:of|for|from)\s+(?:\w+\s+)?{word}(?!\w)")
+    m = phrase.search(text)
+    if not m or in_title(term, phrase.sub(" ", text)):
+        return None  # not in such a phrase, or also elsewhere in the title ("chicken soup with chicken stock")
+    return m.group(0)
+
+
 def in_title(term, text):
     """`term` (a stem) is a whole word of the folded title, singular or plural: "egg" in "Eggs Benedict",
     not in "Eggplant"; Chinese/Japanese/Korean/Thai anywhere."""
@@ -563,8 +583,9 @@ def in_title(term, text):
 def ranked(con, base_sql, args, terms, by_book=False):
     """Every recipe matching `base_sql` (a "FROM recipes r JOIN books b ... WHERE ..." clause), best first, as
     [{id, score, match}]. Per term: 2 if it's in the title or index heading; 1½ if a tag gives it (Leeks, Chicken
-    pieces, Chicken without Chicken stock, or Chicken stock when the search names the stock too); ¼ if only
-    Chicken + one of its minor forms do. +1 if every term is in the title. So for "chicken leeks": both in the
+    pieces, Chicken without Chicken stock, or Chicken stock when the search names the stock too); ½ if the title
+    has it only as a stock or fat of it ("Chicken stock", "Duck-fat potatoes"); ¼ if only Chicken + one of its
+    minor forms do. +1 if every term is in the title. So for "chicken leeks": both in the
     title (5), one in the title and one from a tag (3½), both from tags (3), leeks in the title but the chicken
     maybe only stock (2¼). Ties, and searches without terms, go by book and page. by_book keeps each book's
     recipes together, books with the best matches first (the website groups results under a heading per book)."""
@@ -580,13 +601,15 @@ def ranked(con, base_sql, args, terms, by_book=False):
     for r in rows:
         text = fold(f"{r['name']} {r['heading'] or ''}")
         mine = tags.get(r["id"], set())
-        points, titled, maybe_minor = [], 0, []
+        points, titled, why = [], 0, []
         for t in terms:
-            if in_title(t, text):
+            stock_title = in_title(t, text) and minor_in_title(t, text, asked)
+            if in_title(t, text) and not stock_title:
                 points.append(2)
                 titled += 1
+                why.append(f"{t}: title")
                 continue
-            best, minor_names = 0, []
+            best, minor_names = (0.5, []) if stock_title else (0, [])
             for iid in mine:
                 w, kind, _ = kinds.get(iid, (set(), "plain", ""))
                 if t not in w:
@@ -600,14 +623,11 @@ def ranked(con, base_sql, args, terms, by_book=False):
                 else:
                     best = max(best, 1.5)
             points.append(best)
-            if best == 0.25:
-                maybe_minor += minor_names
+            why.append(f"{t}: " + ("tag" if best >= 1.5 else f"only as \u201c{stock_title}\u201d in the title" if best == 0.5
+                                   else "may be only " + " or ".join(dict.fromkeys(minor_names)) if best == 0.25 else "matched"))
         score = sum(points) + (1 if terms and titled == len(terms) else 0)
-        match = None
-        if terms:  # for the MCP: why it matched
-            match = "title" if titled == len(terms) else "title and tags" if titled else "tags"
-            if maybe_minor:
-                match += "; may use only " + " or ".join(dict.fromkeys(maybe_minor))
+        # for the MCP, why it matched: "title" when every word is in the title, else per word
+        match = ("title" if titled == len(terms) else ", ".join(why)) if terms else None
         out.append({"id": r["id"], "score": score, "match": match, "_book": r["book_id"],
                     "_key": (r["title"], r["page_sort"] is None, r["page_sort"] or 0, r["name"])})
     if by_book:

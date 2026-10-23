@@ -414,6 +414,9 @@ def list_books(private):
     if private and request.args.get("status"):
         sql += " AND b.status = ?"
         args.append(request.args["status"])
+    if private and request.args.get("unindexed"):  # cookbooks on hand with no recipes indexed yet
+        sql += (" AND b.kind IS NULL AND b.status NOT IN ('gone','wanted')"
+                " AND NOT EXISTS (SELECT 1 FROM recipes r WHERE r.book_id=b.id)")
     if private and request.args.get("review"):
         sql += " AND (b.needs_review IS NOT NULL OR b.isbn IS NULL OR b.cover IS NULL)"
     sort = request.args.get("sort", "author")

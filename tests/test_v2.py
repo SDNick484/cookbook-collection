@@ -295,3 +295,22 @@ def test_wishlist_integration(c, monkeypatch, tmp_path):
     assert c.post(f"/admin/api/books/{bid}/wishlist", json={"person_id": 999}).status_code == 400
     monkeypatch.setattr(X, "wishlist_call", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
     assert c.get("/admin/api/wishlist/people").status_code == 502
+
+
+def test_books_not_indexed_yet(c):
+    empty = c.post("/admin/api/books", json={"title": "Unindexed test book"}).json["id"]
+    gone = c.post("/admin/api/books", json={"title": "Unindexed but gone", "status": "gone"}).json["id"]
+    some = c.post("/admin/api/books", json={"title": "Indexed test book"}).json["id"]
+    c.post(f"/admin/api/books/{some}/recipes", json={"name": "Only recipe", "page": "1"})
+    listed = {b["id"] for b in c.get("/admin/api/books?unindexed=1").json["books"]}
+    assert empty in listed and gone not in listed and some not in listed
+    assert all(b["recipe_count"] == 0 for b in c.get("/admin/api/books?unindexed=1").json["books"])
+    call = lambda args: A.app.test_client().post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+        "name": "search_books", "arguments": args}}).json["result"]["structuredContent"]["books"]
+    none = {b["id"] for b in call({"indexed": False, "limit": 200})}
+    assert empty in none and some not in none and all(b["recipe_count"] == 0 for b in call({"indexed": False, "limit": 200}))
+    assert none == {b["id"] for b in call({"indexed": "false", "limit": 200})}
+    with_recipes = {b["id"] for b in call({"indexed": True, "limit": 200})}
+    assert some in with_recipes and empty not in with_recipes
+    for bid in (empty, gone, some):
+        c.delete(f"/admin/api/books/{bid}")

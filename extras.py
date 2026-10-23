@@ -673,6 +673,10 @@ def t_search_books(a, private):
     if q:
         sql += " AND b.id IN (SELECT rowid FROM books_fts WHERE books_fts MATCH ?)" if core.HAS_FTS else " AND fold(b.title) LIKE ?"
         args.append(core.fts_query(q) if core.HAS_FTS else f"%{fold(q)}%")
+    if a.get("indexed") is not None:  # false: cookbooks with no recipes indexed yet; true: ones with some
+        indexed = a["indexed"] not in (False, 0, "false", "False", "0", "no")
+        sql += (" AND b.kind IS NULL AND " + ("" if indexed else "NOT ")
+                + "EXISTS (SELECT 1 FROM recipes r WHERE r.book_id=b.id)")
     for k, s in (("cuisine", " AND b.cuisine=?"),
                  ("tag", " AND b.id IN (SELECT bt.book_id FROM book_tags bt JOIN tags t ON t.id=bt.tag_id WHERE t.name=?)"),
                  ("author", " AND b.id IN (SELECT ba.book_id FROM book_authors ba JOIN authors au ON au.id=ba.author_id WHERE au.name LIKE ?)")):
@@ -770,8 +774,11 @@ TOOLS = [
            offset={"type": "integer", "description": "Skip this many results: pass next_offset from the previous "
                    "call to get the next page"})}),
     ("search_books", False, t_search_books,
-     "Find cookbooks in the collection by words (title, author, publisher, tags), cuisine, tag or author.",
+     "Find cookbooks in the collection by words (title, author, publisher, tags), cuisine, tag or author. "
+     "indexed: false lists the cookbooks with no recipes indexed yet (so their recipes can't be searched), "
+     "e.g. to find books whose index still needs scanning. recipe_count says how many recipes each book has.",
      _S(query={"type": "string"}, cuisine={"type": "string"}, tag={"type": "string"}, author={"type": "string"},
+        indexed={"type": "boolean", "description": "false: only books with no recipes indexed; true: only books with some"},
         limit={"type": "integer"})),
     ("get_book", False, t_get_book, "A cookbook's details and every recipe indexed from it, in page order.",
      _S(book_id={"type": "integer"}, title={"type": "string"})),

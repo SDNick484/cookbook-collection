@@ -191,3 +191,70 @@ def test_search_hint_tags(c):
     assert c.delete(f"/admin/api/ingredients/{zid}").status_code == 200
     rid = next(x["id"] for x in c.get(f"/admin/api/books/{zuni}").json["recipes"] if x["name"] == "Hint test summer vegetable tian")
     c.delete(f"/admin/api/recipes/{rid}")
+
+
+def make_zip(files):
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for name, data in files.items():
+            z.writestr(name, data)
+    return buf.getvalue()
+
+
+def test_zip_of_ingredient_lists(c):
+    """Many EYB ingredient exports in one zip, grouped into tags by name or by a tags.csv."""
+    zuni = book_id(c, "The Zuni Cafe Cookbook")
+    page = {"Zip test braise": 901, "Zip test soup": 902, "Zip test velout\xe9": 903, "Zip test greens": 904,
+            "Zip test chili": 905}
+    csv = lambda *names: ("Recipe Title,Book Title,Author,Page No.\r\n" + "".join(
+        f"{n},The Zuni Cafe Cookbook,Judy Rodgers,(page {page[n]})\r\n" for n in names)
+        + "Not my book recipe,A Book I Don't Own,Someone,(page 1)\r\n").encode("cp1252")
+    files = {"chicken broth - all pages combined.csv": csv("Zip test braise", "Zip test soup"),
+             "white stock - all pages combined.csv": csv("Zip test soup", "Zip test velout\xe9"),
+             "Kale - all pages combined.csv": csv("Zip test greens"),
+             "ground beef - all pages combined.csv": csv("Zip test chili"),
+             "notes.csv": b"just,some,notes\r\n1,2,3\r\n",
+             "__MACOSX/._Kale - all pages combined.csv": b"junk"}
+    manifest = ("file,tag,hint\r\nchicken broth,Zip stock,yes\r\nWhite Stock - all pages combined.csv,Zip stock,yes\r\n"
+                "ground beef,Zip ground beef,yes\r\nground-beef,Zip beef cuts,no\r\nmissing file,Zip nothing,yes\r\n")
+    raw = make_zip({**files, "tags.csv": manifest})
+    up_zip = lambda url, data=raw, **form: c.post(url, data={"file": (io.BytesIO(data), "x.zip"), **form},
+                                                  content_type="multipart/form-data")
+    pv = up_zip("/admin/api/ingredients/zip/preview").json
+    plan = {(f["file"].split(" - ")[0], f["tag"]): f for f in pv["files"]}
+    assert set(plan) == {("chicken broth", "Zip stock"), ("white stock", "Zip stock"), ("Kale", "Kale"),
+                         ("ground beef", "Zip ground beef"), ("ground beef", "Zip beef cuts")}  # a file can feed two tags
+    assert plan[("ground beef", "Zip beef cuts")]["hint"] is False and plan[("Kale", "Kale")]["hint"] is True
+    k = plan[("Kale", "Kale")]
+    assert (k["recipes"], k["new"], k["skipped"], k["skipped_books"]) == (2, 1, 1, ["A Book I Don't Own"])
+    assert pv["manifest"] is True
+    assert any("notes.csv" in p for p in pv["problems"]) and any("missing file" in p for p in pv["problems"])
+    # commit what the preview proposed, minus Kale
+    body = [{k: f[k] for k in ("file", "tag", "hint")} for f in pv["files"] if f["tag"] != "Kale"]
+    res = up_zip("/admin/api/ingredients/zip/commit", plan=json.dumps(body)).json
+    got = {t["tag"]: t for t in res["tags"]}
+    assert set(got) == {"Zip stock", "Zip ground beef", "Zip beef cuts"}
+    assert got["Zip stock"]["files"] == ["chicken broth - all pages combined.csv", "white stock - all pages combined.csv"]
+    assert got["Zip stock"]["total"] == 3 and got["Zip stock"]["added_recipes"] == 3      # soup only once
+    assert got["Zip stock"]["skipped"] == 2 and got["Zip beef cuts"]["hint"] is False
+    names = [r["name"] for r in c.get(f"/admin/api/books/{zuni}").json["recipes"] if r["name"].startswith("Zip test")]
+    assert sorted(names) == ["Zip test braise", "Zip test chili", "Zip test soup", "Zip test velouté"]   # no Kale
+    assert not any(b["title"] == "A Book I Don't Own" for b in c.get("/admin/api/books").json["books"])  # never adds books
+    # again: nothing new
+    again = up_zip("/admin/api/ingredients/zip/commit", plan=json.dumps(body)).json
+    assert sum(t["tagged"] + t["added_recipes"] for t in again["tags"]) == 0
+    # bad input
+    assert up_zip("/admin/api/ingredients/zip/preview", data=b"not a zip").status_code == 400
+    assert up_zip("/admin/api/ingredients/zip/preview", data=make_zip({"notes.csv": b"a,b\r\n"})).status_code == 400
+    assert up_zip("/admin/api/ingredients/zip/commit", plan="[]").status_code == 400
+    assert c.post("/admin/api/ingredients/zip/preview", data={"file": (io.BytesIO(raw), "x.zip")},
+                  content_type="multipart/form-data", headers={"Cf-Ray": "x"}).status_code == 401
+    # clean up
+    con = A.connect()
+    con.execute("DELETE FROM ingredients WHERE name LIKE 'Zip %'")
+    con.commit()
+    con.close()
+    for r in c.get(f"/admin/api/books/{zuni}").json["recipes"]:
+        if r["name"].startswith("Zip test"):
+            c.delete(f"/admin/api/recipes/{r['id']}")

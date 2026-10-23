@@ -593,53 +593,77 @@ async function indexView(id) {
   const b = await api("books/" + id);
   view.innerHTML = `<a class="back" href="#/book/${id}">← ${esc(b.title)}</a><h1>Import index</h1>
     <div class="panel">
-      <p class="small muted" style="margin-top:0">Paste a page or two of the book's index. On Android, take a photo of the index page,
-      open it in Google Lens, choose <em>Text → Select all → Copy</em>, and paste here. Lines without a page number become headings
+      <p class="small muted" style="margin-top:0">Paste a page or two of the book's index, or use <strong>📷 Take photo</strong> on each
+      index page in turn: the entries from every page collect in one preview. Without photo import, take a photo in Google Lens instead,
+      choose <em>Text → Select all → Copy</em>, and paste here. Lines without a page number become headings
       (like “Chicken”), and the lowercase or indented lines under them become sub-entries.</p>
       <textarea id="txt" rows="12" placeholder="Chicken&#10;  braised with figs, honey, and vinegar, 350&#10;  roast, with bread salad, 342&#10;Zuni Caesar Salad, 154"></textarea>
       <div class="actions"><button class="primary" id="parse">Preview</button>
-        <label class="btn" id="photobtn">📷 Photos of index pages<input id="photos" type="file" accept="image/*" multiple hidden></label></div>
+        <span id="photobtns"><label class="btn">📷 Take photo<input id="snap" type="file" accept="image/*" capture="environment" hidden></label>
+        <label class="btn">Choose photos<input id="photos" type="file" accept="image/*" multiple hidden></label></span></div>
       <div id="photostatus" class="small muted"></div>
     </div>
     <div id="prev"></div>`;
   let feat = { photo_import: false };
   try { feat = await api("features"); } catch { /* ignore */ }
   if (!feat.photo_import) {
-    $("#photobtn").classList.add("hidden");
+    $("#photobtns").classList.add("hidden");
     $("#photostatus").innerHTML = `Photo import is off. Add <code>ANTHROPIC_API_KEY</code> to <code>/etc/conf.d/cookbooks</code> to read index photos directly.`;
   }
-  $("#photos").onchange = async (e) => {
-    const files = [...e.target.files]; e.target.value = "";
-    const all = []; const st = $("#photostatus");
-    for (const [i, f] of files.entries()) {
-      st.textContent = `Reading page ${i + 1} of ${files.length}… (about 20–40 seconds each)`;
-      const fd = new FormData(); fd.append("file", f);
-      try { const r = await api(`books/${id}/index/photo`, { method: "POST", body: fd }); all.push(...r.rows); }
-      catch (err) { toast(`Page ${i + 1}: ${err.message}`); }
-    }
-    st.textContent = all.length ? `Read ${all.length} entries from ${files.length} photo${files.length > 1 ? "s" : ""}. Check them below, especially page numbers.` : "";
-    if (all.length) renderPreview(all);
+  // Entries read so far. Photos add to them, one index page at a time ("Take photo" again for the next page),
+  // keeping whatever was already corrected in the preview.
+  let collected = [], photos = 0;
+  const keepEdits = () => {
+    collected = $$("#prev tbody tr").map((tr) => ({ ...collected[+tr.dataset.i], checked: $("input[type=checkbox]", tr).checked,
+      heading: $("[name=heading]", tr).value, name: $("[name=name]", tr).value, page: $("[name=page]", tr).value }));
   };
+  const readPhotos = async (e) => {
+    const files = [...e.target.files]; e.target.value = "";
+    if (!files.length) return;
+    keepEdits();
+    const st = $("#photostatus");
+    let read = 0;
+    for (const [i, f] of files.entries()) {
+      st.textContent = `Reading ${files.length > 1 ? `photo ${i + 1} of ${files.length}` : "the photo"}… (about 20–40 seconds)`;
+      const fd = new FormData(); fd.append("file", f);
+      try {
+        const r = await api(`books/${id}/index/photo`, { method: "POST", body: fd });
+        collected.push(...r.rows.map((x) => ({ ...x, from: "photo" }))); read += r.rows.length; photos++;
+      }
+      catch (err) { toast(`Photo ${i + 1}: ${err.message}`); }
+    }
+    const n = (k, w) => `${k} ${w}${k === 1 ? "y" : "ies"}`;  // entry / entries
+    st.textContent = collected.length ? `${n(read, "entr")} from ${files.length > 1 ? "these photos" : "this photo"}; ${n(collected.length, "entr")} from ${photos} photo${photos === 1 ? "" : "s"} so far. `
+      + "Take another photo for the next index page, or check them below (especially page numbers) and add them." : "";
+    if (collected.length) renderPreview(collected);
+  };
+  $("#snap").onchange = readPhotos;
+  $("#photos").onchange = readPhotos;
   $("#parse").onclick = async () => {
     const { rows } = await api(`books/${id}/index/parse`, { method: "POST", body: { text: $("#txt").value } });
     if (!rows.length) { $("#prev").innerHTML = `<p class="muted">Couldn't find any entries with page numbers in that text.</p>`; return; }
-    renderPreview(rows);
+    keepEdits();  // the pasted text replaces what was pasted before; photo entries stay
+    collected = collected.filter((r) => r.from !== "paste").concat(rows.map((r) => ({ ...r, from: "paste" })));
+    renderPreview(collected);
   };
   function renderPreview(rows) {
     const fresh = rows.filter((r) => !r.duplicate).length;
     $("#prev").innerHTML = `<div class="section-h"><h2>${rows.length} entries</h2><span class="muted small">${rows.length - fresh} already in this book</span></div>
       <div class="overflow"><table class="preview"><thead><tr><th></th><th>Heading / recipe</th><th>Page</th></tr></thead><tbody>
-      ${rows.map((r, i) => `<tr class="${r.duplicate ? "dup" : ""}" data-i="${i}"><td><input type="checkbox" ${r.duplicate ? "" : "checked"}></td>
+      ${rows.map((r, i) => `<tr class="${r.duplicate ? "dup" : ""}" data-i="${i}"><td><input type="checkbox" ${(r.checked ?? !r.duplicate) ? "checked" : ""}></td>
         <td class="hn"><input type="text" name="heading" placeholder="(no heading)" value="${esc(r.heading)}"><input type="text" name="name" value="${esc(r.name)}"></td>
         <td class="pg"><input type="text" name="page" value="${esc(r.page)}"></td></tr>`).join("")}</tbody></table></div>
       <div class="actions"><button class="primary" id="commit">Add checked entries</button><button id="again">Paste more</button></div>`;
-    $("#again").onclick = () => { $("#txt").value = ""; $("#txt").focus(); $("#prev").innerHTML = ""; window.scrollTo(0, 0); };
+    $("#again").onclick = () => {  // start over
+      $("#txt").value = ""; $("#txt").focus(); $("#prev").innerHTML = ""; $("#photostatus").textContent = ""; collected = []; photos = 0;
+      window.scrollTo(0, 0);
+    };
     $("#commit").onclick = async () => {
       const out = $$("#prev tbody tr").filter((tr) => $("input[type=checkbox]", tr).checked).map((tr) => ({
         heading: $("[name=heading]", tr).value, name: $("[name=name]", tr).value, page: $("[name=page]", tr).value }));
       const r = await api(`books/${id}/index/commit`, { method: "POST", body: { rows: out } });
       toast(`Added ${r.added} recipes${r.skipped ? `, skipped ${r.skipped} duplicates` : ""}`);
-      $("#txt").value = ""; $("#prev").innerHTML = ""; $("#photostatus").textContent = ""; S.facets = null; window.scrollTo(0, 0);
+      $("#txt").value = ""; $("#prev").innerHTML = ""; $("#photostatus").textContent = ""; collected = []; photos = 0; S.facets = null; window.scrollTo(0, 0);
     };
   }
 }
@@ -655,7 +679,8 @@ async function tryView() {
       ${whereHTML(r)}</li>`).join("")}</ul>`).join("") || `<div class="empty">Star recipes on a book's page to add them here.</div>`}`;
 }
 async function reviewView() {
-  const [{ books }, { recipes: garbled, merged }] = await Promise.all([api("books?review=1&sort=title"), api("recipes/garbled")]);
+  const [{ books }, { recipes: garbled, merged }, { books: unindexed }] = await Promise.all([
+    api("books?review=1&sort=title"), api("recipes/garbled"), api("books?unindexed=1&sort=title")]);
   const why = (b) => [b.needs_review, !b.isbn && "no ISBN", !b.cover && "no cover"].filter(Boolean).join(" · ");
   const flagged = books.filter((b) => b.needs_review);
   const rest = books.filter((b) => !b.needs_review);
@@ -669,6 +694,10 @@ async function reviewView() {
       <ul class="rlist">${garbled.map((r) => `<li><div class="rn"><a href="#/book/${r.book_id}">${esc(r.name)}</a><div class="bk">${esc(r.book_title)}</div></div>
         <span class="pg">${r.page ? "p. " + esc(r.page) : ""}</span></li>`).join("")}</ul>` : ""}
     ${flagged.length ? `<div class="section-h"><h2>Flagged during import <span class="muted small">${flagged.length}</span></h2></div>${list(flagged)}` : ""}
+    ${unindexed.length ? `<div class="section-h"><h2>Not indexed yet <span class="muted small">${unindexed.length}</span></h2></div>
+      <p class="muted small">Books with no recipes in the catalog yet, so search can't find anything in them. Use <em>Import index</em> to scan or paste the index.</p>
+      <ul class="rlist">${unindexed.map((b) => `<li><div class="rn"><a href="#/book/${b.id}">${esc(b.title)}</a><div class="bk">${esc(byline(b))}</div></div>
+        <span class="acts"><a class="btn" href="#/book/${b.id}/index">Import index</a></span></li>`).join("")}</ul>` : ""}
     <div class="section-h"><h2>Missing ISBN or cover <span class="muted small">${rest.length}</span></h2></div>${list(rest)}`;
 }
 async function moreView() {

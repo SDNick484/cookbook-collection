@@ -40,7 +40,9 @@ For older books with no barcode, type the title and use **Find matches by title*
 Open a book, choose **Import index**, and paste the index text. Google Lens on Android can copy text straight from a photo of the index page. You get an editable preview before anything is saved, and re-importing the same page skips duplicates.
 
 ## Photo index import
-Set `ANTHROPIC_API_KEY` in `/etc/conf.d/cookbooks` and restart the service. **Import index → Photos of index pages** sends each photo (grayscale, ≤1568px) to Claude, which returns the entries as structured rows for the usual preview.
+Set `ANTHROPIC_API_KEY` in `/etc/conf.d/cookbooks` and restart the service. In **Import index**, **📷 Take photo** opens the phone's camera; take one photo per index page, and the entries from every page collect in one preview, keeping any corrections you've made. **Choose photos** picks several existing photos at once. Each photo is sent to Claude (grayscale, ≤1568px), which returns the entries as structured rows for the preview.
+
+**Needs review → Not indexed yet** lists the books on hand that have no recipes in the catalog, each with an Import index link. The MCP's `search_books` has the same filter (`indexed: false`).
 
 ## Dinner Log link (optional)
 If Dinner Log, a companion meal-journal app, runs on the same server, Cookbook Collection reads `/var/lib/dinner-log/meals.db` **read-only**. The installer adds the `cookbooks` user to the `dinnerlog` group so it can.

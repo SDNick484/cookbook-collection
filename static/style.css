@@ -261,3 +261,8 @@ dialog.lb::backdrop { background: rgba(0,0,0,.8); }
 .rlist.links li { align-items: center; }
 .rlist.links .ln { width: 100%; font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--ink); }
 .rlist .acts button.kind { font-size: .8rem; text-decoration: underline; }
+/* zip of ingredient lists */
+.zipimp { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 14px 0 0; }
+.zipimp .small { flex: 1; min-width: 220px; }
+table.zip td { vertical-align: top; }
+table.zip .ztag { width: 100%; min-width: 9em; font: inherit; padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--ink); }

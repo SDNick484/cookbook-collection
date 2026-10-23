@@ -79,8 +79,9 @@ def tidy_names(con):
 # ------------------------------------------------------------------ search support (used by app.py)
 def token_condition(token):
     """SQL + args matching a recipe whose name/heading has a word starting with `token`, or that is
-    tagged with an ingredient containing a word starting with it."""
-    t = fold(token)
+    tagged with an ingredient containing a word starting with it. Plural words match by their singular stem,
+    so "leeks" also finds "Leek and potato soup"."""
+    t = stem(fold(token))
     ing = ("r.id IN (SELECT ri.recipe_id FROM recipe_ingredients ri JOIN ingredients i ON i.id=ri.ingredient_id "
            "WHERE fold(i.name) LIKE ? OR fold(i.name) LIKE ?)")
     ing_args = [f"{t}%", f"% {t}%"]
@@ -338,3 +339,97 @@ def ingredient_commit():
     total = con.execute("SELECT count(*) FROM recipe_ingredients WHERE ingredient_id=?", (iid,)).fetchone()[0]
     return jsonify(kind="ingredient", ingredient=name, hint=bool(hint), tagged=tagged, added_recipes=added,
                    skipped=skipped, created_books=len(created), total=total)
+
+
+# ------------------------------------------------------------------ ranking
+# Search finds recipes by title or tag; ranking puts the ones that clearly use what was asked for first.
+# EYB's list for an ingredient includes recipes that only use its stock ("chicken" brings in osso buco made
+# with chicken stock). A tag named "<X> stock" or "<X> broth" marks those, so a recipe tagged Chicken *and*
+# Chicken stock (and with no chicken in its title or a more specific tag) ranks low: it may use only the stock.
+# It is never dropped, since most chicken soups and braises use both.
+STOCK_WORDS = {"stock", "broth"}
+
+
+def tag_kinds(con):
+    """{tag id: (stemmed words, kind)}, kind 'stock' ("Chicken stock"), 'broad' (a tag that has a stock tag,
+    like Chicken) or 'plain'; and {broad tag id: its stock tag ids}."""
+    words = {iid: set(ingredient_words(name)) for iid, name in con.execute("SELECT id, name FROM ingredients")}
+    stocks = {iid: frozenset(w - STOCK_WORDS) for iid, w in words.items() if w & STOCK_WORDS and w - STOCK_WORDS}
+    kinds, stock_of = {}, {}
+    for iid, w in words.items():
+        mine = {sid for sid, base in stocks.items() if base == frozenset(w)}
+        kinds[iid] = (w, "stock" if iid in stocks else "broad" if mine else "plain")
+        if mine:
+            stock_of[iid] = mine
+    return kinds, stock_of
+
+
+def search_terms(q, ingredient):
+    """What a search asked for, as stems to look for in titles and tags: "chicken leeks" -> ["chicken", "leek"]."""
+    out = []
+    words, runs = core.search_words(q)
+    for t in [stem(fold(w)) for w in words] + [fold(r) for r in runs] + ingredient_words(ingredient or ""):
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
+def in_title(term, text):
+    """`term` (a stem) is a whole word of the folded title, singular or plural: "egg" in "Eggs Benedict",
+    not in "Eggplant"; Chinese/Japanese/Korean/Thai anywhere."""
+    if core.UNSPACED.search(term):
+        return term in text
+    forms = [re.escape(term) + "(?:s|es)?"] + ([re.escape(term[:-1]) + "ies"] if term.endswith("y") else [])
+    return re.search(r"(?<!\w)(?:" + "|".join(forms) + r")(?!\w)", text) is not None
+
+
+def ranked(con, base_sql, args, terms, by_book=False):
+    """Every recipe matching `base_sql` (a "FROM recipes r JOIN books b ... WHERE ..." clause), best first, as
+    [{id, score, match}]. Per term: 2 if it's in the title or index heading; 1½ if a tag gives it (Leeks, Chicken
+    pieces, or Chicken without Chicken stock); ¼ if only Chicken + Chicken stock do. +1 if every term is in the
+    title. So for "chicken leeks": both in the title (5), one in the title and one from a tag (3½), both from
+    tags (3), leeks in the title but the chicken maybe only stock (2¼). Ties, and searches without terms, go by book and page. by_book keeps each book's recipes together,
+    books with the best matches first (the website groups results under a heading per book)."""
+    rows = con.execute("SELECT r.id, r.name, r.heading, r.page_sort, b.id AS book_id, b.title" + base_sql, args).fetchall()
+    tags = {}
+    if terms and rows:
+        for rid, iid in con.execute("SELECT ri.recipe_id, ri.ingredient_id FROM recipe_ingredients ri "
+                                    "WHERE ri.recipe_id IN (SELECT r.id" + base_sql + ")", args):
+            tags.setdefault(rid, set()).add(iid)
+    kinds, stock_of = tag_kinds(con) if terms else ({}, {})
+    out = []
+    for r in rows:
+        text = fold(f"{r['name']} {r['heading'] or ''}")
+        mine = tags.get(r["id"], set())
+        points, titled, maybe_stock = [], 0, []
+        for t in terms:
+            if in_title(t, text):
+                points.append(2)
+                titled += 1
+                continue
+            best = 0
+            for iid in mine:
+                w, kind = kinds.get(iid, (set(), "plain"))
+                if t in w and kind != "stock":
+                    best = max(best, 0.25 if kind == "broad" and stock_of[iid] & mine else 1.5)
+            points.append(best)
+            if best == 0.25:
+                maybe_stock.append(t)
+        score = sum(points) + (1 if terms and titled == len(terms) else 0)
+        match = None
+        if terms:  # for the MCP: why it matched
+            match = "title" if titled == len(terms) else "title and tags" if titled else "tags"
+            if maybe_stock:
+                match += "; may use only " + " and ".join(f"{t} stock" for t in maybe_stock)
+        out.append({"id": r["id"], "score": score, "match": match, "_book": r["book_id"],
+                    "_key": (r["title"], r["page_sort"] is None, r["page_sort"] or 0, r["name"])})
+    if by_book:
+        best = {}
+        for x in out:
+            best[x["_book"]] = max(best.get(x["_book"], 0), x["score"])
+        out.sort(key=lambda x: (-best[x["_book"]], x["_key"][0], x["_book"], -x["score"], x["_key"][1:]))
+    else:
+        out.sort(key=lambda x: (-x["score"], x["_key"]))
+    for x in out:
+        del x["_book"], x["_key"]
+    return out

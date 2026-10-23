@@ -176,3 +176,59 @@ def test_more_specific_tag_wins(c, book):
             con.execute("DELETE FROM ingredients WHERE id=?", (iid,))
         con.commit()
         con.close()
+
+
+def test_ranking_chicken_and_leeks(c, book):
+    """The MCP test that prompted ranking: chicken + leek dishes first, stock-only ones last, and paging."""
+    con = A.connect()
+    ids = {n: A.name_id(con, "ingredients", n) for n in ("Chicken", "Chicken stock", "Chicken pieces", "Leeks")}
+    con.execute("UPDATE ingredients SET hint=1 WHERE name IN ('Chicken stock', 'Chicken pieces', 'Leeks')")
+    con.commit()  # before the app writes through its own connection
+    recipes = {  # name: tags
+        "Osso buco": ["Chicken", "Chicken stock", "Leeks"],
+        "Leek and potato soup": ["Chicken", "Chicken stock"],
+        "Coq au vin blanc": ["Chicken", "Chicken pieces", "Chicken stock", "Leeks"],
+        "Stuffed chicken breasts": ["Chicken", "Chicken stock", "Leeks"],
+        "No-fuss risotto with chicken, leek and garlic": [],
+        "Eggplant gratin": ["Leeks"],                       # no chicken: not a match
+    }
+    rid = {}
+    try:
+        for name, tags in recipes.items():
+            rid[name] = c.post(f"/admin/api/books/{book}/recipes", json={"name": name}).json["id"]
+            for t in tags:
+                con.execute("INSERT INTO recipe_ingredients VALUES (?,?)", (rid[name], ids[t]))
+            con.commit()
+        expect = ["No-fuss risotto with chicken, leek and garlic",   # both in the title
+                  "Stuffed chicken breasts",                         # chicken in the title, leeks tagged
+                  "Coq au vin blanc",                                # both from tags, real chicken (pieces)
+                  "Leek and potato soup",                            # leeks in the title, chicken maybe only stock
+                  "Osso buco"]                                       # leeks tagged, chicken maybe only stock
+        web = [r["name"] for r in c.get("/api/recipes", query_string={"q": "chicken leeks", "book": book}).json["recipes"]]
+        assert web == expect
+        filt = [r["name"] for r in c.get("/api/recipes", query_string={"q": "leek", "ingredient": "chicken", "book": book}).json["recipes"]]
+        assert filt == expect
+        mcp = lambda args: A.app.test_client().post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "search_recipes", "arguments": {"book_id": book, **args}}}).json["result"]["structuredContent"]
+        first = mcp({"query": "chicken leeks", "limit": 2})
+        assert [r["name"] for r in first["recipes"]] == expect[:2] and first["total"] == 5 and first["next_offset"] == 2
+        rest = mcp({"query": "chicken leeks", "limit": 10, "offset": first["next_offset"]})
+        assert [r["name"] for r in rest["recipes"]] == expect[2:] and "next_offset" not in rest
+        match = {r["name"]: r["match"] for r in first["recipes"] + rest["recipes"]}
+        assert match["No-fuss risotto with chicken, leek and garlic"] == "title"
+        assert match["Coq au vin blanc"] == "tags"
+        assert match["Osso buco"] == "tags; may use only chicken stock"
+        assert match["Leek and potato soup"] == "title and tags; may use only chicken stock"
+        # whole words in titles: "egg" isn't in "Eggplant gratin"
+        assert I.in_title("egg", "eggs benedict") and not I.in_title("egg", "eggplant gratin")
+        assert I.in_title("cherry", "cherries jubilee") and I.in_title("leek", "leeks vinaigrette")
+        # the MCP explains missing pages and ranking
+        init = A.app.test_client().post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}).json
+        assert "without page numbers" in init["result"]["instructions"] and "next_offset" in init["result"]["instructions"]
+    finally:
+        for r in rid.values():
+            c.delete(f"/admin/api/recipes/{r}")
+        for iid in ids.values():
+            con.execute("DELETE FROM ingredients WHERE id=?", (iid,))
+        con.commit()
+        con.close()

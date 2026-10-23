@@ -86,6 +86,16 @@ Editors can give each book an overall rating of 0–5 stars, in half stars.
 - Ratings appear on the catalog cards, and **Top rated** sorts by them, with unrated books last. Like recipe ratings, they're visible only to editors, not the public catalog.
 - The rating is also in the CSV export and in the private MCP's book results.
 
+## Photos of what you made
+Editors can attach photos of a dish to the recipe it came from.
+- On a book's page, tap **📷** on a recipe row and choose **Add photos**. On a phone this offers the camera or the gallery, and you can pick several at once.
+- The date is read from each photo. Set **Cooked on** to override it, and add an optional caption.
+- The book's page shows every photo under **What we've made**, with the recipe name and page. Tap one to view it full size, and use ‹ › or the arrow keys to step through them. The 📷 on a recipe row shows how many photos it has.
+- Photos are editor-only, like ratings and cooking history. They're served from `/admin/photos/`, so Cloudflare Access covers them, and they don't appear in the public catalog.
+- Each upload is resized to at most 2048px, plus a 480px thumbnail, and saved as JPEG in `/var/lib/cookbooks/photos`. Re-encoding drops the EXIF data, including any phone GPS location.
+- Deleting a photo, recipe or book deletes its files. The nightly backup copies `photos/` to `BACKUP_TARGET`, and **Download JSON** lists each recipe's photo files.
+- iPhone HEIC photos work if the `pillow-heif` Python package is installed. Without it, Safari normally converts them to JPEG when uploading.
+
 ## What should we cook? / Stats / shelf
 - **Cook** gives random ideas in four modes: starred but not yet made, never made, forgotten books, and old favorites.
 - **Pulled out / Put back** on a book's page tracks books that are off the shelf.

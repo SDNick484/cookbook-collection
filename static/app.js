@@ -216,17 +216,20 @@ function recipeRow(r) {
   if (r.rating != null) extra.push(`<span class="rating">${num(r.rating)}/10</span>${r.cooked_count ? " (journal)" : ""}`);
   if (r.last_made) extra.push(`made ${fmtDay(r.last_made)}`);
   if (r.notes) extra.push(esc(r.notes));
+  const nph = (S.bookPhotos || []).filter((p) => p.recipe_id === r.id).length;
   return `<li data-id="${r.id}"><div class="rn">${r.heading ? `<span class="rh">${esc(r.heading)} · </span>` : ""}${esc(r.name)}
     ${ADMIN && extra.length ? `<div class="extra">${extra.join(" · ")}</div>` : ""}</div>
     <span class="pg">${r.page ? "p. " + esc(r.page) : ""}</span>
     ${ADMIN ? `<span class="acts">${S.features && S.features.dinnerlog_url && S.bookTitle ? `<a class="log" title="Log this dinner in Dinner Log" target="_blank" rel="noopener"
         href="${esc(S.features.dinnerlog_url)}/new?source_type=cookbook&source_title=${encodeURIComponent(S.bookTitle)}&source_detail=${encodeURIComponent(r.page || "")}&name=${encodeURIComponent(r.heading && r.name[0] === r.name[0].toLowerCase() ? r.heading + ", " + r.name : r.name)}">🍽</a>` : ""}
+      <button title="${nph ? `${nph} photo${nph > 1 ? "s" : ""}` : "Add photos"}" class="pho ${nph ? "on" : ""}">📷${nph ? `<span class="n">${nph}</span>` : ""}</button>
       <button title="Want to try" class="want ${r.want_to_try ? "on" : ""}">${r.want_to_try ? "★" : "☆"}</button>
       <button title="Edit" class="edit">✎</button></span>` : ""}</li>`;
 }
 async function bookView(id) {
   const b = await api("books/" + id);
   S.bookTitle = b.title;
+  S.bookPhotos = b.photos || [];
   const rows = [];
   if (b.subtitle) rows.push(["Subtitle", esc(b.subtitle)]);
   if (b.publisher) rows.push(["Publisher", esc(b.publisher) + (b.year ? `, ${b.year}` : "")]);
@@ -266,6 +269,9 @@ async function bookView(id) {
           <a class="btn" href="#/book/${id}/index">Import index</a><button id="addr">Add recipe</button></div>` : ""}
       </div>
     </div>
+    ${S.bookPhotos.length ? `<div class="section-h"><h2>What we've made <span class="muted small">${S.bookPhotos.length}</span></h2></div>
+      <div class="photos">${S.bookPhotos.map((p, i) => `<button class="ph" data-i="${i}"><img loading="lazy" src="${esc(p.thumb)}" alt="${esc(p.recipe_name)}">
+        <span class="pn">${esc(p.recipe_name)}</span><span class="pd">${fmtDay(p.taken_on)}${p.recipe_page ? " · p. " + esc(p.recipe_page) : ""}</span></button>`).join("")}</div>` : ""}
     <div class="section-h"><h2>Recipes <span class="muted small">${b.recipes.length || ""}</span></h2>
       ${b.recipes.length > 12 ? `<input id="rf" type="search" placeholder="Filter recipes" style="max-width:240px">` : ""}</div>
     ${b.recipes.length ? `<ul class="rlist" id="rl">${b.recipes.map(recipeRow).join("")}</ul>`
@@ -277,6 +283,7 @@ async function bookView(id) {
     $$("#rl li").forEach((li) => li.classList.toggle("hidden", !!q && !fold(li.textContent).includes(q)));
   };
   if (!ADMIN) return;
+  $$(".photos .ph").forEach((el) => el.onclick = () => lightbox(S.bookPhotos, +el.dataset.i));
   rateWidget($("#rate"), b.rating, (v) => api("books/" + id, { method: "PUT", body: { rating: v } }));
   $("#addr").onclick = () => recipeDialog(null, id, () => bookView(id));
   $("#shelf").onclick = async () => {
@@ -293,7 +300,78 @@ async function bookView(id) {
       b2.classList.toggle("on", !!r.want_to_try); b2.textContent = r.want_to_try ? "★" : "☆";
     };
     $(".edit", li).onclick = () => recipeDialog(r, id, () => bookView(id));
+    $(".pho", li).onclick = () => photoDialog(r, () => bookView(id));
   });
+}
+
+/* ---------- photos of what we cooked ---------- */
+function photoDialog(r, done) {
+  const d = document.createElement("dialog");
+  let changed = false;
+  d.innerHTML = `<form method="dialog">
+    <h2>Photos <span class="muted small">${esc(r.name)}</span></h2>
+    <div class="pgrid"></div>
+    <div class="row2">
+      <label class="f">Cooked on<input name="taken_on" type="date"></label>
+      <label class="f">Caption<input name="caption" placeholder="optional"></label></div>
+    <p class="small muted" style="margin:0">Leave the date empty to use the day each photo was taken.</p>
+    <div class="actions" style="justify-content:space-between;align-items:center">
+      <label class="btn primary">📷 Add photos<input type="file" accept="image/*" multiple hidden></label>
+      <span class="small muted" id="pst"></span><button value="close">Done</button></div>
+  </form>`;
+  document.body.append(d);
+  const grid = $(".pgrid", d), form = $("form", d);
+  const show = (list) => {
+    grid.innerHTML = list.length ? list.map((p) => `<div class="pt" data-id="${p.id}"><img src="${esc(p.thumb)}" alt="">
+      <span class="small muted">${fmtDay(p.taken_on)}${p.caption ? " · " + esc(p.caption) : ""}</span>
+      <button type="button" class="x" title="Delete photo" aria-label="Delete photo">×</button></div>`).join("")
+      : `<p class="muted small" style="margin:0">No photos yet. Add some of the dish you made.</p>`;
+    $$(".pt", grid).forEach((el) => {
+      $("img", el).onclick = () => lightbox(list.map((p) => ({ ...p, recipe_name: r.name, recipe_page: r.page })), list.findIndex((p) => p.id === +el.dataset.id));
+      $(".x", el).onclick = async () => {
+        if (!confirm("Delete this photo?")) return;
+        try { await api("photos/" + el.dataset.id, { method: "DELETE" }); changed = true; show(list.filter((p) => p.id !== +el.dataset.id)); }
+        catch (e) { toast(e.message); }
+      };
+    });
+  };
+  show((S.bookPhotos || []).filter((p) => p.recipe_id === r.id));
+  $("input[type=file]", d).onchange = async (e) => {
+    const files = [...e.target.files]; e.target.value = "";
+    const st = $("#pst", d);
+    for (const [i, f] of files.entries()) {
+      st.textContent = files.length > 1 ? `Uploading ${i + 1} of ${files.length}…` : "Uploading…";
+      const fd = new FormData(); fd.append("file", f);
+      fd.append("taken_on", form.elements.taken_on.value); fd.append("caption", form.elements.caption.value);
+      try { show((await api(`recipes/${r.id}/photos`, { method: "POST", body: fd })).photos); changed = true; }
+      catch (err) { toast(`${f.name}: ${err.message}`); }
+    }
+    st.textContent = "";
+  };
+  d.addEventListener("close", () => { d.remove(); if (changed) done(); });
+  d.showModal();
+}
+
+function lightbox(list, i) {
+  const d = document.createElement("dialog");
+  d.className = "lb";
+  const draw = () => {
+    const p = list[i];
+    d.innerHTML = `<img src="${esc(p.url)}" alt="${esc(p.recipe_name)}">
+      <div class="lbbar"><div class="rn"><strong>${esc(p.recipe_name)}</strong>${p.recipe_page ? ` <span class="muted">p. ${esc(p.recipe_page)}</span>` : ""}
+        <div class="small muted">${fmtDay(p.taken_on)}${p.caption ? " · " + esc(p.caption) : ""}</div></div>
+        ${list.length > 1 ? `<button data-go="-1" aria-label="Previous">‹</button><span class="small muted">${i + 1}/${list.length}</span><button data-go="1" aria-label="Next">›</button>` : ""}
+        <button data-close aria-label="Close">✕</button></div>`;
+    $$("[data-go]", d).forEach((b) => b.onclick = () => go(+b.dataset.go));
+    $("[data-close]", d).onclick = () => d.close();
+  };
+  const go = (n) => { i = (i + n + list.length) % list.length; draw(); };
+  d.onkeydown = (e) => { if (e.key === "ArrowLeft") go(-1); else if (e.key === "ArrowRight") go(1); };
+  d.onclick = (e) => { if (e.target === d) d.close(); };  // tap outside the photo
+  d.addEventListener("close", () => d.remove());
+  document.body.append(d);
+  draw();
+  d.showModal();
 }
 
 function recipeDialog(r, bookId, done) {

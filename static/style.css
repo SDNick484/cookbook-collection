@@ -254,3 +254,9 @@ dialog.lb::backdrop { background: rgba(0,0,0,.8); }
 .lbbar { display: flex; align-items: center; gap: 8px; padding: 8px 4px 2px; }
 .lbbar .rn { flex: 1; min-width: 0; }
 .lbbar button { padding: 4px 12px; font-size: 1.1rem; }
+/* recipes from websites */
+.cover.ph.web { background: var(--chip); color: var(--ink); }
+.cover.ph.web .a { color: var(--muted); }
+.rlist .pg.web { text-decoration: none; color: var(--accent); }
+.rlist.links li { align-items: center; }
+.rlist.links .ln { width: 100%; font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--ink); }

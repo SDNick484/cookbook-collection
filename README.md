@@ -64,6 +64,15 @@ EYB's ingredient search finds far more recipes than titles do: searching "chicke
 - Re-importing a list is safe. Removing an ingredient deletes only the tag, not the recipes.
 - If an export's accented letters were lost before import ("tud�usi" for "tudòusi"), the rows are recognized as recipes already in the catalog instead of being added again. Garbled copies already in the catalog are merged into their correctly spelled twin on the same page when the app starts, keeping their tags, stars, notes and Dinner Log links. Ones with no twin are listed on **Needs review** to retype.
 
+## Recipes from websites (NYT Cooking and others)
+Recipes from sites like NYT Cooking or Serious Eats are saved the way a cookbook's index is: a name and a link. Each site gets its own entry in the catalog, made the first time one of its links is saved. Opening a recipe takes you to the site, where you're signed in to your subscription.
+- **More → Recipes from websites:** paste one link or many, in any text. You get a preview with editable names before anything is saved. Links that aren't recipe pages are skipped, and links already saved are recognized even with tracking parameters added.
+- **Whole NYT Cooking Recipe Box:** drag **Copy recipe links** from that page to your browser's bookmarks bar. Open your Recipe Box and scroll to the bottom so it's all loaded, then click it and paste the result. It only reads links already on the page, in your own browser.
+- **From your phone:** install the editor page to your Android home screen (Chrome → Add to Home screen). **Share → Cookbook Collection** from the NYT Cooking app or a recipe page then opens the preview with that link, using the site's own title.
+- **Names:** no page is downloaded from the site, so names come from the link ("1017256-french-onion-soup" → "French Onion Soup"). Fix any in the preview, or later with ✎.
+- **Where they show up:** web recipes appear in search, ingredient chips (by title), Want to try and Cook suggestions, with **Open ↗** instead of a page number. Dinner Log dinners whose source holds the recipe's link count as cooking it.
+- **Editors only:** online sources aren't shown in the public catalog, public search or the public MCP. They aren't counted as cookbooks either; Stats shows them separately.
+
 ## Family wish list (optional)
 If a companion wish list app runs on the same server, set a book's status to **Want to buy** and use **Add to a wish list…** on its page. It adds the book to the chosen person's list with a shopping link built from the ISBN (`WISHLIST_BOOK_URL`). It does this through the wish list app's own API on localhost, so the wish list itself is unchanged. Purchase status is never shown here, so there are no spoilers.
 

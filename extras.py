@@ -594,9 +594,12 @@ MCP_INSTRUCTIONS = ("Search a home cookbook collection: books, and recipes index
                     "Some books were indexed without page numbers, so page is missing for their recipes. That's a "
                     "limitation of the data, not an error: the recipe name and book title are enough to find it in "
                     "the book's own index, so give those and don't apologize for or dwell on the missing page. "
-                    "search_recipes returns the best matches first (match says whether the words were in the title or "
-                    "came from ingredient tags; 'may use only chicken stock' (or tomato paste, rice wine…) means the "
-                    "ingredient may only appear in that minor form) and a total; when next_offset is present there are more results to fetch.")
+                    "search_recipes returns the best matches first, with a total. match explains each result: 'title' "
+                    "when every word is in the recipe's title, otherwise per word, e.g. 'chicken: title, leek: tag' "
+                    "(tag = the recipe is on Eat Your Books' list for that ingredient, so it does use it even though the "
+                    "title doesn't say so), 'chicken: may be only chicken stock' (the ingredient may only be used as stock, "
+                    "tomato paste, rice wine…) or 'chicken: only as \u201cchicken stock\u201d in the title' (a recipe for "
+                    "the stock itself); when next_offset is present there are more results to fetch.")
 
 
 def _book_out(b, private):

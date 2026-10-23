@@ -216,9 +216,10 @@ def test_ranking_chicken_and_leeks(c, book):
         assert [r["name"] for r in rest["recipes"]] == expect[2:] and "next_offset" not in rest
         match = {r["name"]: r["match"] for r in first["recipes"] + rest["recipes"]}
         assert match["No-fuss risotto with chicken, leek and garlic"] == "title"
-        assert match["Coq au vin blanc"] == "tags"
-        assert match["Osso buco"] == "tags; may use only chicken stock"
-        assert match["Leek and potato soup"] == "title and tags; may use only chicken stock"
+        assert match["Coq au vin blanc"] == "chicken: tag, leek: tag"
+        assert match["Stuffed chicken breasts"] == "chicken: title, leek: tag"
+        assert match["Osso buco"] == "chicken: may be only chicken stock, leek: tag"
+        assert match["Leek and potato soup"] == "chicken: may be only chicken stock, leek: title"
         # whole words in titles: "egg" isn't in "Eggplant gratin"
         assert I.in_title("egg", "eggs benedict") and not I.in_title("egg", "eggplant gratin")
         assert I.in_title("cherry", "cherries jubilee") and I.in_title("leek", "leeks vinaigrette")
@@ -269,10 +270,44 @@ def test_minor_forms_rank_low(c, book):
         mcp = lambda q: {r["name"]: r["match"] for r in A.app.test_client().post("/mcp", json={
             "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "search_recipes", "arguments": {
                 "query": q, "book_id": book}}}).json["result"]["structuredContent"]["recipes"]}
-        assert mcp("tomatoes")["Braised short ribs"] == "tags; may use only tomato paste"
-        assert mcp("rice")["Hot and sour soup"] == "tags; may use only rice vinegar"
-        assert mcp("chicken rice")["Hot and sour soup"] == "tags; may use only chicken stock or rice vinegar"
-        assert mcp("chicken stock")["Hot and sour soup"] == "tags"
+        assert mcp("tomatoes")["Braised short ribs"] == "tomato: may be only tomato paste"
+        assert mcp("rice")["Hot and sour soup"] == "rice: may be only rice vinegar"
+        assert mcp("chicken rice")["Hot and sour soup"] == "chicken: may be only chicken stock, rice: may be only rice vinegar"
+        assert mcp("chicken stock")["Hot and sour soup"] == "chicken: tag, stock: tag"
+    finally:
+        for r in rid.values():
+            c.delete(f"/admin/api/recipes/{r}")
+        for iid in ids.values():
+            con.execute("DELETE FROM ingredients WHERE id=?", (iid,))
+        con.commit()
+        con.close()
+
+
+def test_recipes_for_stock_rank_low(c, book):
+    """'Chicken stock' or 'Basic chicken broth' has chicken in its title, but it's the stock, not a chicken dish."""
+    con = A.connect()
+    ids = {n: A.name_id(con, "ingredients", n) for n in ("Leeks", "Duck")}
+    con.execute("UPDATE ingredients SET hint=1 WHERE id=?", (ids["Leeks"],))
+    con.commit()
+    recipes = {"Chicken stock": ["Leeks"], "Basic chicken broth": ["Leeks"], "Braised chicken with leeks": [],
+               "Chicken pie": ["Leeks"], "Duck-fat potatoes": ["Duck"], "Roast duck": ["Duck"]}
+    rid = {}
+    try:
+        for name, tags in recipes.items():
+            rid[name] = c.post(f"/admin/api/books/{book}/recipes", json={"name": name}).json["id"]
+            for t in tags:
+                con.execute("INSERT INTO recipe_ingredients VALUES (?,?)", (rid[name], ids[t]))
+            con.commit()
+        order = lambda q: [r["name"] for r in c.get("/api/recipes", query_string={"book": book, "q": q}).json["recipes"]]
+        assert order("chicken leeks") == ["Braised chicken with leeks", "Chicken pie", "Basic chicken broth", "Chicken stock"]
+        assert order("chicken stock") == ["Chicken stock"]          # asking for the stock: it's the best match
+        assert order("duck") == ["Roast duck", "Duck-fat potatoes"]
+        mcp = {r["name"]: r["match"] for r in A.app.test_client().post("/mcp", json={
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "search_recipes", "arguments": {
+                "query": "chicken leeks", "book_id": book}}}).json["result"]["structuredContent"]["recipes"]}
+        assert mcp["Chicken stock"] == "chicken: only as “chicken stock” in the title, leek: tag"
+        assert mcp["Chicken pie"] == "chicken: title, leek: tag"
+        assert mcp["Braised chicken with leeks"] == "title"
     finally:
         for r in rid.values():
             c.delete(f"/admin/api/recipes/{r}")

@@ -120,14 +120,16 @@ def ingredient_words(s):
 
 def resolve(con, name):
     """The ingredient tags `name` refers to: the tag itself, or every tag whose words it contains
-    ("ground beef" -> Beef, "egg" -> Eggs, "cherry tomatoes" -> Tomatoes). [(id, name)]"""
+    ("ground beef" -> Beef, "egg" -> Eggs, "cherry tomatoes" -> Tomatoes). When one of those tags is part of
+    another ("sweet potatoes" contains both Sweet potatoes and Potatoes), only the more specific one counts.
+    [(id, name)]"""
     want = set(ingredient_words(name))
-    out = []
+    found = []
     for iid, tag in con.execute("SELECT id, name FROM ingredients"):
         words = set(ingredient_words(tag))
         if fold(tag) == fold(name) or (words and words <= want):
-            out.append((iid, tag))
-    return out
+            found.append((iid, tag, words))
+    return [(iid, tag) for iid, tag, words in found if not any(words < other for _, _, other in found)]
 
 
 def title_condition(name):

@@ -80,7 +80,7 @@ def test_import_tags_and_search(c):
     assert pv["groups"][0]["match"] is None                                   # unmatched listed first
     dec = {t: (x["match"]["id"] if x["match"] else "skip") for t, x in g.items()}
     r = up(c, "/admin/api/ingredients/commit", ingredient="chicken", decisions=json.dumps(dec)).json
-    assert r == {"kind": "ingredient", "ingredient": "Chicken", "tagged": 4, "added_recipes": 3, "skipped": 1,
+    assert r == {"kind": "ingredient", "ingredient": "Chicken", "hint": False, "tagged": 4, "added_recipes": 3, "skipped": 1,
                  "created_books": 0, "total": 4}
     # the sheet's starred "Chicken Braised with Figs, Honey, & Vinegar" was tagged, not duplicated
     p350 = [x for x in c.get(f"/admin/api/books/{zuni}").json["recipes"] if x["page"] == "350"]
@@ -120,7 +120,7 @@ def test_import_tags_and_search(c):
     assert c.get(f"/api/recipes?ingredient=Chicken&book={zuni}&limit=500").json["count"] == per_book[(zuni, "The Zuni Cafe Cookbook")]
     assert c.get("/api/recipes/books").json == {"books": [], "count": 0}
     ing = c.get("/api/ingredients").json["ingredients"]
-    assert ing == [{"id": ing[0]["id"], "name": "Chicken", "n": len(expect)}]  # the chip counts what it lists
+    assert ing == [{"id": ing[0]["id"], "name": "Chicken", "hint": False, "n": len(expect)}]  # the chip counts what it lists
     # importing again changes nothing
     r2 = up(c, "/admin/api/ingredients/commit", ingredient="Chicken", decisions=json.dumps(dec)).json
     assert r2["tagged"] == 0 and r2["added_recipes"] == 0 and r2["total"] == 4
@@ -149,3 +149,45 @@ def test_real_sample_file(c):
         pytest.skip("sample not available")
     pv = up(c, "/admin/api/ingredients/preview", raw=path.read_bytes(), name="IngredientList.csv", ingredient="Chicken").json
     assert pv["total"] == 200 and len(pv["groups"]) > 40
+
+
+def test_search_hint_tags(c):
+    """Fridge ingredients (zucchini…): tagged for search and the MCP, but no chip on the catalog page."""
+    zuni = book_id(c, "The Zuni Cafe Cookbook")
+    raw = ("Recipe Title,Book Title,Author,Page No.\r\n"
+           "Hint test summer vegetable tian,The Zuni Cafe Cookbook,Judy Rodgers,(page 901)\r\n").encode()
+    dec = json.dumps({"The Zuni Cafe Cookbook": zuni})
+    assert up(c, "/admin/api/ingredients/preview", raw=raw, ingredient="Zucchini").json["hint"] is None   # new tag
+    r = up(c, "/admin/api/ingredients/commit", raw=raw, ingredient="Zucchini", hint="1", decisions=dec).json
+    assert r["hint"] is True and r["tagged"] == 1
+    admin = {i["name"]: i for i in c.get("/admin/api/ingredients").json["ingredients"]}
+    assert admin["Zucchini"]["hint"] is True and admin["Zucchini"]["n"] == 1
+    assert all(i["name"] != "Zucchini" for i in c.get("/api/ingredients").json["ingredients"])  # no public chip
+    # search finds it by the tag, though "zucchini" isn't in the title, on the public site too
+    for prefix in ("/api", "/admin/api"):
+        names = {x["name"] for x in c.get(f"{prefix}/recipes?q=zucchini&limit=500").json["recipes"]}
+        assert "Hint test summer vegetable tian" in names
+        assert c.get(f"{prefix}/recipes?ingredient=zucchini").json["count"] >= 1
+    # the MCP lists it as a search hint, and uses it as an ingredient
+    mcp = lambda body: A.app.test_client().post("/mcp", json={"jsonrpc": "2.0", "id": 1, **body}).json["result"]
+    tools = mcp({"method": "tools/list"})["tools"]
+    desc = next(t for t in tools if t["name"] == "search_recipes")["description"]
+    assert "search hints: Zucchini" in desc
+    res = mcp({"method": "tools/call", "params": {"name": "search_recipes", "arguments": {"ingredient": "zucchini"}}})
+    assert res["structuredContent"]["ingredient_tags"] == ["Zucchini"]
+    cats = mcp({"method": "tools/call", "params": {"name": "list_categories", "arguments": {}}})["structuredContent"]
+    assert {"name": "Zucchini", "recipes": 1, "search_hint": 1} in cats["ingredients"]
+    # re-importing keeps it a hint unless told otherwise; the preview says what it is
+    assert up(c, "/admin/api/ingredients/preview", raw=raw, ingredient="Zucchini").json["hint"] is True
+    assert up(c, "/admin/api/ingredients/commit", raw=raw, ingredient="Zucchini", decisions=dec).json["hint"] is True
+    # switching it to a chip and back
+    zid = admin["Zucchini"]["id"]
+    assert c.put(f"/admin/api/ingredients/{zid}", json={"hint": False}).json == {"id": zid, "hint": False}
+    assert any(i["name"] == "Zucchini" for i in c.get("/api/ingredients").json["ingredients"])
+    assert c.put(f"/admin/api/ingredients/{zid}", json={"hint": True}).json["hint"] is True
+    assert c.put("/admin/api/ingredients/999999", json={"hint": True}).status_code == 404
+    assert c.put(f"/admin/api/ingredients/{zid}", json={"hint": True}, headers={"Cf-Ray": "x"}).status_code == 401
+    # clean up
+    assert c.delete(f"/admin/api/ingredients/{zid}").status_code == 200
+    rid = next(x["id"] for x in c.get(f"/admin/api/books/{zuni}").json["recipes"] if x["name"] == "Hint test summer vegetable tian")
+    c.delete(f"/admin/api/recipes/{rid}")

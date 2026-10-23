@@ -617,24 +617,51 @@ async function indexView(id) {
     collected = $$("#prev tbody tr").map((tr) => ({ ...collected[+tr.dataset.i], checked: $("input[type=checkbox]", tr).checked,
       heading: $("[name=heading]", tr).value, name: $("[name=name]", tr).value, page: $("[name=page]", tr).value }));
   };
+  // Each photo is a job on the server (a dense page takes a minute or two); all photos start at once,
+  // and their entries are added in the order they were chosen.
+  const waitForJob = async (job, tick) => {
+    const t0 = Date.now();
+    for (;;) {
+      await new Promise((ok) => setTimeout(ok, 3000));
+      let r;
+      try { r = await api(`index/photo/${job}`); }
+      catch (err) { if (Date.now() - t0 > 15 * 60000) throw err; continue; }  // a dropped connection: keep checking
+      if (r.status === "done") return r;
+      if (r.status === "error") throw new Error(r.error);
+      tick(r.elapsed);
+    }
+  };
   const readPhotos = async (e) => {
     const files = [...e.target.files]; e.target.value = "";
     if (!files.length) return;
     keepEdits();
-    const st = $("#photostatus");
-    let read = 0;
-    for (const [i, f] of files.entries()) {
-      st.textContent = `Reading ${files.length > 1 ? `photo ${i + 1} of ${files.length}` : "the photo"}… (about 20–40 seconds)`;
+    const st = $("#photostatus"), many = files.length > 1;
+    const label = (i) => many ? `Photo ${i + 1}` : "The photo";
+    const notes = [], waiting = new Set(files.keys());
+    let read = 0, secs = 0;
+    const show = () => {
+      st.innerHTML = (waiting.size ? `<div>Reading ${many ? `${waiting.size} of ${files.length} photos` : "the photo"}… ${secs ? `${secs}s` : ""}
+        (a full index page can take a minute or two)</div>` : "") + notes.map((x) => `<div class="${x.bad ? "err" : ""}">${esc(x.text)}</div>`).join("");
+    };
+    show();
+    const jobs = files.map(async (f, i) => {
       const fd = new FormData(); fd.append("file", f);
       try {
-        const r = await api(`books/${id}/index/photo`, { method: "POST", body: fd });
-        collected.push(...r.rows.map((x) => ({ ...x, from: "photo" }))); read += r.rows.length; photos++;
-      }
-      catch (err) { toast(`Photo ${i + 1}: ${err.message}`); }
+        const { job } = await api(`books/${id}/index/photo`, { method: "POST", body: fd });
+        return await waitForJob(job, (s) => { secs = Math.max(secs, s); show(); });
+      } catch (err) { return { error: err.message }; }
+      finally { waiting.delete(i); show(); }
+    });
+    for (const [i, p] of jobs.entries()) {  // in the order chosen
+      const r = await p;
+      if (r.error) { notes.push({ bad: true, text: `${label(i)}: ${r.error}` }); continue; }
+      collected.push(...r.rows.map((x) => ({ ...x, from: "photo" }))); read += r.rows.length; photos++;
+      if (r.warning) notes.push({ bad: true, text: `${label(i)}: ${r.warning}` });
     }
     const n = (k, w) => `${k} ${w}${k === 1 ? "y" : "ies"}`;  // entry / entries
-    st.textContent = collected.length ? `${n(read, "entr")} from ${files.length > 1 ? "these photos" : "this photo"}; ${n(collected.length, "entr")} from ${photos} photo${photos === 1 ? "" : "s"} so far. `
-      + "Take another photo for the next index page, or check them below (especially page numbers) and add them." : "";
+    if (collected.length) notes.unshift({ text: `${n(read, "entr")} from ${many ? "these photos" : "this photo"}; ${n(collected.length, "entr")} from ${photos} photo${photos === 1 ? "" : "s"} so far. `
+      + "Take another photo for the next index page, or check them below (especially page numbers) and add them." });
+    show();
     if (collected.length) renderPreview(collected);
   };
   $("#snap").onchange = readPhotos;

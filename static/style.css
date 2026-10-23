@@ -266,3 +266,5 @@ dialog.lb::backdrop { background: rgba(0,0,0,.8); }
 .zipimp .small { flex: 1; min-width: 220px; }
 table.zip td { vertical-align: top; }
 table.zip .ztag { width: 100%; min-width: 9em; font: inherit; padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--ink); }
+#photostatus .err { color: var(--warn); }
+#photostatus > div + div { margin-top: 4px; }

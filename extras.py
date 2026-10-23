@@ -630,14 +630,21 @@ def t_search_recipes(a, private):
         out["ingredient_note"] = (
             f"Matched recipes tagged {' and '.join(tags)}, or with '{a['ingredient']}' in the title." if tags else
             f"No ingredient tag for '{a['ingredient']}', so it was matched against recipe titles only. "
-            f"Tags: {', '.join(ingredient_tag_names())}.")
+            f"Tags: {ingredient_tag_summary()}.")
     return out
 
 
-def ingredient_tag_names():
+def ingredient_tag_names(hint=0):
+    """Major ingredient tags (hint=0), or the search-hint ones (hint=1), most-used first."""
     return [r[0] for r in db().execute(
-        "SELECT i.name FROM ingredients i JOIN recipe_ingredients ri ON ri.ingredient_id=i.id "
-        "GROUP BY i.id ORDER BY count(*) DESC")]
+        "SELECT i.name FROM ingredients i JOIN recipe_ingredients ri ON ri.ingredient_id=i.id WHERE i.hint=? "
+        "GROUP BY i.id ORDER BY count(*) DESC", (hint,))]
+
+
+def ingredient_tag_summary():
+    """'Eggs, Chicken, … plus search hints: Zucchini, Kale' for the MCP to know which tags exist."""
+    major, hints = ", ".join(ingredient_tag_names(0)) or "none yet", ", ".join(ingredient_tag_names(1))
+    return major + (f"; plus search hints: {hints}" if hints else "")
 
 
 def t_search_books(a, private):
@@ -696,8 +703,8 @@ def t_list_categories(a, private):
     con = db()
     return {
         "ingredients": [dict(r) for r in con.execute(
-            "SELECT i.name, count(ri.recipe_id) AS recipes FROM ingredients i JOIN recipe_ingredients ri "
-            "ON ri.ingredient_id=i.id GROUP BY i.id ORDER BY 2 DESC")],
+            "SELECT i.name, count(ri.recipe_id) AS recipes, i.hint = 1 AS search_hint FROM ingredients i "
+            "JOIN recipe_ingredients ri ON ri.ingredient_id=i.id GROUP BY i.id ORDER BY 2 DESC")],
         "cuisines": [dict(r) for r in con.execute(
             "SELECT cuisine AS name, count(*) AS books FROM books WHERE cuisine IS NOT NULL GROUP BY 1 ORDER BY 2 DESC")],
         "tags": [dict(r) for r in con.execute(
@@ -802,7 +809,7 @@ def handle_rpc(msg, private):
     if method == "ping":
         return rpc_result(mid, {})
     if method == "tools/list":
-        tags = ", ".join(ingredient_tag_names()) or "none yet"
+        tags = ingredient_tag_summary()
         fill = lambda x: json.loads(json.dumps(x).replace("{tags}", tags.replace('"', "'")))
         return rpc_result(mid, {"tools": [
             {"name": n, "description": fill(d), "inputSchema": fill(s),

@@ -72,7 +72,7 @@ window.addEventListener("hashchange", route);
 /* ---------- home ---------- */
 async function homeView() {
   if (!S.facets) S.facets = await api("facets");
-  if (!S.ingredients) { try { S.ingredients = (await api("ingredients")).ingredients.filter((i) => i.n); } catch { S.ingredients = []; } }
+  if (!S.ingredients) { try { S.ingredients = (await api("ingredients")).ingredients.filter((i) => i.n && !i.hint); } catch { S.ingredients = []; } }
   const f = S.facets;
   const opt = (arr, cur, label) => `<option value="">${label}</option>` +
     arr.map((x) => `<option value="${esc(x.name)}" ${x.name === cur ? "selected" : ""}>${esc(x.name)} (${x.n})</option>`).join("");
@@ -765,9 +765,11 @@ async function eybView() {
     <div id="eybprev"></div>
     <div class="panel"><h3>Ingredient lists</h3>
       <p class="small muted" style="margin-top:0">Search an ingredient on EYB (e.g. Chicken), export the results, and import them here.
-        Those recipes get tagged, so searching “chicken” here also finds recipes that use chicken without saying so in the title.</p>
+        Those recipes get tagged, so searching “chicken” here also finds recipes that use chicken without saying so in the title.
+        A <strong>search hint</strong> (zucchini, kale…) works the same for search and Claude, but gets no chip on the catalog page.</p>
       <div class="isbnrow"><input id="ingname" placeholder="Ingredient, e.g. Chicken" autocomplete="off" list="dl-ing">
         <label class="btn primary">Choose ingredient CSV<input id="ingfile" type="file" accept=".csv,text/csv" hidden></label></div>
+      <label class="chk"><input type="checkbox" id="inghint" checked> Search hint only (no chip on the catalog page)</label>
       <datalist id="dl-ing"></datalist>
       <div id="ingprev"></div><div id="inglist" style="margin-top:12px"></div></div>
     <div class="panel"><h3>Covers & details</h3><p class="small muted" id="enrichmsg" style="margin-top:0">Checking…</p>
@@ -792,9 +794,15 @@ async function eybView() {
   const ingList = async () => {
     const { ingredients } = await api("ingredients");
     $("#dl-ing").innerHTML = ingredients.map((i) => `<option value="${esc(i.name)}">`).join("");
-    $("#inglist").innerHTML = ingredients.length ? `<ul class="rlist">${ingredients.map((i) => `<li data-id="${i.id}"><div class="rn">
-      <a href="#/?ingredient=${encodeURIComponent(i.name)}">${esc(i.name)}</a></div><span class="pg">${i.n.toLocaleString()} recipes</span>
-      <span class="acts"><button class="rm" title="Remove this ingredient tag (recipes stay)">✕</button></span></li>`).join("")}</ul>` : "";
+    $("#inglist").innerHTML = ingredients.length ? `<ul class="rlist">${ingredients.map((i) => `<li data-id="${i.id}" data-hint="${i.hint ? 1 : 0}"><div class="rn">
+      <a href="#/?ingredient=${encodeURIComponent(i.name)}">${esc(i.name)}</a>${i.hint ? ` <span class="small muted">· search hint</span>` : ""}</div><span class="pg">${i.n.toLocaleString()} recipes</span>
+      <span class="acts"><button class="kind" title="${i.hint ? "Show as a chip on the catalog page" : "Make it a search hint: no chip on the catalog page"}">${i.hint ? "Show chip" : "Hide chip"}</button>
+      <button class="rm" title="Remove this ingredient tag (recipes stay)">✕</button></span></li>`).join("")}</ul>` : "";
+    $$("#inglist .kind").forEach((b) => b.onclick = async () => {
+      const li = b.closest("li");
+      try { await api("ingredients/" + li.dataset.id, { method: "PUT", body: { hint: li.dataset.hint !== "1" } }); } catch (e) { toast(e.message); return; }
+      S.ingredients = null; ingList();
+    });
     $$("#inglist .rm").forEach((b) => b.onclick = async () => {
       const li = b.closest("li");
       if (!confirm(`Remove the “${li.querySelector("a").textContent}” tag? The recipes themselves stay.`)) return;
@@ -808,6 +816,7 @@ async function eybView() {
     let r;
     try { r = await api("ingredients/preview", { method: "POST", body: fd }); } catch (err) { toast(err.message); return; }
     if (!$("#ingname").value && r.ingredient) $("#ingname").value = r.ingredient;
+    if (r.exists) $("#inghint").checked = r.hint;  // an existing tag keeps its kind unless you change it here
     const box = $("#ingprev");
     const sum = (k) => r.groups.reduce((a, g) => a + (g.match ? g[k] : 0), 0);
     const opt = (sel) => `<option value="skip">Skip</option><option value="create">Add as a new book</option>` + r.books.map((b) => `<option value="${b.id}" ${sel && sel.id === b.id ? "selected" : ""}>${esc(b.title)}</option>`).join("");
@@ -827,9 +836,10 @@ async function eybView() {
       r.groups.forEach((g) => { decisions[g.eyb_title] = g.match ? g.match.id : "skip"; });
       $$("#ingprev tr[data-t]").forEach((tr) => { decisions[tr.dataset.t] = $(".dec", tr).value; });
       const fd2 = new FormData(); fd2.append("file", ingfile); fd2.append("ingredient", name); fd2.append("decisions", JSON.stringify(decisions));
+      fd2.append("hint", $("#inghint").checked ? "1" : "0");
       try {
         const res = await api("ingredients/commit", { method: "POST", body: fd2 });
-        box.innerHTML = `<div class="panel" style="margin:12px 0 0"><strong>${esc(res.ingredient)}:</strong> ${res.tagged.toLocaleString()} recipes tagged${res.added_recipes ? ` (${res.added_recipes} new recipes added)` : ""}, ${res.total.toLocaleString()} in all.
+        box.innerHTML = `<div class="panel" style="margin:12px 0 0"><strong>${esc(res.ingredient)}${res.hint ? " (search hint)" : ""}:</strong> ${res.tagged.toLocaleString()} recipes tagged${res.added_recipes ? ` (${res.added_recipes} new recipes added)` : ""}, ${res.total.toLocaleString()} in all.
           <a href="#/?ingredient=${encodeURIComponent(res.ingredient)}">Show them</a></div>`;
         S.ingredients = null; S.facets = null; ingList(); $("#ingname").value = ""; ingfile = null;
       } catch (err) { toast(err.message); }

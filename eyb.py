@@ -61,7 +61,7 @@ def garbled_twin(garbled, good):
 
 
 def merge_recipe(con, src, dst):
-    """Fold recipe `src` into `dst`, keeping its ingredient tags, star, rating, notes and Dinner Log links."""
+    """Fold recipe `src` into `dst`, keeping its ingredient tags, star, rating, notes, photos and Dinner Log links."""
     con.execute("INSERT OR IGNORE INTO recipe_ingredients(recipe_id, ingredient_id) "
                 "SELECT ?, ingredient_id FROM recipe_ingredients WHERE recipe_id=?", (dst, src))
     con.execute("""UPDATE recipes SET
@@ -73,6 +73,7 @@ def merge_recipe(con, src, dst):
         WHERE id=:d""", {"s": src, "d": dst})
     con.execute("UPDATE cooked SET recipe_id=? WHERE recipe_id=?", (dst, src))
     con.execute("UPDATE dl_link SET recipe_id=? WHERE recipe_id=?", (dst, src))
+    con.execute("UPDATE recipe_photos SET recipe_id=? WHERE recipe_id=?", (dst, src))
     con.execute("DELETE FROM recipes WHERE id=?", (src,))
 
 

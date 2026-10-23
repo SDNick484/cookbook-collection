@@ -234,3 +234,23 @@ table.preview.eyb select { width: 100%; max-width: 100%; font-size: .9rem; }
 .ing.on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 .ing.on span { color: var(--paper); opacity: .75; }
 @media (max-width: 640px) { .ingchips { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; } .ing { flex: none; } }
+/* photos of what we cooked */
+.photos { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px 12px; }
+@media (max-width: 480px) { .photos { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.photos .ph { display: block; padding: 0; border: 0; background: none; text-align: left; min-width: 0; }
+.photos .ph img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px; display: block; background: var(--chip); }
+.photos .ph:hover img { filter: brightness(1.06); }
+.photos .pn { display: block; margin-top: 5px; font-size: .9rem; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.photos .pd { display: block; font-size: .8rem; color: var(--muted); }
+.rlist .acts button.pho { font-size: .95rem; }
+.rlist .acts button.pho .n { font-size: .72rem; margin-left: 1px; }
+.pgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px; }
+.pgrid .pt { position: relative; display: grid; gap: 2px; min-width: 0; }
+.pgrid img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; cursor: zoom-in; }
+.pgrid .x { position: absolute; top: 4px; right: 4px; padding: 0 7px; border-radius: 999px; background: rgba(0,0,0,.55); color: #fff; border: 0; line-height: 1.5; }
+dialog.lb { width: min(1100px, calc(100vw - 16px)); max-height: calc(100vh - 16px); padding: 8px; }
+dialog.lb img { display: block; width: 100%; max-height: calc(100vh - 110px); object-fit: contain; border-radius: 6px; }
+dialog.lb::backdrop { background: rgba(0,0,0,.8); }
+.lbbar { display: flex; align-items: center; gap: 8px; padding: 8px 4px 2px; }
+.lbbar .rn { flex: 1; min-width: 0; }
+.lbbar button { padding: 4px 12px; font-size: 1.1rem; }

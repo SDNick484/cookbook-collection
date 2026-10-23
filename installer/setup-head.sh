@@ -49,7 +49,7 @@ fi
 
 echo "==> Creating user and folders"
 id "$SVC_USER" >/dev/null 2>&1 || adduser -S -D -H -h "$DATA_DIR" -s /sbin/nologin "$SVC_USER"
-mkdir -p "$APP_DIR" "$DATA_DIR/covers" /var/lib/ct210-ops /var/backups/ct210
+mkdir -p "$APP_DIR" "$DATA_DIR/covers" "$DATA_DIR/photos" /var/lib/ct210-ops /var/backups/ct210
 # read-only access to Dinner Log's database (it lives in a group-readable folder)
 if grep -q '^dinnerlog:' /etc/group; then
   addgroup "$SVC_USER" dinnerlog 2>/dev/null || true

@@ -260,3 +260,4 @@ dialog.lb::backdrop { background: rgba(0,0,0,.8); }
 .rlist .pg.web { text-decoration: none; color: var(--accent); }
 .rlist.links li { align-items: center; }
 .rlist.links .ln { width: 100%; font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--ink); }
+.rlist .acts button.kind { font-size: .8rem; text-decoration: underline; }

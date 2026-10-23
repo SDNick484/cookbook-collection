@@ -152,3 +152,27 @@ def test_startup_merges_and_reports(c, book):
     assert [r["id"] for r in c.get(f"/api/books/{book}").json["recipes"]] == [good]
     merged = c.get("/admin/api/recipes/garbled").json["merged"]
     assert merged["n"] >= 1 and merged["at"]
+
+
+def test_more_specific_tag_wins(c, book):
+    con = A.connect()
+    ids = {n: A.name_id(con, "ingredients", n) for n in ("Potatoes", "Sweet potatoes", "Beans", "Green beans", "Chicken")}
+    con.execute("UPDATE ingredients SET hint=1 WHERE name IN ('Sweet potatoes', 'Green beans')")
+    con.commit()
+    try:
+        names = lambda q: sorted(t for _, t in I.resolve(con, q))
+        assert names("sweet potatoes") == ["Sweet potatoes"] and names("Sweet potato") == ["Sweet potatoes"]
+        assert names("potatoes") == ["Potatoes"] and names("mashed potatoes") == ["Potatoes"]
+        assert names("green beans") == ["Green beans"] and names("beans") == ["Beans"]
+        assert names("chicken and sweet potatoes") == ["Chicken", "Sweet potatoes"]   # unrelated tags: both
+        # a sweet potato recipe tagged only Sweet potatoes is found (the Potatoes tag isn't also required)
+        rid = c.post(f"/admin/api/books/{book}/recipes", json={"name": "Roasted tubers with miso"}).json["id"]
+        con.execute("INSERT INTO recipe_ingredients VALUES (?,?)", (rid, ids["Sweet potatoes"]))
+        con.commit()
+        got = {r["id"] for r in c.get("/api/recipes", query_string={"ingredient": "sweet potatoes", "book": book}).json["recipes"]}
+        assert got == {rid}
+    finally:
+        for iid in ids.values():
+            con.execute("DELETE FROM ingredients WHERE id=?", (iid,))
+        con.commit()
+        con.close()

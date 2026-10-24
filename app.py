@@ -377,6 +377,13 @@ def healthz():
     return {"ok": True, "fts": HAS_FTS}
 
 
+def cuisine_condition(name):
+    """Books of this cuisine: their own, or a tag with the cuisine's name ("Portuguese" on a New England book
+    whose cuisine is American). That gives a book a second cuisine, while stats count it once, under its own."""
+    return ("(b.cuisine=? OR b.id IN (SELECT bt.book_id FROM book_tags bt JOIN tags t ON t.id=bt.tag_id "
+            "WHERE fold(t.name)=fold(?)))", [name, name])
+
+
 # ------------------------------------------------------------- read API
 def list_books(private):
     q = request.args.get("q", "").strip()
@@ -395,8 +402,9 @@ def list_books(private):
         sql += " AND instr(fold(b.title || ' ' || coalesce(b.subtitle, '')), ?) > 0"
         args.append(fold(t))
     if request.args.get("cuisine"):
-        sql += " AND b.cuisine = ?"
-        args.append(request.args["cuisine"])
+        cond, a = cuisine_condition(request.args["cuisine"])
+        sql += " AND " + cond
+        args += a
     if request.args.get("tag"):
         sql += " AND b.id IN (SELECT bt.book_id FROM book_tags bt JOIN tags t ON t.id=bt.tag_id WHERE t.name=?)"
         args.append(request.args["tag"])
@@ -485,8 +493,9 @@ def recipe_filter(params, private):
         where.append("r.book_id=?")
         args.append(int(params["book"]))
     if params.get("cuisine"):
-        where.append("b.cuisine=?")
-        args.append(params["cuisine"])
+        cond, a = cuisine_condition(params["cuisine"])
+        where.append(cond)
+        args += a
     if params.get("tag"):
         where.append("b.id IN (SELECT bt.book_id FROM book_tags bt JOIN tags t ON t.id=bt.tag_id WHERE t.name=?)")
         args.append(params["tag"])
@@ -545,7 +554,9 @@ def facets(private):
     by_name = lambda rows: sorted((dict(r) for r in rows), key=lambda x: fold(x["name"]))  # É with E, not after Z
     return jsonify(
         cuisines=by_name(d.execute(
-            "SELECT cuisine AS name, count(*) AS n FROM books WHERE cuisine IS NOT NULL GROUP BY cuisine")),
+            "SELECT c.name, count(*) AS n FROM (SELECT DISTINCT cuisine AS name FROM books WHERE cuisine IS NOT NULL) c "
+            "JOIN books b ON b.cuisine=c.name OR b.id IN (SELECT bt.book_id FROM book_tags bt JOIN tags t "
+            "ON t.id=bt.tag_id WHERE fold(t.name)=fold(c.name)) GROUP BY c.name")),  # as the filter counts them
         tags=by_name(d.execute(
             "SELECT t.name, count(*) AS n FROM tags t JOIN book_tags bt ON bt.tag_id=t.id GROUP BY t.id")),
         authors=by_name(d.execute(

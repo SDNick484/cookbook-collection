@@ -693,10 +693,12 @@ MCP_INSTRUCTIONS = ("Search a home cookbook collection: books, and recipes index
                     "the stock itself); when next_offset is present there are more results to fetch.")
 
 
+BOOK_FIELDS = ["title", "subtitle", "authors", "publisher", "year", "cuisine", "tags", "recipe_count",
+               "status", "location", "rating", "cooked_count", "cooked_last", "want_count"]  # the last six: private only
+
+
 def _book_out(b, private):
-    keys = ["id", "title", "subtitle", "authors", "publisher", "year", "cuisine", "tags", "recipe_count"]
-    if private:
-        keys += ["status", "location", "rating", "cooked_count", "cooked_last", "want_count"]
+    keys = ["id"] + BOOK_FIELDS[:8] + (BOOK_FIELDS[8:] if private else [])
     return {k: b.get(k) for k in keys if b.get(k) not in (None, [], "")}
 
 
@@ -779,12 +781,16 @@ def t_search_books(a, private):
             args.append(a[k] if k != "author" else f"%{a[k]}%")
     rows = db().execute(sql + " ORDER BY b.title LIMIT ?", args + [max(1, min(int(a.get("limit") or 50), 200))]).fetchall()
     books = core.book_dicts(rows, private)
-    if private:
+    fields = set(a.get("fields") or [])
+    if private and (not fields or fields & {"cooked_count", "cooked_last"}):
         ensure_synced()
         cb = cooked_by_book([b["id"] for b in books])
         for b in books:
             b.update(cb.get(b["id"], {}))
-    return {"count": len(books), "books": [_book_out(b, private) for b in books]}
+    out = [_book_out(b, private) for b in books]
+    if fields:  # just these, for an overview of many books without filling the context
+        out = [{k: v for k, v in b.items() if k in fields or k == "id"} for b in out]
+    return {"count": len(books), "books": out}
 
 
 def t_get_book(a, private):
@@ -904,7 +910,10 @@ TOOLS = [
      "e.g. to find books whose index still needs scanning. recipe_count says how many recipes each book has.",
      _S(query={"type": "string"}, cuisine={"type": "string"}, tag={"type": "string"}, author={"type": "string"},
         indexed={"type": "boolean", "description": "false: only books with no recipes indexed; true: only books with some"},
-        limit={"type": "integer"})),
+        fields={"type": "array", "items": {"type": "string", "enum": BOOK_FIELDS},
+                "description": "Return only these fields (id is always included), e.g. [\"title\", \"cuisine\", \"tags\"] "
+                "when listing many books: the full records are several times larger"},
+        limit={"type": "integer", "description": "Max books, default 50, at most 200"})),
     ("get_book", False, t_get_book, "A cookbook's details and every recipe indexed from it, in page order.",
      _S(book_id={"type": "integer"}, title={"type": "string"})),
     ("list_categories", False, t_list_categories, "Cuisines and tags used in the collection, with book counts.", _S()),

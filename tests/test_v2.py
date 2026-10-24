@@ -321,6 +321,38 @@ def test_mcp_private(c, monkeypatch):
     assert rpc(c, "tools/list", headers=hdr).status_code == 200
 
 
+def test_mcp_update_book(c, monkeypatch):
+    monkeypatch.setattr(X, "MCP_TOKEN", "s3cret-token")
+    hdr = {"Authorization": "Bearer s3cret-token"}
+    a = c.post("/admin/api/books", json={"title": "Fix Me Pozole", "cuisine": "Mexican", "tags": ["Caucasus"]}).json
+    b = c.post("/admin/api/books", json={"title": "Fix Me Too", "tags": ["Caucasus", "Soup"]}).json
+    call = lambda args, h=hdr: rpc(c, "tools/call", {"name": "update_book", "arguments": args}, headers=h).json
+    tools = {t["name"]: t for t in rpc(c, "tools/list", headers=hdr).json["result"]["tools"]}
+    assert tools["update_book"]["annotations"]["readOnlyHint"] is False
+    # public callers can't see or use it
+    assert "update_book" not in {t["name"] for t in rpc(c, "tools/list").json["result"]["tools"]}
+    assert call({"book_id": b["id"], "cuisine": "Mexican"}, h={})["error"]["code"] == -32602
+
+    res = call({"book_id": b["id"], "cuisine": "mexican", "add_tags": ["Single Subject"], "remove_tags": ["caucasus"]})
+    out = res["result"]["structuredContent"]
+    assert out["before"] == {"cuisine": None, "tags": ["Caucasus", "Soup"]}
+    assert out["after"] == {"cuisine": "Mexican", "tags": ["Single Subject", "Soup"]}  # joins the existing spelling
+    found = {x["title"] for x in c.get("/api/books?cuisine=Mexican").json["books"]}
+    assert "Fix Me Too" in found
+    assert c.get("/api/books?q=single subject").json["books"]  # search sees the new tag
+
+    # the last book's tag goes away with it; an empty cuisine clears it
+    call({"book_id": a["id"], "cuisine": "", "remove_tags": ["Caucasus"]})
+    con = A.connect()
+    assert con.execute("SELECT cuisine FROM books WHERE id=?", (a["id"],)).fetchone()[0] is None
+    if not con.execute("SELECT 1 FROM book_tags bt JOIN tags t ON t.id=bt.tag_id WHERE t.name='Caucasus'").fetchone():
+        assert not con.execute("SELECT 1 FROM tags WHERE name='Caucasus'").fetchone()
+    con.close()
+    assert call({"book_id": 999999})["result"]["isError"]
+    for x in (a, b):
+        c.delete(f"/admin/api/books/{x['id']}")
+
+
 def test_match_book_prefers_word_overlap():
     books = [(1, X.norm_title("Simple"), X.tokens("Simple")),
              (2, X.norm_title("Ottolenghi Simple"), X.tokens("Ottolenghi Simple")),

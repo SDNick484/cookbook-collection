@@ -418,3 +418,22 @@ def test_books_not_indexed_yet(c):
     assert some in with_recipes and empty not in with_recipes
     for bid in (empty, gone, some):
         c.delete(f"/admin/api/books/{bid}")
+
+
+def test_second_cuisine_by_tag(c):
+    """A tag with a cuisine's name files the book under that cuisine too; stats still count its own cuisine."""
+    main = c.post("/admin/api/books", json={"title": "Zz Portuguese Main", "cuisine": "Portuguese"}).json
+    second = c.post("/admin/api/books", json={"title": "Zz Provincetown", "cuisine": "American",
+                                               "tags": ["portuguese", "New England"]}).json
+    r = c.post(f"/admin/api/books/{second['id']}/recipes", json={"name": "Zz kale soup", "page": "40"}).json
+    titles = lambda url: {b["title"] for b in c.get(url).json["books"]}
+    assert {"Zz Portuguese Main", "Zz Provincetown"} <= titles("/api/books?cuisine=Portuguese")
+    assert "Zz Provincetown" in titles("/api/books?cuisine=American")
+    assert "Zz Provincetown" not in titles("/api/books?cuisine=French")
+    port = next(x for x in c.get("/api/facets").json["cuisines"] if x["name"] == "Portuguese")
+    assert port["n"] == len(titles("/api/books?cuisine=Portuguese&limit=500"))
+    assert [x["name"] for x in c.get("/api/recipes?q=zz kale&cuisine=Portuguese").json["recipes"]] == ["Zz kale soup"]
+    res = rpc(c, "tools/call", {"name": "search_books", "arguments": {"cuisine": "Portuguese"}}).json["result"]
+    assert "Zz Provincetown" in {b["title"] for b in res["structuredContent"]["books"]}
+    for x in (main, second):
+        c.delete(f"/admin/api/books/{x['id']}")

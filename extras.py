@@ -333,8 +333,9 @@ def suggest(mode="want", cuisine=None, tag=None, n=5, seed=None):
     con = db()
     where, args = [], []
     if cuisine:
-        where.append("b.cuisine=?")
-        args.append(cuisine)
+        cond, a = core.cuisine_condition(cuisine)
+        where.append(cond)
+        args += a
     if tag:
         where.append("b.id IN (SELECT bt.book_id FROM book_tags bt JOIN tags t ON t.id=bt.tag_id WHERE t.name=?)")
         args.append(tag)
@@ -767,8 +768,11 @@ def t_search_books(a, private):
         indexed = a["indexed"] not in (False, 0, "false", "False", "0", "no")
         sql += (" AND b.kind IS NULL AND " + ("" if indexed else "NOT ")
                 + "EXISTS (SELECT 1 FROM recipes r WHERE r.book_id=b.id)")
-    for k, s in (("cuisine", " AND b.cuisine=?"),
-                 ("tag", " AND b.id IN (SELECT bt.book_id FROM book_tags bt JOIN tags t ON t.id=bt.tag_id WHERE t.name=?)"),
+    if a.get("cuisine"):
+        cond, ca = core.cuisine_condition(a["cuisine"])
+        sql += " AND " + cond
+        args += ca
+    for k, s in (("tag", " AND b.id IN (SELECT bt.book_id FROM book_tags bt JOIN tags t ON t.id=bt.tag_id WHERE t.name=?)"),
                  ("author", " AND b.id IN (SELECT ba.book_id FROM book_authors ba JOIN authors au ON au.id=ba.author_id WHERE au.name LIKE ?)")):
         if a.get(k):
             sql += s
@@ -894,7 +898,8 @@ TOOLS = [
            offset={"type": "integer", "description": "Skip this many results: pass next_offset from the previous "
                    "call to get the next page"})}),
     ("search_books", False, t_search_books,
-     "Find cookbooks in the collection by words (title, author, publisher, tags), cuisine, tag or author. "
+     "Find cookbooks in the collection by words (title, author, publisher, tags), cuisine, tag or author. A book has one "
+     "main cuisine, and a tag with another cuisine's name gives it a second one; the cuisine filter matches both. "
      "indexed: false lists the cookbooks with no recipes indexed yet (so their recipes can't be searched), "
      "e.g. to find books whose index still needs scanning. recipe_count says how many recipes each book has.",
      _S(query={"type": "string"}, cuisine={"type": "string"}, tag={"type": "string"}, author={"type": "string"},
@@ -916,6 +921,8 @@ TOOLS = [
     ("update_book", True, t_update_book,
      "Fix a cookbook's cuisine or tags. Only these can change: give cuisine to set it (an empty string clears it), "
      "add_tags / remove_tags to change tags. Use the cuisine and tag names list_categories shows when one fits. "
+     "For a book of two cuisines, set the main one as cuisine and add the other as a tag with the same name "
+     "(cuisine American, tag Portuguese): the cuisine filter then finds it under both, and stats count the main one. "
      "Returns the book's cuisine and tags before and after.",
      {**_S(book_id={"type": "integer"}, cuisine={"type": "string"},
            add_tags={"type": "array", "items": {"type": "string"}},

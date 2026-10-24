@@ -437,3 +437,12 @@ def test_second_cuisine_by_tag(c):
     assert "Zz Provincetown" in {b["title"] for b in res["structuredContent"]["books"]}
     for x in (main, second):
         c.delete(f"/admin/api/books/{x['id']}")
+
+
+def test_mcp_search_books_fields(c):
+    call = lambda args: rpc(c, "tools/call", {"name": "search_books", "arguments": args}).json["result"]["structuredContent"]
+    full = call({"limit": 200})
+    slim = call({"limit": 200, "fields": ["title", "cuisine"]})
+    assert slim["count"] == full["count"] and len(json.dumps(slim)) < len(json.dumps(full)) / 2
+    assert all(set(b) <= {"id", "title", "cuisine"} and "id" in b for b in slim["books"])
+    assert all("rating" not in b for b in call({"fields": ["title", "rating"]})["books"])  # still public-only

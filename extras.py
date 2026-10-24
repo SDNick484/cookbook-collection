@@ -847,6 +847,36 @@ def t_set_want(a, private):
     return {"ok": True, "recipe_id": rid, "want_to_try": bool(a.get("want", True))}
 
 
+def t_update_book(a, private):
+    """Set a book's cuisine and add or remove its tags; nothing else about a book can change from here."""
+    con = db()
+    bid = int(a["book_id"])
+    row = con.execute("SELECT * FROM books WHERE id=?", (bid,)).fetchone()
+    if not row:
+        raise ValueError("No such book")
+    tag_names = lambda: [r[0] for r in con.execute(
+        "SELECT t.name FROM tags t JOIN book_tags bt ON bt.tag_id=t.id WHERE bt.book_id=? ORDER BY t.name", (bid,))]
+    before = {"cuisine": row["cuisine"], "tags": tag_names()}
+    if "cuisine" in a:
+        cuisine = clean(str(a["cuisine"] or ""))
+        if cuisine:  # reuse an existing cuisine's spelling, so "mexican" joins "Mexican"
+            same = con.execute("SELECT cuisine FROM books WHERE fold(cuisine)=fold(?) GROUP BY cuisine "
+                               "ORDER BY count(*) DESC LIMIT 1", (cuisine,)).fetchone()
+            cuisine = same[0] if same else cuisine
+        con.execute("UPDATE books SET cuisine=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (cuisine, bid))
+    drop = {fold(t) for t in a.get("remove_tags") or [] if t}
+    tags = [t for t in before["tags"] if fold(t) not in drop] + [t for t in a.get("add_tags") or [] if clean(t)]
+    if drop or a.get("add_tags"):
+        authors = [r[0] for r in con.execute("SELECT a.name FROM authors a JOIN book_authors ba ON ba.author_id=a.id "
+                                             "WHERE ba.book_id=? ORDER BY pos", (bid,))]
+        core.set_people(con, bid, authors, tags)
+        con.execute("DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM book_tags)")
+    core.reindex_book(con, bid)
+    con.commit()
+    after = {"cuisine": con.execute("SELECT cuisine FROM books WHERE id=?", (bid,)).fetchone()[0], "tags": tag_names()}
+    return {"ok": True, "book_id": bid, "title": row["title"], "before": before, "after": after}
+
+
 _S = lambda **p: {"type": "object", "properties": p}
 TOOLS = [
     ("search_recipes", False, t_search_recipes,
@@ -883,7 +913,15 @@ TOOLS = [
      _S()),
     ("set_want_to_try", True, t_set_want, "Star (or unstar) a recipe as want-to-try.",
      {**_S(recipe_id={"type": "integer"}, want={"type": "boolean"}), "required": ["recipe_id"]}),
+    ("update_book", True, t_update_book,
+     "Fix a cookbook's cuisine or tags. Only these can change: give cuisine to set it (an empty string clears it), "
+     "add_tags / remove_tags to change tags. Use the cuisine and tag names list_categories shows when one fits. "
+     "Returns the book's cuisine and tags before and after.",
+     {**_S(book_id={"type": "integer"}, cuisine={"type": "string"},
+           add_tags={"type": "array", "items": {"type": "string"}},
+           remove_tags={"type": "array", "items": {"type": "string"}}), "required": ["book_id"]}),
 ]
+WRITE_TOOLS = {"set_want_to_try", "update_book"}
 
 
 def mcp_auth(token):
@@ -932,7 +970,7 @@ def handle_rpc(msg, private):
         fill = lambda x: json.loads(json.dumps(x).replace("{tags}", tags.replace('"', "'")))
         return rpc_result(mid, {"tools": [
             {"name": n, "description": fill(d), "inputSchema": fill(s),
-             "annotations": {"readOnlyHint": n != "set_want_to_try"}}
+             "annotations": {"readOnlyHint": n not in WRITE_TOOLS}}
             for n, priv_only, _, d, s in TOOLS if private or not priv_only]})
     if method == "tools/call":
         name, args = params.get("name"), params.get("arguments") or {}

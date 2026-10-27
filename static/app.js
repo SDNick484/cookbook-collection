@@ -23,6 +23,15 @@ function toast(msg) {
   const t = $("#toast"); t.textContent = msg; t.classList.add("show");
   clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove("show"), 3200);
 }
+// Run a mutation with its button disabled until it settles. A failure shows the server's message
+// (not an unhandled rejection), and the button comes back either way.
+async function busy(btn, fn) {
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  try { return await fn(); }
+  catch (err) { toast(err.message); }
+  finally { btn.disabled = false; }
+}
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 
 /* ---------- covers ---------- */
@@ -302,19 +311,19 @@ async function bookView(id) {
   $$(".photos .ph").forEach((el) => el.onclick = () => lightbox(S.bookPhotos, +el.dataset.i));
   if ($("#rate")) rateWidget($("#rate"), b.rating, (v) => api("books/" + id, { method: "PUT", body: { rating: v } }));
   if ($("#addr")) $("#addr").onclick = () => recipeDialog(null, id, () => bookView(id));
-  if ($("#shelf")) $("#shelf").onclick = async () => {  // cookbooks only, not websites
+  if ($("#shelf")) $("#shelf").onclick = () => busy($("#shelf"), async () => {  // cookbooks only, not websites
     await api(`books/${id}/shelf`, { method: "POST", body: { out: b.status !== "out" } });
     toast(b.status === "out" ? "Back on the shelf" : "Marked as pulled out"); bookView(id);
-  };
+  });
   if ($("#wish")) $("#wish").onclick = () => wishDialog(b);
   dinnersPanel(b);
   $$("#rl li").forEach((li) => {
     const r = b.recipes.find((x) => x.id === +li.dataset.id);
-    $(".want", li).onclick = async () => {
+    $(".want", li).onclick = () => busy($(".want", li), async () => {
       await api("recipes/" + r.id, { method: "PUT", body: { want_to_try: !r.want_to_try } });
       r.want_to_try = !r.want_to_try; const b2 = $(".want", li);
       b2.classList.toggle("on", !!r.want_to_try); b2.textContent = r.want_to_try ? "★" : "☆";
-    };
+    });
     $(".edit", li).onclick = () => recipeDialog(r, id, () => bookView(id));
     $(".pho", li).onclick = () => photoDialog(r, () => bookView(id));
   });
@@ -421,10 +430,10 @@ function recipeDialog(r, bookId, done) {
     d.remove();
   });
   const del = $("#del", d);
-  if (del) del.onclick = async () => {
+  if (del) del.onclick = () => busy(del, async () => {
     if (!confirm(`Delete “${r.name}”?`)) return;
     await api("recipes/" + r.id, { method: "DELETE" }); d.close(); toast("Deleted"); done();
-  };
+  });
   d.showModal();
 }
 
@@ -497,15 +506,15 @@ async function editView(id) {
     try { await api(`books/${id}/cover`, { method: "POST", body: fd }); toast("Cover updated"); editView(id); } catch (err) { toast(err.message); }
   };
   $("#ol").onclick = () => findMatches(form, $("#cands"));
-  $("#save").onclick = async () => {
+  $("#save").onclick = () => busy($("#save"), async () => {
     if (!form.reportValidity()) return;
     try { await api("books/" + id, { method: "PUT", body: readForm(form) }); S.facets = null; toast("Saved"); location.hash = `#/book/${id}`; }
     catch (e) { toast(e.message); }
-  };
-  $("#delete").onclick = async () => {
+  });
+  $("#delete").onclick = () => busy($("#delete"), async () => {
     if (!confirm(`Delete “${b.title}” and its ${b.recipes.length} recipes? This can't be undone.`)) return;
     await api("books/" + id, { method: "DELETE" }); S.facets = null; toast("Deleted"); location.hash = "#/";
-  };
+  });
 }
 
 async function findMatches(form, box) {
@@ -557,7 +566,7 @@ async function addView() {
   $("#isbn").onkeydown = (e) => { if (e.key === "Enter") look(e.target.value); };
   if (canScan) $("#scan").onclick = () => scanBarcode().then((code) => { if (code) { $("#isbn").value = code; look(code); } });
   $("#ol").onclick = () => { $("#cands").classList.remove("hidden"); findMatches(form, $("#cands")); };
-  $("#save").onclick = async () => {
+  $("#save").onclick = () => busy($("#save"), async () => {
     if (!form.reportValidity()) return;
     try {
       const b = await api("books", { method: "POST", body: readForm(form) });
@@ -566,7 +575,7 @@ async function addView() {
       toast(e.message);
       if (e.status === 409 && e.data.book_id) $("#lookres").innerHTML = `<a href="#/book/${e.data.book_id}">Open the existing book</a>`;
     }
-  };
+  });
 }
 
 async function scanBarcode() {
@@ -689,13 +698,13 @@ async function indexView(id) {
   };
   $("#snap").onchange = readPhotos;
   $("#photos").onchange = readPhotos;
-  $("#parse").onclick = async () => {
+  $("#parse").onclick = () => busy($("#parse"), async () => {
     const { rows } = await api(`books/${id}/index/parse`, { method: "POST", body: { text: $("#txt").value } });
     if (!rows.length) { $("#prev").innerHTML = `<p class="muted">Couldn't find any entries with page numbers in that text.</p>`; return; }
     keepEdits();  // the pasted text replaces what was pasted before; photo entries stay
     collected = collected.filter((r) => r.from !== "paste").concat(rows.map((r) => ({ ...r, from: "paste" })));
     renderPreview(collected);
-  };
+  });
   function renderPreview(rows) {
     const fresh = rows.filter((r) => !r.duplicate).length;
     $("#prev").innerHTML = `<div class="section-h"><h2>${rows.length} entries</h2><span class="muted small">${rows.length - fresh} already in this book</span></div>
@@ -708,13 +717,13 @@ async function indexView(id) {
       $("#txt").value = ""; $("#txt").focus(); $("#prev").innerHTML = ""; $("#photostatus").textContent = ""; collected = []; photos = 0;
       window.scrollTo(0, 0);
     };
-    $("#commit").onclick = async () => {
+    $("#commit").onclick = () => busy($("#commit"), async () => {
       const out = $$("#prev tbody tr").filter((tr) => $("input[type=checkbox]", tr).checked).map((tr) => ({
         heading: $("[name=heading]", tr).value, name: $("[name=name]", tr).value, page: $("[name=page]", tr).value }));
       const r = await api(`books/${id}/index/commit`, { method: "POST", body: { rows: out } });
       toast(`Added ${r.added} recipes${r.skipped ? `, skipped ${r.skipped} duplicates` : ""}`);
       $("#txt").value = ""; $("#prev").innerHTML = ""; $("#photostatus").textContent = ""; collected = []; photos = 0; S.facets = null; window.scrollTo(0, 0);
-    };
+    });
   }
 }
 
@@ -793,16 +802,16 @@ async function dinnersPanel(b) {
     ${done.length ? `<details><summary class="small">Matched dinners (${done.length})</summary><ul class="rlist dl">${done.map(item).join("")}</ul></details>` : ""}`;
   $$("li[data-meal]", box).forEach((li) => {
     const meal = d.find((x) => x.meal_id === +li.dataset.meal);
-    $("select", li).onchange = async (e) => {
+    $("select", li).onchange = (e) => busy(e.target, async () => {
       await api("dinnerlog/link", { method: "POST", body: { meal_id: meal.meal_id, recipe_id: e.target.value ? +e.target.value : null } });
       toast("Linked"); bookView(b.id);
-    };
+    });
     const mk = $(".mk", li);
-    if (mk) mk.onclick = async () => {
+    if (mk) mk.onclick = () => busy(mk, async () => {
       const page = (meal.dl_detail || "").match(/\d+/);
       await api("dinnerlog/link", { method: "POST", body: { meal_id: meal.meal_id, create: { book_id: b.id, name: meal.meal_name, page: page ? page[0] : "" } } });
       toast("Recipe added and linked"); bookView(b.id);
-    };
+    });
   });
 }
 
@@ -862,9 +871,9 @@ async function eybView() {
     $("#enrichmsg").textContent = r.remaining ? `${r.remaining} books have an ISBN but are missing a cover, year or publisher.` : "Every book with an ISBN has been looked up.";
     $("#enrich").disabled = !r.remaining;
   };
-  status();
-  $("#enrich").onclick = async () => {
-    const btn = $("#enrich"); btn.disabled = true; let covers = 0, done = 0, last = -1;
+  status().catch((e) => toast(e.message));
+  $("#enrich").onclick = () => busy($("#enrich"), async () => {
+    let covers = 0, done = 0, last = -1;
     for (;;) {
       const r = await api("enrich", { method: "POST", body: { limit: 5 } });
       done += r.results.length; covers += r.results.filter((x) => x.filled.includes("cover")).length;
@@ -872,8 +881,8 @@ async function eybView() {
       if (!r.remaining || !r.results.length || r.remaining === last) break;
       last = r.remaining;
     }
-    toast(`Done: ${covers} covers added`); S.facets = null; status();
-  };
+    toast(`Done: ${covers} covers added`); S.facets = null; await status();
+  });
   let ingNames = [];
   const ingList = async () => {
     const { ingredients } = await api("ingredients");
@@ -888,11 +897,11 @@ async function eybView() {
       try { await api("ingredients/" + li.dataset.id, { method: "PUT", body: { hint: li.dataset.hint !== "1" } }); } catch (e) { toast(e.message); return; }
       S.ingredients = null; ingList();
     });
-    $$("#inglist .rm").forEach((b) => b.onclick = async () => {
+    $$("#inglist .rm").forEach((b) => b.onclick = () => busy(b, async () => {
       const li = b.closest("li");
       if (!confirm(`Remove the “${li.querySelector("a").textContent}” tag? The recipes themselves stay.`)) return;
       await api("ingredients/" + li.dataset.id, { method: "DELETE" }); S.ingredients = null; ingList();
-    });
+    }));
   };
   ingList();
   let ingfile = null;
@@ -914,7 +923,7 @@ async function eybView() {
       ${un.length ? `<div class="overflow"><table class="preview eyb"><tbody>${un.map((g) => `<tr data-t="${esc(g.eyb_title)}"><td><strong>${esc(g.eyb_title)}</strong>
         <div class="small muted">${esc(g.author)} · ${g.count} recipes</div></td><td><select class="dec">${opt(null)}</select></td></tr>`).join("")}</tbody></table></div>` : ""}
       <div class="actions"><button class="primary" id="inggo">Tag recipes</button></div>`;
-    $("#inggo").onclick = async () => {
+    $("#inggo").onclick = () => busy($("#inggo"), async () => {
       const name = $("#ingname").value.trim();
       if (!name) { toast("Name the ingredient first"); $("#ingname").focus(); return; }
       const decisions = {};
@@ -928,7 +937,7 @@ async function eybView() {
           <a href="#/?ingredient=${encodeURIComponent(res.ingredient)}">Show them</a></div>`;
         S.ingredients = null; S.facets = null; ingList(); $("#ingname").value = ""; ingfile = null;
       } catch (err) { toast(err.message); }
-    };
+    });
   };
   $("#ingfile").onchange = (e) => { ingfile = e.target.files[0]; e.target.value = ""; if (ingfile) ingPreview(); };
   // A zip of ingredient lists: preview every file with an editable tag name, then tag them all at once.
@@ -1026,7 +1035,7 @@ async function eybView() {
         if (["create", "skip"].includes(sel.value)) sel.value = v;
       });
       if ($("#allnew")) { $("#allnew").onclick = () => setNew("create"); $("#skipnew").onclick = () => setNew("skip"); }
-      $("#eybgo").onclick = async () => {
+      $("#eybgo").onclick = () => busy($("#eybgo"), async () => {
         const decisions = {}, retitle = [];
         $$("tr[data-i]", box).forEach((tr) => {
           decisions[tr.dataset.i] = $(".dec", tr).value;
@@ -1037,7 +1046,7 @@ async function eybView() {
         S.facets = null;
         box.innerHTML = `<div class="panel"><strong>Bookshelf imported.</strong> ${res.updated} books updated${res.retitled ? ` (${res.retitled} retitled)` : ""}, ${res.created} added${res.skipped ? `, ${res.skipped} skipped` : ""}. New books are on the <a href="#/review">Needs review</a> list for cuisine and tags.</div>`;
         status();
-      };
+      });
     } else {
       const opt = (sel) => `<option value="skip">Skip</option><option value="create">Add as a new book</option>` + r.books.map((b) => `<option value="${b.id}" ${sel && sel.id === b.id ? "selected" : ""}>${esc(b.title)}</option>`).join("");
       box.innerHTML = `<div class="section-h"><h2>Recipes: ${r.total}</h2><span class="small muted">${r.groups.length} books</span></div>
@@ -1050,14 +1059,14 @@ async function eybView() {
       if ($("#unadd")) { $("#unadd").onclick = () => setUn("create"); $("#unskip").onclick = () => setUn("skip"); }
       $$("tr[data-t] select", box).forEach((sel) => sel.onchange = () => { const h = $(".hint", sel.closest("td")); if (h) h.hidden = sel.value !== "skip"; });
       $$("tr[data-t] select", box).forEach((sel) => sel.onchange && sel.onchange());
-      $("#eybgo").onclick = async () => {
+      $("#eybgo").onclick = () => busy($("#eybgo"), async () => {
         const decisions = {};
         $$("tr[data-t]", box).forEach((tr) => { decisions[tr.dataset.t] = $(".dec", tr).value; });
         const fd = new FormData(); fd.append("file", file); fd.append("decisions", JSON.stringify(decisions));
         const res = await api("eyb/commit", { method: "POST", body: fd });
         S.facets = null;
         box.innerHTML = `<div class="panel"><strong>Recipes imported.</strong> ${res.added.toLocaleString()} added to ${res.books} books${res.created_books ? ` (${res.created_books} new books, on <a href="#/review">Needs review</a>)` : ""}${res.duplicates ? `, ${res.duplicates} already here` : ""}${res.skipped ? `, ${res.skipped} skipped` : ""}.</div>`;
-      };
+      });
     }
   }
 }
@@ -1174,10 +1183,10 @@ async function statsView() {
     const o = allBooks.map((b) => `<option value="${b.id}">${esc(b.title)}</option>`).join("");
     sels.forEach((sel) => {
       sel.insertAdjacentHTML("beforeend", o);
-      sel.onchange = async () => {
+      sel.onchange = () => busy(sel, async () => {
         await api("dinnerlog/alias", { method: "POST", body: { title: sel.closest("li").dataset.title, book_id: +sel.value } });
         toast("Matched"); statsView();
-      };
+      });
     });
   }
 }
@@ -1214,7 +1223,7 @@ async function linksView() {
         <div class="rn"><input class="ln" value="${esc(x.title)}" aria-label="Recipe name"><div class="bk">${esc(x.site_name)} · <a href="${esc(x.url)}" target="_blank" rel="noopener">open ↗</a></div></div></li>`).join("")}</ul>
         <label class="chk"><input type="checkbox" id="lw"> Star them as want to try</label>
         <div class="actions"><button class="primary" id="ls">Save ${plural(fresh.length, "recipe")}</button></div>` : ""}`;
-    if ($("#ls")) $("#ls").onclick = async () => {
+    if ($("#ls")) $("#ls").onclick = () => busy($("#ls"), async () => {
       const items = $$("#lres li[data-i]").filter((li) => $(".inc", li).checked)
         .map((li) => ({ url: fresh[+li.dataset.i].url, title: $(".ln", li).value, want_to_try: $("#lw").checked }));
       if (!items.length) { toast("Nothing selected"); return; }
@@ -1225,7 +1234,7 @@ async function linksView() {
           ${res.books.map((b) => `<a href="#/book/${b.id}">Open ${esc(b.title)}</a>`).join(" · ")}</p>`;
         $("#lt").value = "";
       } catch (e) { toast(e.message); }
-    };
+    });
   };
   $("#lp").onclick = preview;
   if (prefill) preview();

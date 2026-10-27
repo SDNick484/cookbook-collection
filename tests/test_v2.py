@@ -662,3 +662,37 @@ def test_delete_book_removes_its_cover_and_dish_photos(c):
     gone = [p for p in files if p.name.startswith("doomed")]
     assert not any(p.exists() for p in gone)
     assert (P.PHOTO_DIR / "kept-dish-test.jpg").exists()  # another book's photo stays
+
+
+# ------------------------------------------------------------ wish list availability
+def test_wishlist_flag_is_off_when_nothing_answers(c, monkeypatch):
+    """A configured URL with no wish list app behind it must not show the 'Add to a wish list' button."""
+    monkeypatch.setattr(X, "WISHLIST_URL", "http://127.0.0.1:1")  # port 1: nothing listens
+    assert c.get("/admin/api/features").json["wishlist"] is False
+    monkeypatch.setattr(X, "WISHLIST_URL", "")
+    assert c.get("/admin/api/features").json["wishlist"] is False
+
+
+def test_wishlist_flag_is_on_when_app_answers(c, monkeypatch):
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import threading
+
+    class People(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = json.dumps([{"id": 1, "name": "Bob"}]).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), People)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setattr(X, "WISHLIST_URL", f"http://127.0.0.1:{srv.server_port}")
+        assert c.get("/admin/api/features").json["wishlist"] is True
+    finally:
+        srv.shutdown()

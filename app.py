@@ -107,11 +107,18 @@ def _close(_exc):
 
 
 def init_db():
-    global HAS_FTS
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     COVER_DIR.mkdir(parents=True, exist_ok=True)
     lock_f = open(DATA_DIR / ".init.lock", "w")
-    fcntl.flock(lock_f, fcntl.LOCK_EX)
+    try:
+        fcntl.flock(lock_f, fcntl.LOCK_EX)
+        _init_db_locked()
+    finally:
+        lock_f.close()
+
+
+def _init_db_locked():
+    global HAS_FTS
     con = connect()
     con.executescript(SCHEMA)
     import extras, eyb, ingredients, photos, online
@@ -142,7 +149,6 @@ def init_db():
         con.execute("INSERT INTO recipes_fts(rowid, name, heading) SELECT id, fold(name), fold(heading) FROM recipes")
     con.commit()
     con.close()
-    lock_f.close()
 
 
 def load_seed(con, data):
@@ -223,6 +229,8 @@ def reindex_all_books(con):
 
 def fts_query(q):
     """Prefix match for every word, folded the same way as the index."""
+    if isinstance(q, (list, tuple)):
+        q = " ".join(q)
     return " ".join(f'"{t}"*' for t in re.findall(r"\w+", fold(q)))
 
 

@@ -496,9 +496,11 @@ def test_mcp_bad_bearer_rejected_and_online_hidden_from_public(c, monkeypatch):
     assert all(x["name"] != "OnlineOnlyCuisine" for x in pub_cats["cuisines"])
     assert all(x["name"] != "OnlineOnlyTag" for x in pub_cats["tags"])
 
-    # Punctuation-only query in MCP search_books must not crash FTS5
+    # Punctuation-only and word queries in MCP search_books must both succeed
     res = rpc(c, "tools/call", {"name": "search_books", "arguments": {"query": "???"}}).json["result"]
     assert not res.get("isError")
+    kw = rpc(c, "tools/call", {"name": "search_books", "arguments": {"query": "zuni"}}).json["result"]
+    assert not kw.get("isError") and any("Zuni" in b["title"] for b in kw["structuredContent"]["books"])
     c.delete(f"/admin/api/books/{online_book['id']}")
 
 

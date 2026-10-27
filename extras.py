@@ -788,7 +788,7 @@ def t_search_books(a, private):
     q = (a.get("query") or "").strip()
     if q:
         fts_words, like_words = core.search_words(q)
-        fts_q = core.fts_query(fts_words)
+        fts_q = core.fts_query(" ".join(fts_words))
         if core.HAS_FTS and fts_q:
             sql += " AND b.id IN (SELECT rowid FROM books_fts WHERE books_fts MATCH ?)"
             args.append(fts_q)

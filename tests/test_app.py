@@ -299,6 +299,8 @@ def test_cover_url_rejects_bad_scheme_and_disallowed_redirect():
         A.save_cover_from_url(1, "file:///etc/passwd")
     with pytest.raises(ValueError, match="cover host not allowed"):
         A.save_cover_from_url(1, "ftp://covers.openlibrary.org/b/id/123-L.jpg")
+    with pytest.raises(ValueError, match="cover redirect host not allowed"):
+        A._CoverRedirectHandler().redirect_request(None, None, 302, "Found", {}, "http://evil.example.com/x.jpg")
 
 
 def test_static_assets_version_and_anonymized_meta(c):

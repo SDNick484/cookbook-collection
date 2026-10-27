@@ -258,3 +258,20 @@ def test_zip_of_ingredient_lists(c):
     for r in c.get(f"/admin/api/books/{zuni}").json["recipes"]:
         if r["name"].startswith("Zip test"):
             c.delete(f"/admin/api/recipes/{r['id']}")
+
+
+def test_preview_groups_deduplicates_across_combined_zip_files(c):
+    with A.app.app_context():
+        rows = [
+            {"book_title": "The Zuni Cafe Cookbook", "author": "Judy Rodgers", "name": "Brand New Stock Recipe", "page": "401"},
+            {"book_title": "The Zuni Cafe Cookbook", "author": "Judy Rodgers", "name": "Brand New Stock Recipe", "page": "401"},
+            {"book_title": "The Zuni Cafe Cookbook", "author": "Judy Rodgers", "name": "Zuni Roast Chicken with Bread Salad", "page": "342"},
+            {"book_title": "The Zuni Cafe Cookbook", "author": "Judy Rodgers", "name": "Zuni Roast Chicken with Bread Salad", "page": "342"},
+        ]
+        groups, by_title = I.book_groups(rows)
+        matched = I.eyb.match_recipe_books(groups, I.eyb.catalog())
+        out = I.preview_groups(groups, by_title, matched, set(), {})
+    assert len(out) == 1
+    g = out[0]
+    assert g["new"] == 1 and g["existing"] == 1 and g["already"] == 2
+

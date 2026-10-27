@@ -71,8 +71,10 @@ def merge_recipe(con, src, dst):
         heading = coalesce(heading, (SELECT heading FROM recipes WHERE id=:s)),
         last_made = nullif(max(coalesce(last_made, ''), coalesce((SELECT last_made FROM recipes WHERE id=:s), '')), '')
         WHERE id=:d""", {"s": src, "d": dst})
-    con.execute("UPDATE cooked SET recipe_id=? WHERE recipe_id=?", (dst, src))
-    con.execute("UPDATE dl_link SET recipe_id=? WHERE recipe_id=?", (dst, src))
+    con.execute("UPDATE OR IGNORE cooked SET recipe_id=? WHERE recipe_id=?", (dst, src))
+    con.execute("DELETE FROM cooked WHERE recipe_id=?", (src,))
+    con.execute("UPDATE OR IGNORE dl_link SET recipe_id=? WHERE recipe_id=?", (dst, src))
+    con.execute("DELETE FROM dl_link WHERE recipe_id=?", (src,))
     con.execute("UPDATE recipe_photos SET recipe_id=? WHERE recipe_id=?", (dst, src))
     con.execute("DELETE FROM recipes WHERE id=?", (src,))
 
@@ -409,12 +411,12 @@ def eyb_commit():
     kind, rows = read_upload()
     try:
         decisions = json.loads(request.form.get("decisions") or "{}")
+        retitle = {str(x) for x in json.loads(request.form.get("retitle") or "[]")}
     except ValueError:
         return make_err(400, "Bad decisions")
     con = db()
     if kind == "books":
         updated = created = skipped = retitled = 0
-        retitle = {str(x) for x in json.loads(request.form.get("retitle") or "[]")}
         for i, e in enumerate(rows):
             d = decisions.get(str(i), "auto")
             if d == "skip":

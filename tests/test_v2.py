@@ -502,3 +502,35 @@ def test_mcp_bad_bearer_rejected_and_online_hidden_from_public(c, monkeypatch):
     c.delete(f"/admin/api/books/{online_book['id']}")
 
 
+def test_wishlist_endpoints_mocked(c, monkeypatch):
+    calls = []
+    def fake_wishlist(method, path, body=None):
+        calls.append((method, path, body))
+        if path == "/api/people":
+            return [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]
+        if path == "/api/people/2/items" and method == "POST":
+            return {"id": 55, "name": body["name"], "price": body.get("price")}
+        raise RuntimeError("unexpected call")
+
+    monkeypatch.setattr(X, "wishlist_call", fake_wishlist)
+    people = c.get("/admin/api/wishlist/people").json["people"]
+    assert [p["name"] for p in people] == ["Alice", "Bob"]
+    bid = c.post("/admin/api/books", json={"title": "Mocked Wish Book", "authors": ["Author A"],
+                                           "isbn": "9780131103627", "status": "wanted"}).json["id"]
+    r = c.post(f"/admin/api/books/{bid}/wishlist", json={"person_id": 2, "price": "25.00"})
+    assert r.status_code == 200 and r.json["person"] == "Bob"
+    assert c.get(f"/admin/api/books/{bid}").json["wishes"][0]["person_name"] == "Bob"
+    c.delete(f"/admin/api/books/{bid}")
+
+
+def test_ops_and_installer_hardening():
+    health = (ROOT / "ops/app-health").read_text()
+    assert '[ "$fails" -ge 2 ]' in health
+    backup = (ROOT / "ops/app-backup").read_text()
+    assert ".timeout 30000" in backup and 'rm -f "$out"' in backup
+    setup = (ROOT / "installer/setup-head.sh").read_text()
+    assert "add_setting \"$CONF\" ANTHROPIC_EFFORT" in setup
+    assert '%s="%s"' in setup
+
+
+

@@ -15,18 +15,26 @@ echo "$CHECKS" | while IFS='|' read -r name url svc; do
   key=$(echo "$svc" | tr -c 'a-z0-9\n' '_')
   fails=$(cat "$STATE/$key.fails" 2>/dev/null || echo 0)
   was=$(cat "$STATE/$key.state" 2>/dev/null || echo up)
-  # "up" = the app answers HTTP at all (a 401/403 from a login wall still means it's running)
-  if wget -S -O /dev/null -T 15 "$url" 2>&1 | grep -q 'HTTP/1\.[01] [234]'; then
+  # "up" = /healthz returns 200, or a root URL answers 200/401/403 (a login wall still means it's running)
+  code=$(wget -S -O /dev/null -T 15 "$url" 2>&1 | awk '/^  HTTP\/1\.[01] / { c=$2 } END { print c }')
+  case "$url:$code" in
+    */healthz:200) ok=1 ;;
+    */healthz:*) ok=0 ;;
+    *:200|*:401|*:403) ok=1 ;;
+    *) ok=0 ;;
+  esac
+  if [ "$ok" = 1 ]; then
     if [ "$was" = down ]; then
       /usr/local/bin/app-notify "$name" up "$name is answering again on this server."
     fi
     echo 0 > "$STATE/$key.fails"; echo up > "$STATE/$key.state"
   else
     fails=$((fails + 1)); echo "$fails" > "$STATE/$key.fails"
-    if [ "$fails" -eq 2 ] && [ "$was" != down ]; then
-      echo down > "$STATE/$key.state"
+    if [ "$fails" -ge 2 ] && [ "$was" != down ]; then
       st=$(rc-service "$svc" status 2>&1 | tail -n1)
-      /usr/local/bin/app-notify "$name" down "$name on this server hasn't answered for ~30 minutes ($url). Service: $st. Log: /var/log/$svc.log"
+      if /usr/local/bin/app-notify "$name" down "$name on this server hasn't answered for ~30 minutes ($url). Service: $st. Log: /var/log/$svc.log"; then
+        echo down > "$STATE/$key.state"
+      fi
     fi
   fi
 done

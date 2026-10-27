@@ -539,6 +539,7 @@ PHOTO_SCHEMA = """CREATE TABLE IF NOT EXISTS photo_jobs (
   id TEXT PRIMARY KEY, book_id INTEGER, status TEXT,  -- running | done | error
   rows TEXT, warning TEXT, error TEXT, created REAL)"""
 PHOTO_JOB_LIMIT = 600  # seconds; a job still "running" after this died with its worker
+PHOTO_JOBS_MAX = 3     # reading photos at once across the server; more get 429 and the browser retries
 
 
 def call_claude(image_jpeg, media_type="image/jpeg", effort=None):
@@ -670,6 +671,15 @@ def index_photo(book_id):
     except Exception as e:  # noqa: BLE001
         return make_err(400, f"Couldn't read that image: {e}")
     job_id = secrets.token_urlsafe(12)
+    con.commit()
+    con.execute("BEGIN IMMEDIATE")  # one writer at a time, so the count and the insert agree across workers
+    active = con.execute("SELECT count(*) FROM photo_jobs WHERE status='running' AND created > ?",
+                         (time.time() - PHOTO_JOB_LIMIT,)).fetchone()[0]
+    if active >= PHOTO_JOBS_MAX:
+        con.rollback()
+        resp = make_err(429, "Too many photos are being read right now. Trying again shortly.")
+        resp.headers["Retry-After"] = "5"
+        return resp
     con.execute("DELETE FROM photo_jobs WHERE created < ?", (time.time() - 86400,))
     con.execute("INSERT INTO photo_jobs (id, book_id, status, created) VALUES (?,?,'running',?)",
                 (job_id, book_id, time.time()))
@@ -687,7 +697,10 @@ def index_photo_job(job_id):
     elapsed = int(time.time() - j["created"])
     if j["status"] == "running":
         if elapsed > PHOTO_JOB_LIMIT:
-            return jsonify(status="error", error="Reading that photo stopped partway (the server may have restarted). Try it again.")
+            msg = "Reading that photo stopped partway (the server may have restarted). Try it again."
+            db().execute("UPDATE photo_jobs SET status='error', error=? WHERE id=? AND status='running'", (msg, job_id))
+            db().commit()
+            return jsonify(status="error", error=msg)
         return jsonify(status="running", elapsed=elapsed)
     if j["status"] == "error":
         return jsonify(status="error", error=j["error"])

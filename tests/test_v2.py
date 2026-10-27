@@ -581,3 +581,84 @@ def test_top_recipes_average_ignores_unrated_cooked_meals(c, dl):
     s = c.get("/admin/api/stats").json
     row = next(r for r in s["top_recipes"] if r["name"] == "Stats Pie Fix")
     assert row["avg"] == 9.0
+
+
+# ------------------------------------------------------------ photo index jobs and deleted books
+import photos as P  # noqa: E402
+
+
+def _tiny_jpeg():
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (40, 40), "white").save(buf, "JPEG")
+    return buf.getvalue()
+
+
+def _start_photo_job(c, bid):
+    return c.post(f"/admin/api/books/{bid}/index/photo",
+                  data={"file": (io.BytesIO(_tiny_jpeg()), "page.jpg")}, content_type="multipart/form-data")
+
+
+@pytest.fixture()
+def photo_book(c, monkeypatch):
+    monkeypatch.setattr(X, "ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(X, "run_photo_job", lambda *a, **k: None)  # never call Claude from tests
+    con = A.connect()  # jobs left running by earlier tests would count against the cap
+    con.execute("DELETE FROM photo_jobs")
+    con.commit()
+    con.close()
+    return c.post("/admin/api/books", json={"title": "Photo Job Book", "authors": ["A"]}).json["id"]
+
+
+def _insert_job(job_id, book_id, status, created):
+    con = A.connect()
+    con.execute("INSERT INTO photo_jobs (id, book_id, status, created) VALUES (?,?,?,?)",
+                (job_id, book_id, status, created))
+    con.commit()
+    con.close()
+
+
+def test_photo_jobs_are_capped_while_running(c, photo_book):
+    now = time.time()
+    for i in range(getattr(X, "PHOTO_JOBS_MAX", 3)):
+        _insert_job(f"busy-{i}", photo_book, "running", now)
+    r = _start_photo_job(c, photo_book)
+    assert r.status_code == 429 and r.headers.get("Retry-After")
+
+
+def test_stale_running_jobs_do_not_block_new_ones(c, photo_book):
+    old = time.time() - X.PHOTO_JOB_LIMIT - 60
+    for i in range(getattr(X, "PHOTO_JOBS_MAX", 3)):
+        _insert_job(f"dead-{i}", photo_book, "running", old)
+    assert _start_photo_job(c, photo_book).status_code == 202
+
+
+def test_timed_out_photo_job_is_saved_as_error(c, photo_book):
+    _insert_job("timed-out", photo_book, "running", time.time() - X.PHOTO_JOB_LIMIT - 30)
+    assert c.get("/admin/api/index/photo/timed-out").json["status"] == "error"
+    row = A.connect().execute("SELECT status, error FROM photo_jobs WHERE id='timed-out'").fetchone()
+    assert row["status"] == "error" and row["error"]
+
+
+def test_delete_book_removes_its_cover_and_dish_photos(c):
+    bid = c.post("/admin/api/books", json={"title": "Doomed Book", "authors": ["A"]}).json["id"]
+    keep = c.post("/admin/api/books", json={"title": "Kept Book", "authors": ["A"]}).json["id"]
+    rid = c.post(f"/admin/api/books/{bid}/recipes", json={"name": "Doomed dish"}).json["id"]
+    krid = c.post(f"/admin/api/books/{keep}/recipes", json={"name": "Kept dish"}).json["id"]
+    cover = "doomed-cover-test.jpg"
+    con = A.connect()
+    con.execute("UPDATE books SET cover=? WHERE id=?", (cover, bid))
+    con.executemany("INSERT INTO recipe_photos(recipe_id, file) VALUES (?,?)",
+                    [(rid, "doomed-dish-test.jpg"), (krid, "kept-dish-test.jpg")])
+    con.commit()
+    con.close()
+    P.PHOTO_DIR.mkdir(parents=True, exist_ok=True)
+    A.COVER_DIR.mkdir(parents=True, exist_ok=True)
+    files = {A.COVER_DIR / cover: b"x", P.PHOTO_DIR / "doomed-dish-test.jpg": b"x",
+             P.PHOTO_DIR / P.thumb_name("doomed-dish-test.jpg"): b"x", P.PHOTO_DIR / "kept-dish-test.jpg": b"x"}
+    for path, data in files.items():
+        path.write_bytes(data)
+    assert c.delete(f"/admin/api/books/{bid}").status_code == 200
+    gone = [p for p in files if p.name.startswith("doomed")]
+    assert not any(p.exists() for p in gone)
+    assert (P.PHOTO_DIR / "kept-dish-test.jpg").exists()  # another book's photo stays

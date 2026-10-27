@@ -668,10 +668,17 @@ async function indexView(id) {
         (a full index page can take a minute or two)</div>` : "") + notes.map((x) => `<div class="${x.bad ? "err" : ""}">${esc(x.text)}</div>`).join("");
     };
     show();
+    // The server reads a few photos at once; when it's full (429) wait and try again.
+    const start = async (fd) => {
+      for (let tries = 0; ; tries++) {
+        try { return await api(`books/${id}/index/photo`, { method: "POST", body: fd }); }
+        catch (err) { if (err.status !== 429 || tries >= 40) throw err; await new Promise((r) => setTimeout(r, 3000)); }
+      }
+    };
     const jobs = files.map(async (f, i) => {
       const fd = new FormData(); fd.append("file", f);
       try {
-        const { job } = await api(`books/${id}/index/photo`, { method: "POST", body: fd });
+        const { job } = await start(fd);
         return await waitForJob(job, (s) => { secs = Math.max(secs, s); show(); });
       } catch (err) { return { error: err.message }; }
       finally { waiting.delete(i); show(); }

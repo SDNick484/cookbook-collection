@@ -249,6 +249,8 @@ def search_words(q):
     scripts don't put spaces between words, so they're matched as substrings rather than word prefixes."""
     words, runs = [], []
     for t in re.findall(r"\w+", unicodedata.normalize("NFKC", q or "")):
+        if not re.findall(r"\w+", fold(t)):
+            continue
         (runs if UNSPACED.search(t) else words).append(t)
     return words, runs
 
@@ -563,20 +565,24 @@ def recipe_books(private):
 def facets(private):
     d = db()
     by_name = lambda rows: sorted((dict(r) for r in rows), key=lambda x: fold(x["name"]))  # É with E, not after Z
+    pub = "" if private else f" WHERE {PUBLIC_BOOKS}"
+    pub_and = "" if private else f" AND {PUBLIC_BOOKS}"
     return jsonify(
         cuisines=by_name(d.execute(
-            "SELECT c.name, count(*) AS n FROM (SELECT DISTINCT cuisine AS name FROM books WHERE cuisine IS NOT NULL) c "
-            "JOIN books b ON b.cuisine=c.name OR b.id IN (SELECT bt.book_id FROM book_tags bt JOIN tags t "
-            "ON t.id=bt.tag_id WHERE fold(t.name)=fold(c.name)) GROUP BY c.name")),  # as the filter counts them
+            "SELECT c.name, count(*) AS n FROM (SELECT DISTINCT cuisine AS name FROM books b WHERE cuisine IS NOT NULL"
+            + pub_and + ") c JOIN books b ON (b.cuisine=c.name OR b.id IN (SELECT bt.book_id FROM book_tags bt "
+            "JOIN tags t ON t.id=bt.tag_id WHERE fold(t.name)=fold(c.name)))" + pub + " GROUP BY c.name")),
         tags=by_name(d.execute(
-            "SELECT t.name, count(*) AS n FROM tags t JOIN book_tags bt ON bt.tag_id=t.id GROUP BY t.id")),
+            "SELECT t.name, count(*) AS n FROM tags t JOIN book_tags bt ON bt.tag_id=t.id "
+            "JOIN books b ON b.id=bt.book_id" + pub + " GROUP BY t.id")),
         authors=by_name(d.execute(
-            "SELECT a.name, count(*) AS n FROM authors a JOIN book_authors ba ON ba.author_id=a.id GROUP BY a.id")),
+            "SELECT a.name, count(*) AS n FROM authors a JOIN book_authors ba ON ba.author_id=a.id "
+            "JOIN books b ON b.id=ba.book_id" + pub + " GROUP BY a.id")),
         publishers=sorted((r[0] for r in d.execute(
             "SELECT DISTINCT publisher FROM books WHERE publisher IS NOT NULL")), key=fold) if private else [],
         stats={"books": d.execute(f"SELECT count(*) FROM books b WHERE {PUBLIC_BOOKS}").fetchone()[0],  # cookbooks
                "recipes": d.execute("SELECT count(*) FROM recipes r JOIN books b ON b.id=r.book_id"
-                                    + ("" if private else f" WHERE {PUBLIC_BOOKS}")).fetchone()[0]},
+                                    + pub).fetchone()[0]},
     )
 
 

@@ -475,3 +475,30 @@ def test_dinnerlog_resyncs_when_local_recipe_added(c, dl):
     assert rec["cooked_count"] == 1
     c.delete(f"/admin/api/books/{bid}")
 
+
+def test_mcp_bad_bearer_rejected_and_online_hidden_from_public(c, monkeypatch):
+    monkeypatch.setattr(X, "MCP_TOKEN", "s3cret-token")
+    # Bad Bearer header on /mcp must return 401, not downgrade to public
+    assert rpc(c, "tools/list", headers={"Authorization": "Bearer wrong-token"}).status_code == 401
+
+    # Online source book with tags/cuisine must not leak into public facets or shadow public get_book
+    c.post("/admin/api/online/commit", json={"items": [
+        {"url": "https://cooking.nytimes.com/recipes/1017256-french-onion-soup", "title": "Test Dish"}
+    ]})
+    online_book = next(b for b in c.get("/admin/api/books?q=NYT").json["books"] if b["kind"] == "online")
+    c.put(f"/admin/api/books/{online_book['id']}", json={"cuisine": "OnlineOnlyCuisine", "tags": ["OnlineOnlyTag"]})
+
+    pub_facets = c.get("/api/facets").json
+    assert all(x["name"] != "OnlineOnlyCuisine" for x in pub_facets["cuisines"])
+    assert all(x["name"] != "OnlineOnlyTag" for x in pub_facets["tags"])
+
+    pub_cats = rpc(c, "tools/call", {"name": "list_categories", "arguments": {}}).json["result"]["structuredContent"]
+    assert all(x["name"] != "OnlineOnlyCuisine" for x in pub_cats["cuisines"])
+    assert all(x["name"] != "OnlineOnlyTag" for x in pub_cats["tags"])
+
+    # Punctuation-only query in MCP search_books must not crash FTS5
+    res = rpc(c, "tools/call", {"name": "search_books", "arguments": {"query": "???"}}).json["result"]
+    assert not res.get("isError")
+    c.delete(f"/admin/api/books/{online_book['id']}")
+
+

@@ -787,8 +787,19 @@ def t_search_books(a, private):
         sql += " AND b.status NOT IN ('gone') AND " + core.PUBLIC_BOOKS
     q = (a.get("query") or "").strip()
     if q:
-        sql += " AND b.id IN (SELECT rowid FROM books_fts WHERE books_fts MATCH ?)" if core.HAS_FTS else " AND fold(b.title) LIKE ?"
-        args.append(core.fts_query(q) if core.HAS_FTS else f"%{fold(q)}%")
+        fts_words, like_words = core.search_words(q)
+        fts_q = core.fts_query(fts_words)
+        if core.HAS_FTS and fts_q:
+            sql += " AND b.id IN (SELECT rowid FROM books_fts WHERE books_fts MATCH ?)"
+            args.append(fts_q)
+        elif fts_words and not core.HAS_FTS:
+            sql += " AND fold(b.title) LIKE ?"
+            args.append(f"%{fold(q)}%")
+        for w in like_words:
+            sql += " AND fold(b.title) LIKE ?"
+            args.append(f"%{fold(w)}%")
+        if not fts_q and not like_words:
+            return {"count": 0, "books": []}
     if a.get("indexed") is not None:  # false: cookbooks with no recipes indexed yet; true: ones with some
         indexed = a["indexed"] not in (False, 0, "false", "False", "0", "no")
         sql += (" AND b.kind IS NULL AND " + ("" if indexed else "NOT ")
@@ -818,13 +829,16 @@ def t_search_books(a, private):
 
 def t_get_book(a, private):
     con = db()
+    pub = "" if private else f" AND {core.PUBLIC_BOOKS}"
     if a.get("book_id"):
-        row = con.execute("SELECT * FROM books WHERE id=?", (int(a["book_id"]),)).fetchone()
+        row = con.execute("SELECT * FROM books b WHERE b.id=?" + pub, (int(a["book_id"]),)).fetchone()
     elif a.get("title"):
-        row = con.execute("SELECT * FROM books WHERE fold(title)=fold(?)", (a["title"],)).fetchone()
+        row = con.execute("SELECT * FROM books b WHERE fold(b.title)=fold(?)" + pub, (a["title"],)).fetchone()
         if not row and core.HAS_FTS:
-            row = con.execute("SELECT b.* FROM books b WHERE b.id IN (SELECT rowid FROM books_fts WHERE books_fts MATCH ?) "
-                              "LIMIT 1", (core.fts_query(a["title"]),)).fetchone()
+            fts_q = core.fts_query(a["title"])
+            if fts_q:
+                row = con.execute("SELECT b.* FROM books b WHERE b.id IN (SELECT rowid FROM books_fts WHERE books_fts MATCH ?)"
+                                  + pub + " LIMIT 1", (fts_q,)).fetchone()
     else:
         raise ValueError("book_id or title is required")
     if not row or (not private and row["kind"]):
@@ -846,17 +860,23 @@ def t_get_book(a, private):
 
 def t_list_categories(a, private):
     con = db()
+    pub = "" if private else f" WHERE {core.PUBLIC_BOOKS}"
+    pub_and = "" if private else f" AND {core.PUBLIC_BOOKS}"
     return {
         "ingredients": [dict(r) for r in con.execute(
             "SELECT i.name, count(ri.recipe_id) AS recipes, i.hint = 1 AS search_hint FROM ingredients i "
-            "JOIN recipe_ingredients ri ON ri.ingredient_id=i.id GROUP BY i.id ORDER BY 2 DESC")],
+            "JOIN recipe_ingredients ri ON ri.ingredient_id=i.id "
+            "JOIN recipes r ON r.id=ri.recipe_id JOIN books b ON b.id=r.book_id"
+            + pub + " GROUP BY i.id ORDER BY 2 DESC")],
         "cuisines": [dict(r) for r in con.execute(
-            "SELECT cuisine AS name, count(*) AS books FROM books WHERE cuisine IS NOT NULL GROUP BY 1 ORDER BY 2 DESC")],
+            "SELECT cuisine AS name, count(*) AS books FROM books b WHERE cuisine IS NOT NULL"
+            + pub_and + " GROUP BY 1 ORDER BY 2 DESC")],
         "tags": [dict(r) for r in con.execute(
-            "SELECT t.name, count(*) AS books FROM tags t JOIN book_tags bt ON bt.tag_id=t.id GROUP BY t.id ORDER BY 2 DESC")],
+            "SELECT t.name, count(*) AS books FROM tags t JOIN book_tags bt ON bt.tag_id=t.id "
+            "JOIN books b ON b.id=bt.book_id" + pub + " GROUP BY t.id ORDER BY 2 DESC")],
         "totals": {"books": con.execute(f"SELECT count(*) FROM books b WHERE {core.PUBLIC_BOOKS}").fetchone()[0],
                    "recipes": con.execute("SELECT count(*) FROM recipes r JOIN books b ON b.id=r.book_id"
-                                          + ("" if private else f" WHERE {core.PUBLIC_BOOKS}")).fetchone()[0]},
+                                          + pub).fetchone()[0]},
     }
 
 
@@ -875,9 +895,10 @@ def t_set_want(a, private):
     con = db()
     if not con.execute("SELECT 1 FROM recipes WHERE id=?", (rid,)).fetchone():
         raise ValueError("No such recipe")
-    con.execute("UPDATE recipes SET want_to_try=? WHERE id=?", (1 if a.get("want", True) else 0, rid))
+    want = a.get("want", True) not in (False, 0, "false", "False", "0", "no")
+    con.execute("UPDATE recipes SET want_to_try=? WHERE id=?", (1 if want else 0, rid))
     con.commit()
-    return {"ok": True, "recipe_id": rid, "want_to_try": bool(a.get("want", True))}
+    return {"ok": True, "recipe_id": rid, "want_to_try": bool(want)}
 
 
 def t_update_book(a, private):
@@ -897,9 +918,14 @@ def t_update_book(a, private):
                                "ORDER BY count(*) DESC LIMIT 1", (cuisine,)).fetchone()
             cuisine = same[0] if same else cuisine
         con.execute("UPDATE books SET cuisine=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (cuisine, bid))
-    drop = {fold(t) for t in a.get("remove_tags") or [] if t}
-    tags = [t for t in before["tags"] if fold(t) not in drop] + [t for t in a.get("add_tags") or [] if clean(t)]
-    if drop or a.get("add_tags"):
+    rm_raw, add_raw = a.get("remove_tags") or [], a.get("add_tags") or []
+    if isinstance(rm_raw, str):
+        rm_raw = [rm_raw]
+    if isinstance(add_raw, str):
+        add_raw = [add_raw]
+    drop = {fold(t) for t in rm_raw if t}
+    tags = [t for t in before["tags"] if fold(t) not in drop] + [t for t in add_raw if clean(t)]
+    if drop or add_raw:
         authors = [r[0] for r in con.execute("SELECT a.name FROM authors a JOIN book_authors ba ON ba.author_id=a.id "
                                              "WHERE ba.book_id=? ORDER BY pos", (bid,))]
         core.set_people(con, bid, authors, tags)
@@ -965,15 +991,13 @@ WRITE_TOOLS = {"set_want_to_try", "update_book"}
 
 def mcp_auth(token):
     """Returns 'private', 'public' or None."""
-    if MCP_TOKEN:
-        supplied = token or ""
-        auth = request.headers.get("Authorization", "")
-        if auth.startswith("Bearer "):
-            supplied = supplied or auth[7:].strip()
-        if supplied and hmac.compare_digest(supplied, MCP_TOKEN):
+    auth = request.headers.get("Authorization", "")
+    bearer = auth[7:].strip() if auth.startswith("Bearer ") else ""
+    supplied = token or bearer
+    if supplied:
+        if MCP_TOKEN and hmac.compare_digest(supplied, MCP_TOKEN):
             return "private"
-        if token:  # wrong token in the URL
-            return None
+        return None
     return "public" if MCP_PUBLIC else None
 
 
@@ -988,7 +1012,10 @@ def rpc_error(mid, code, msg):
 def handle_rpc(msg, private):
     if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0" or "method" not in msg:
         return rpc_error(msg.get("id") if isinstance(msg, dict) else None, -32600, "Invalid request")
-    mid, method, params = msg.get("id"), msg["method"], msg.get("params") or {}
+    raw_params = msg.get("params")
+    if raw_params is not None and not isinstance(raw_params, dict):
+        return rpc_error(msg.get("id"), -32602, "Invalid params")
+    mid, method, params = msg.get("id"), msg["method"], raw_params or {}
     if mid is None:  # notification
         return None
     if method == "initialize":

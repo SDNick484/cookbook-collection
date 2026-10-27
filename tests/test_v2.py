@@ -446,3 +446,93 @@ def test_mcp_search_books_fields(c):
     assert slim["count"] == full["count"] and len(json.dumps(slim)) < len(json.dumps(full)) / 2
     assert all(set(b) <= {"id", "title", "cuisine"} and "id" in b for b in slim["books"])
     assert all("rating" not in b for b in call({"fields": ["title", "rating"]})["books"])  # still public-only
+
+
+def test_suggest_favorites_multi_cooked_and_parse_truncation(c, dl):
+    old = (date.today() - timedelta(days=200)).isoformat()
+    recent = (date.today() - timedelta(days=2)).isoformat()
+    # Cooked twice: once 200 days ago (rated 9) and once 2 days ago (rated 9)
+    dl(old, "Zuni Roast Chicken with Bread Salad", title="The Zuni Cafe Cookbook", detail="342", rating=9)
+    dl(recent, "Zuni Roast Chicken with Bread Salad", title="The Zuni Cafe Cookbook", detail="342", rating=9)
+    favs = c.get("/admin/api/suggest?mode=favorites&n=50").json["recipes"]
+    assert all(r["name"] != "Zuni Roast Chicken with Bread Salad" for r in favs)
+
+    # Truncation before first '|' on trailing line keeps the preceding complete line
+    rows = X.parse_claude_rows("Chicken | braised | 350\nPork", truncated=True)
+    assert rows == [{"heading": "Chicken", "name": "braised", "page": "350"}]
+
+
+def test_dinnerlog_resyncs_when_local_recipe_added(c, dl):
+    today = date.today().isoformat()
+    bid = c.post("/admin/api/books", json={"title": "Late Indexed Book"}).json["id"]
+    dl(today, "Special Braised Short Ribs", title="Late Indexed Book", detail="42", rating=9)
+    # Initial sync happens while book has no recipes
+    assert c.get("/admin/api/dinnerlog").json["book_only"] >= 1
+    # Adding the recipe on page 42 must invalidate dl_sig and match on next read without touching meals.db
+    rid = c.post(f"/admin/api/books/{bid}/recipes", json={"name": "Special Braised Short Ribs", "page": "42"}).json["id"]
+    book = c.get(f"/admin/api/books/{bid}").json
+    rec = next(r for r in book["recipes"] if r["id"] == rid)
+    assert rec["cooked_count"] == 1
+    c.delete(f"/admin/api/books/{bid}")
+
+
+def test_mcp_bad_bearer_rejected_and_online_hidden_from_public(c, monkeypatch):
+    monkeypatch.setattr(X, "MCP_TOKEN", "s3cret-token")
+    # Bad Bearer header on /mcp must return 401, not downgrade to public
+    assert rpc(c, "tools/list", headers={"Authorization": "Bearer wrong-token"}).status_code == 401
+
+    # Online source book with tags/cuisine must not leak into public facets or shadow public get_book
+    c.post("/admin/api/online/commit", json={"items": [
+        {"url": "https://cooking.nytimes.com/recipes/1017256-french-onion-soup", "title": "Test Dish"}
+    ]})
+    online_book = next(b for b in c.get("/admin/api/books?q=NYT").json["books"] if b["kind"] == "online")
+    c.put(f"/admin/api/books/{online_book['id']}", json={"cuisine": "OnlineOnlyCuisine", "tags": ["OnlineOnlyTag"]})
+
+    pub_facets = c.get("/api/facets").json
+    assert all(x["name"] != "OnlineOnlyCuisine" for x in pub_facets["cuisines"])
+    assert all(x["name"] != "OnlineOnlyTag" for x in pub_facets["tags"])
+
+    pub_cats = rpc(c, "tools/call", {"name": "list_categories", "arguments": {}}).json["result"]["structuredContent"]
+    assert all(x["name"] != "OnlineOnlyCuisine" for x in pub_cats["cuisines"])
+    assert all(x["name"] != "OnlineOnlyTag" for x in pub_cats["tags"])
+
+    # Punctuation-only and word queries in MCP search_books must both succeed
+    res = rpc(c, "tools/call", {"name": "search_books", "arguments": {"query": "???"}}).json["result"]
+    assert not res.get("isError")
+    kw = rpc(c, "tools/call", {"name": "search_books", "arguments": {"query": "zuni"}}).json["result"]
+    assert not kw.get("isError") and any("Zuni" in b["title"] for b in kw["structuredContent"]["books"])
+    c.delete(f"/admin/api/books/{online_book['id']}")
+
+
+def test_wishlist_endpoints_mocked(c, monkeypatch):
+    calls = []
+    def fake_wishlist(method, path, body=None):
+        calls.append((method, path, body))
+        if path == "/api/people":
+            return [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]
+        if path == "/api/people/2/items" and method == "POST":
+            return {"id": 55, "name": body["name"], "price": body.get("price")}
+        raise RuntimeError("unexpected call")
+
+    monkeypatch.setattr(X, "wishlist_call", fake_wishlist)
+    people = c.get("/admin/api/wishlist/people").json["people"]
+    assert [p["name"] for p in people] == ["Alice", "Bob"]
+    bid = c.post("/admin/api/books", json={"title": "Mocked Wish Book", "authors": ["Author A"],
+                                           "isbn": "9780131103627", "status": "wanted"}).json["id"]
+    r = c.post(f"/admin/api/books/{bid}/wishlist", json={"person_id": 2, "price": "25.00"})
+    assert r.status_code == 200 and r.json["person"] == "Bob"
+    assert c.get(f"/admin/api/books/{bid}").json["wishes"][0]["person_name"] == "Bob"
+    c.delete(f"/admin/api/books/{bid}")
+
+
+def test_ops_and_installer_hardening():
+    health = (ROOT / "ops/app-health").read_text()
+    assert '[ "$fails" -ge 2 ]' in health
+    backup = (ROOT / "ops/app-backup").read_text()
+    assert ".timeout 30000" in backup and 'rm -f "$out"' in backup
+    setup = (ROOT / "installer/setup-head.sh").read_text()
+    assert "add_setting \"$CONF\" ANTHROPIC_EFFORT" in setup
+    assert '%s="%s"' in setup
+
+
+

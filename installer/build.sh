@@ -10,8 +10,9 @@ mkdir -p dist "$STAGE/cookbooks"
 cp -r app.py extras.py eyb.py ingredients.py photos.py online.py seed.json README.md ops static tests "$STAGE/cookbooks/"
 find "$STAGE" \( -name __pycache__ -o -name .pytest_cache \) -prune -exec rm -rf {} +
 OUT=dist/setup-cookbooks.sh
+ESC_HOOK=$(printf '%s' "${HA_WEBHOOK_ID:-}" | sed 's/[\\&|]/\\&/g')
 {
-  sed "s/__HA_WEBHOOK_ID__/${HA_WEBHOOK_ID:-}/" installer/setup-head.sh
+  sed "s|__HA_WEBHOOK_ID__|$ESC_HOOK|" installer/setup-head.sh
   echo "__PAYLOAD_BELOW__"
   tar --owner=0 --group=0 -C "$STAGE" -czf - cookbooks | base64
 } > "$OUT"

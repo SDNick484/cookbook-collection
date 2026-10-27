@@ -269,11 +269,14 @@ def preview_groups(groups, by_title, matched, tagged_already, indexes):
                 rid = idx.find(r["name"], r["page"])
                 if rid is None:  # would be added; a stand-in id (negative: never a real one) so repeats count once
                     new += 1
-                    idx.add(-1 - sum(len(x.exact) for x in indexes.values()), r["name"], r["page"])
+                    standin = -1 - sum(len(x.exact) for x in indexes.values())
+                    idx.add(standin, r["name"], r["page"])
+                    tagged_already.add(standin)
                 elif rid in tagged_already:
                     already += 1
                 else:
                     existing += 1
+                    tagged_already.add(rid)
         out.append({"eyb_title": t, "author": g["author"], "count": g["count"], "match": eyb.brief(b),
                     "method": method, "existing": existing, "new": new, "already": already})
     out.sort(key=lambda g: (g["match"] is not None, fold(g["eyb_title"])))

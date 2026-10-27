@@ -22,10 +22,11 @@ for app in cookbooks dinner-log wishlist; do
   for db in "$dir"/*.db; do
     [ -f "$db" ] || continue
     out="$LOCAL_DIR/$STAMP/$app-$(basename "$db")"
-    if sqlite3 "$db" ".backup '$out'" && [ "$(sqlite3 "$out" 'PRAGMA integrity_check;')" = "ok" ]; then
+    if sqlite3 -cmd ".timeout 30000" "$db" ".backup '$out'" && [ "$(sqlite3 "$out" 'PRAGMA integrity_check;')" = "ok" ]; then
       gzip -f "$out"
       log "ok $app/$(basename "$db") ($(du -h "$out.gz" | cut -f1))"
     else
+      rm -f "$out"
       log "FAILED $app/$(basename "$db")"; fail=1
     fi
   done

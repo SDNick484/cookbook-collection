@@ -37,9 +37,10 @@ fi
 if [ -f "$DATA_DIR/cookbooks.db" ]; then
   PRE=/var/backups/apps/cookbooks-before-upgrade-$(date +%Y%m%d-%H%M%S).db
   mkdir -p /var/backups/apps
-  if sqlite3 "$DATA_DIR/cookbooks.db" ".backup '$PRE'" && gzip "$PRE"; then
+  if sqlite3 -cmd ".timeout 30000" "$DATA_DIR/cookbooks.db" ".backup '$PRE'" && gzip "$PRE"; then
     echo "==> Saved the database as it was before this upgrade: $PRE.gz"
   else
+    rm -f "$PRE"
     echo "    couldn't save a pre-upgrade copy of the database; stopping so nothing changes"; exit 1
   fi
 fi
@@ -68,7 +69,7 @@ chown -R "$SVC_USER" "$DATA_DIR"
 # ---------------------------------------------------------------- config
 add_setting() {  # add_setting FILE KEY VALUE COMMENT — only if KEY isn't there yet
   grep -q "^$2=" "$1" 2>/dev/null && return 0
-  printf '\n# %s\n%s=%s\n' "$4" "$2" "$3" >> "$1"
+  printf '\n# %s\n%s="%s"\n' "$4" "$2" "$3" >> "$1"
   ADDED="${ADDED:-} $2"
 }
 if [ ! -f "$CONF" ]; then
@@ -86,6 +87,7 @@ add_setting "$CONF" LAN_EDIT 1 "1 = direct LAN requests (not through Cloudflare)
 add_setting "$CONF" DINNERLOG_DB /var/lib/dinner-log/meals.db "Dinner Log database (read-only) for cooking history"
 add_setting "$CONF" ANTHROPIC_API_KEY "" "Claude API key for reading photos of index pages (console.anthropic.com)"
 add_setting "$CONF" ANTHROPIC_MODEL claude-sonnet-5-5 "Model used for photo import"
+add_setting "$CONF" ANTHROPIC_EFFORT low "Claude effort for index photos (low, medium, high, or empty)"
 add_setting "$CONF" MCP_TOKEN "$(head -c 24 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')" \
   "Secret for private MCP tools: https://<your public address>/mcp/<MCP_TOKEN>"
 add_setting "$CONF" MCP_PUBLIC 1 "1 = /mcp without a token serves public search (books, recipes, pages)"
@@ -150,10 +152,10 @@ echo "Health: $(wget -qO- http://127.0.0.1:$PORT/healthz)"
 DL=$(wget -qO- "http://127.0.0.1:$PORT/admin/api/dinnerlog" 2>/dev/null | sed -n 's/.*"available": *\(true\|false\).*/\1/p' | head -n1)
 echo "Dinner Log link: ${DL:-unknown}"
 [ -n "${ADDED:-}" ] && echo "New settings added:${ADDED}"
-grep -q '^ANTHROPIC_API_KEY=$' "$CONF" && echo "  - Photo import is off until you set ANTHROPIC_API_KEY in $CONF"
-grep -q '^HA_URL=$' "$OPS_CONF" && echo "  - Health alerts are off until you set HA_URL in $OPS_CONF"
-grep -q "^HA_WEBHOOK_ID=$" "$OPS_CONF" && echo "  - Health alerts also need HA_WEBHOOK_ID in $OPS_CONF (the HA automation's webhook)"
-grep -q '^DINNERLOG_URL=$' "$CONF" && echo "  - 'Log this dinner' links are off until you set DINNERLOG_URL in $CONF"
-echo "  - Private MCP URL: https://<your public address>/mcp/$(sed -n 's/^MCP_TOKEN=//p' "$CONF")"
+grep -q '^ANTHROPIC_API_KEY=\(""\|'\'''\''\)\?$' "$CONF" && echo "  - Photo import is off until you set ANTHROPIC_API_KEY in $CONF"
+grep -q '^HA_URL=\(""\|'\'''\''\)\?$' "$OPS_CONF" && echo "  - Health alerts are off until you set HA_URL in $OPS_CONF"
+grep -q '^HA_WEBHOOK_ID=\(""\|'\'''\''\)\?$' "$OPS_CONF" && echo "  - Health alerts also need HA_WEBHOOK_ID in $OPS_CONF (the HA automation's webhook)"
+grep -q '^DINNERLOG_URL=\(""\|'\'''\''\)\?$' "$CONF" && echo "  - 'Log this dinner' links are off until you set DINNERLOG_URL in $CONF"
+echo "  - Private MCP URL: https://<your public address>/mcp/$(sed -n 's/^MCP_TOKEN=//p' "$CONF" | tr -d '"')"
 echo "Config: $CONF, $OPS_CONF   Backups: /var/backups/apps   Logs: /var/log/cookbooks.log, /var/log/app-ops.log"
 exit 0

@@ -62,6 +62,7 @@ async function route() {
     if (path === "eyb" && ADMIN) return await eybView();
     if (path === "links" && ADMIN) return await linksView();
     if (qs) { const p = new URLSearchParams(qs); for (const k of ["q", "cuisine", "tag", "author", "publisher", "ingredient"]) S[k] = p.get(k) || ""; if (p.get("sort")) S.sort = p.get("sort"); }
+    else { S.author = S.publisher = ""; }
     return await homeView();
   } catch (e) {
     view.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
@@ -93,7 +94,9 @@ async function homeView() {
     <div class="grid" id="grid"></div>
     <footer class="foot">${f.stats.books} cookbooks · ${f.stats.recipes.toLocaleString()} recipes indexed</footer>`;
   $("#sort").value = S.sort;
+  let loadSeq = 0;
   const load = async () => {
+    const seq = ++loadSeq;
     const p = new URLSearchParams();
     for (const k of ["q", "cuisine", "tag", "author", "publisher", "sort"]) if (S[k]) p.set(k, S[k]);
     if (S.ingredient) p.set("ingredient", S.ingredient);
@@ -106,6 +109,7 @@ async function homeView() {
       api("books?" + p),
       byBook ? api("recipes/books?" + rp) : wantRecipes ? api("recipes?" + rp) : Promise.resolve({ recipes: [], count: 0 }),
     ]);
+    if (seq !== loadSeq || !$("#summary")) return;
     const chips = [];
     if (S.author) chips.push(`<button class="chip x" data-clear="author">${esc(S.author)}</button>`);
     if (S.publisher) chips.push(`<button class="chip x" data-clear="publisher">${esc(S.publisher)}</button>`);
@@ -114,7 +118,11 @@ async function homeView() {
     if (S.ingredient) chips.push(`<button class="chip x" data-clear="ingredient">Uses ${esc(S.ingredient.toLowerCase())}</button>`);
     const nb = bk.books.length === bk.total ? `${bk.total} books` : bk.books.length ? `${bk.books.length} of ${bk.total} books` : "No matching books";
     $("#summary").innerHTML = `<span>${rc.count ? `${rc.count.toLocaleString()} recipe${rc.count > 1 ? "s" : ""} · ` : ""}${nb}</span>${chips.join("")}`;
-    $$("[data-clear]").forEach((b) => b.onclick = () => { S[b.dataset.clear] = ""; homeView(); });
+    $$("[data-clear]").forEach((b) => b.onclick = () => {
+      S[b.dataset.clear] = "";
+      if (location.hash.includes("?")) history.replaceState(null, "", "#/");
+      homeView();
+    });
     const recipeLine = (r) => `<li><div class="rn"><a href="#/book/${r.book_id}">${r.heading ? `<span class="rh">${esc(r.heading)} · </span>` : ""}${esc(r.name)}</a></div>
         ${whereHTML(r)}</li>`;
     if (byBook) {
@@ -567,13 +575,16 @@ async function scanBarcode() {
   ov.className = "scan";
   ov.innerHTML = `<video playsinline muted></video><div class="reticle"></div><div class="bar"><span>Point at the barcode</span><button>Cancel</button></div>`;
   document.body.append(ov);
-  let stream, done = false;
-  const stop = () => { done = true; stream && stream.getTracks().forEach((t) => t.stop()); ov.remove(); };
+  let stream, done = false, onNav;
+  const stop = () => { done = true; window.removeEventListener("hashchange", onNav); stream && stream.getTracks().forEach((t) => t.stop()); ov.remove(); };
   return new Promise(async (resolve) => {
+    onNav = () => { stop(); resolve(null); };
+    window.addEventListener("hashchange", onNav);
     $("button", ov).onclick = () => { stop(); resolve(null); };
     try {
       stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width: { ideal: 1280 } } });
     } catch (e) { stop(); toast("Camera unavailable: " + e.message); return resolve(null); }
+    if (done) { stream.getTracks().forEach((t) => t.stop()); return resolve(null); }
     const video = $("video", ov); video.srcObject = stream; await video.play();
     const tick = async () => {
       if (done) return;
@@ -612,8 +623,9 @@ async function indexView(id) {
   }
   // Entries read so far. Photos add to them, one index page at a time ("Take photo" again for the next page),
   // keeping whatever was already corrected in the preview.
-  let collected = [], photos = 0;
+  let collected = [], photos = 0, photoChain = Promise.resolve();
   const keepEdits = () => {
+    if (!$("#prev tbody")) return;
     collected = $$("#prev tbody tr").map((tr) => ({ ...collected[+tr.dataset.i], checked: $("input[type=checkbox]", tr).checked,
       heading: $("[name=heading]", tr).value, name: $("[name=name]", tr).value, page: $("[name=page]", tr).value }));
   };
@@ -623,23 +635,26 @@ async function indexView(id) {
     const t0 = Date.now();
     for (;;) {
       await new Promise((ok) => setTimeout(ok, 3000));
+      if (!location.hash.startsWith(`#/book/${id}/index`)) throw new Error("Cancelled");
       let r;
       try { r = await api(`index/photo/${job}`); }
-      catch (err) { if (Date.now() - t0 > 15 * 60000) throw err; continue; }  // a dropped connection: keep checking
+      catch (err) {
+        if (err.status === 400 || err.status === 401 || err.status === 404 || Date.now() - t0 > 15 * 60000) throw err;
+        continue;
+      }  // a dropped connection: keep checking
       if (r.status === "done") return r;
       if (r.status === "error") throw new Error(r.error);
       tick(r.elapsed);
     }
   };
-  const readPhotos = async (e) => {
-    const files = [...e.target.files]; e.target.value = "";
-    if (!files.length) return;
-    keepEdits();
+  const runBatch = async (files) => {
+    if (!files.length || !location.hash.startsWith(`#/book/${id}/index`)) return;
     const st = $("#photostatus"), many = files.length > 1;
     const label = (i) => many ? `Photo ${i + 1}` : "The photo";
     const notes = [], waiting = new Set(files.keys());
     let read = 0, secs = 0;
     const show = () => {
+      if (!$("#photostatus")) return;
       st.innerHTML = (waiting.size ? `<div>Reading ${many ? `${waiting.size} of ${files.length} photos` : "the photo"}… ${secs ? `${secs}s` : ""}
         (a full index page can take a minute or two)</div>` : "") + notes.map((x) => `<div class="${x.bad ? "err" : ""}">${esc(x.text)}</div>`).join("");
     };
@@ -652,8 +667,11 @@ async function indexView(id) {
       } catch (err) { return { error: err.message }; }
       finally { waiting.delete(i); show(); }
     });
-    for (const [i, p] of jobs.entries()) {  // in the order chosen
-      const r = await p;
+    const results = [];
+    for (const [i, p] of jobs.entries()) results.push([i, await p]);  // in the order chosen
+    if (!location.hash.startsWith(`#/book/${id}/index`)) return;
+    keepEdits();
+    for (const [i, r] of results) {
       if (r.error) { notes.push({ bad: true, text: `${label(i)}: ${r.error}` }); continue; }
       collected.push(...r.rows.map((x) => ({ ...x, from: "photo" }))); read += r.rows.length; photos++;
       if (r.warning) notes.push({ bad: true, text: `${label(i)}: ${r.warning}` });
@@ -663,6 +681,11 @@ async function indexView(id) {
       + "Take another photo for the next index page, or check them below (especially page numbers) and add them." });
     show();
     if (collected.length) renderPreview(collected);
+  };
+  const readPhotos = (e) => {
+    const files = [...e.target.files]; e.target.value = "";
+    if (!files.length) return;
+    photoChain = photoChain.then(() => runBatch(files)).catch(() => {});
   };
   $("#snap").onchange = readPhotos;
   $("#photos").onchange = readPhotos;

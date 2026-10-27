@@ -300,3 +300,10 @@ def test_cover_url_rejects_bad_scheme_and_disallowed_redirect():
     with pytest.raises(ValueError, match="cover host not allowed"):
         A.save_cover_from_url(1, "ftp://covers.openlibrary.org/b/id/123-L.jpg")
 
+
+def test_static_assets_version_and_anonymized_meta(c):
+    html = c.get("/").data.decode()
+    assert 'content="A family cookbook collection"' in html
+    assert "/static/style.css?v=16" in html and "/static/app.js?v=16" in html
+
+

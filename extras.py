@@ -42,6 +42,9 @@ def migrate(con):
     con.executescript(MIGRATIONS)
     con.execute(WISH_SCHEMA)
     con.execute(PHOTO_SCHEMA)
+    con.execute("UPDATE photo_jobs SET status='error', "
+                "error='Reading that photo stopped partway (the server restarted). Try it again.' "
+                "WHERE status='running'")
     if "meal_key" not in [r[1] for r in con.execute("PRAGMA table_info(dl_link)")]:
         con.execute("ALTER TABLE dl_link ADD COLUMN meal_key TEXT")
     cols = [r[1] for r in con.execute("PRAGMA table_info(books)")]
@@ -66,7 +69,7 @@ def tokens(s):
     return {t for t in re.findall(r"[a-z0-9]+", fold(s)) if t not in {"the", "a", "an", "of", "and", "cookbook"}}
 
 
-def dl_signature():
+def dl_signature(con=None):
     try:
         st = [os.stat(DINNERLOG_DB)]
     except OSError:
@@ -75,7 +78,12 @@ def dl_signature():
         st.append(os.stat(DINNERLOG_DB + "-wal"))
     except OSError:
         pass
-    return DINNERLOG_DB + "|" + "|".join(f"{s.st_ino}:{s.st_mtime_ns}:{s.st_size}" for s in st)
+    sig = DINNERLOG_DB + "|" + "|".join(f"{s.st_ino}:{s.st_mtime_ns}:{s.st_size}" for s in st)
+    if con is not None:
+        b = con.execute("SELECT count(*), coalesce(max(updated_at), '') FROM books").fetchone()
+        r = con.execute("SELECT count(*), coalesce(max(id), 0) FROM recipes").fetchone()
+        sig += f"|b:{b[0]}:{b[1]}|r:{r[0]}:{r[1]}"
+    return sig
 
 
 def meta_get(con, k):
@@ -152,8 +160,8 @@ def meal_key(day, name):
 
 
 def sync_dinnerlog(con, force=False):
-    """Rebuild the `cooked` table from Dinner Log when its DB file changed."""
-    sig = dl_signature()
+    """Rebuild the `cooked` table from Dinner Log when its DB file or local catalog changed."""
+    sig = dl_signature(con)
     if sig is None:
         return {"available": False}
     with _sync_lock:
@@ -171,11 +179,12 @@ def sync_dinnerlog(con, force=False):
         except sqlite3.Error as e:
             app.logger.warning("Dinner Log read failed: %s", e)
             return {"available": False, "error": str(e)}
-        books = [(r[0], norm_title(r[1]), tokens(r[1])) for r in con.execute("SELECT id, title FROM books")]
+        books = [(r[0], norm_title(r[1]), tokens(r[1]))
+                 for r in con.execute("SELECT id, title FROM books WHERE kind IS NULL")]
         aliases = {r[0]: r[1] for r in con.execute("SELECT title_key, book_id FROM dl_alias")}
         links = {r[0]: (r[1], r[2]) for r in con.execute("SELECT meal_id, recipe_id, meal_key FROM dl_link")}
         rec_cache = {}
-        con.execute("DELETE FROM cooked")
+        to_insert = []
         import online
         for m in meals:
             web_bid, web_rid = online.match_meal(con, m["source_detail"], m["source_title"])
@@ -200,9 +209,10 @@ def sync_dinnerlog(con, force=False):
                         "SELECT id, name, heading, page_sort, page FROM recipes WHERE book_id=?", (bid,)).fetchall()
                 rid = match_recipe(rec_cache[bid], m["source_detail"], m["name"])
                 how = "auto" if rid else "book"
-            con.execute("INSERT INTO cooked VALUES (?,?,?,?,?,?,?,?,?)",
-                        (m["id"], m["day"], m["name"], m["source_title"], m["source_detail"], m["rating"],
-                         bid, rid, how))
+            to_insert.append((m["id"], m["day"], m["name"], m["source_title"], m["source_detail"], m["rating"],
+                              bid, rid, how))
+        con.execute("DELETE FROM cooked")
+        con.executemany("INSERT INTO cooked VALUES (?,?,?,?,?,?,?,?,?)", to_insert)
         meta_set(con, "dl_sig", sig)
         meta_set(con, "dl_synced", time.strftime("%Y-%m-%d %H:%M:%S"))
         con.commit()
@@ -356,8 +366,8 @@ def suggest(mode="want", cuisine=None, tag=None, n=5, seed=None):
         where.append("""r.id IN (
             SELECT r2.id FROM recipes r2 LEFT JOIN cooked c ON c.recipe_id=r2.id
             GROUP BY r2.id
-            HAVING max(coalesce(c.rating, 0), coalesce(r2.rating, 0)) >= 8
-               AND max(coalesce(c.day, ''), coalesce(r2.last_made, '')) < ?)""")
+            HAVING max(coalesce(max(c.rating), 0), coalesce(r2.rating, 0)) >= 8
+               AND max(coalesce(max(c.day), ''), coalesce(r2.last_made, '')) < ?)""")
         args.append(months3)
     else:
         raise ValueError("unknown mode")
@@ -462,17 +472,21 @@ def stats():
         "online": [dict(r) for r in con.execute(  # recipe websites: not counted as cookbooks
             "SELECT b.id, b.title, count(r.id) AS recipes FROM books b LEFT JOIN recipes r ON r.book_id=b.id "
             "WHERE b.kind='online' GROUP BY b.id ORDER BY recipes DESC")],
-        "books_indexed": one("SELECT count(DISTINCT book_id) FROM recipes WHERE source='index'"),
+        "books_indexed": one(f"SELECT count(*) FROM books b WHERE {OWNED} "
+                             "AND EXISTS (SELECT 1 FROM recipes r WHERE r.book_id=b.id)"),
         "recipes": one("SELECT count(*) FROM recipes"),
         "want_to_try": one("SELECT count(*) FROM recipes WHERE want_to_try=1"),
         "off_shelf": [dict(r) for r in con.execute(
             "SELECT id, title, out_since FROM books WHERE status='out' ORDER BY out_since")],
-        "dinners_from_books": one("SELECT count(*) FROM cooked WHERE book_id IS NOT NULL"),
-        "dinners_last_year": one("SELECT count(*) FROM cooked WHERE book_id IS NOT NULL AND day >= ?", year_ago),
-        "books_cooked_from": one("SELECT count(DISTINCT book_id) FROM cooked WHERE book_id IS NOT NULL"),
+        "dinners_from_books": one("SELECT count(*) FROM cooked c JOIN books b ON b.id=c.book_id WHERE b.kind IS NULL"),
+        "dinners_last_year": one(
+            "SELECT count(*) FROM cooked c JOIN books b ON b.id=c.book_id WHERE b.kind IS NULL AND c.day >= ?",
+            year_ago),
+        "books_cooked_from": one(
+            "SELECT count(DISTINCT c.book_id) FROM cooked c JOIN books b ON b.id=c.book_id WHERE b.kind IS NULL"),
         "top_books": [dict(r) for r in con.execute(
             "SELECT b.id, b.title, count(*) AS n, max(c.day) AS last FROM cooked c JOIN books b ON b.id=c.book_id "
-            "GROUP BY b.id ORDER BY n DESC, last DESC LIMIT 10")],
+            "WHERE b.kind IS NULL GROUP BY b.id ORDER BY n DESC, last DESC LIMIT 10")],
         "top_recipes": [dict(r) for r in con.execute(
             "SELECT r.id, r.name, r.heading, b.id AS book_id, b.title AS book_title, count(c.meal_id) AS n, "
             "round(avg(coalesce(c.rating, r.rating)),1) AS avg FROM recipes r JOIN books b ON b.id=r.book_id "
@@ -574,9 +588,10 @@ def parse_claude_rows(text, truncated=False):
                 entries = data.get("entries", []) if isinstance(data, dict) else data
                 return [r for e in entries if isinstance(e, dict)
                         for r in [_photo_row(e.get("heading"), e.get("name"), e.get("page"))] if r]
-    lines = [ln for ln in s.splitlines() if "|" in ln]
-    if truncated and lines and not text.endswith("\n"):
-        lines = lines[:-1]
+    raw_lines = s.splitlines()
+    if truncated and raw_lines and not text.endswith("\n"):
+        raw_lines = raw_lines[:-1]
+    lines = [ln for ln in raw_lines if "|" in ln]
     rows = []
     for ln in lines:
         parts = [p.strip() for p in ln.strip().split("|")]
@@ -606,24 +621,32 @@ def prepare_photo(raw):
     return out.getvalue()
 
 
+_photo_sem = threading.Semaphore(2)
+
+
 def run_photo_job(job_id, jpeg):
+    res_rows, warning, err_msg = None, None, None
+    try:
+        with _photo_sem:
+            text, stop = call_claude(jpeg)
+        cut = stop == "max_tokens"
+        rows = parse_claude_rows(text, truncated=cut)
+        if not rows:
+            if stop == "refusal":
+                raise RuntimeError("Claude declined to read that photo")
+            raise RuntimeError("no entries with page numbers found" + (f": {clean(text)[:200]}" if text.strip() else ""))
+        warning = (f"This page was cut off after {len(rows)} entries. Photograph the rest of the page "
+                   "(a column or two at a time) to get the remaining entries.") if cut else None
+        res_rows = json.dumps(rows)
+    except Exception as e:  # noqa: BLE001
+        err_msg = f"Couldn't read the index from that photo: {e}"
     con = core.connect()
     try:
-        try:
-            text, stop = call_claude(jpeg)
-            cut = stop == "max_tokens"
-            rows = parse_claude_rows(text, truncated=cut)
-            if not rows:
-                if stop == "refusal":
-                    raise RuntimeError("Claude declined to read that photo")
-                raise RuntimeError("no entries with page numbers found" + (f": {clean(text)[:200]}" if text.strip() else ""))
-            warning = (f"This page was cut off after {len(rows)} entries. Photograph the rest of the page "
-                       "(a column or two at a time) to get the remaining entries.") if cut else None
+        if err_msg is not None:
+            con.execute("UPDATE photo_jobs SET status='error', error=? WHERE id=?", (err_msg, job_id))
+        else:
             con.execute("UPDATE photo_jobs SET status='done', rows=?, warning=? WHERE id=?",
-                        (json.dumps(rows), warning, job_id))
-        except Exception as e:  # noqa: BLE001
-            con.execute("UPDATE photo_jobs SET status='error', error=? WHERE id=?",
-                        (f"Couldn't read the index from that photo: {e}", job_id))
+                        (res_rows, warning, job_id))
         con.commit()
     finally:
         con.close()

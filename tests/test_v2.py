@@ -446,3 +446,32 @@ def test_mcp_search_books_fields(c):
     assert slim["count"] == full["count"] and len(json.dumps(slim)) < len(json.dumps(full)) / 2
     assert all(set(b) <= {"id", "title", "cuisine"} and "id" in b for b in slim["books"])
     assert all("rating" not in b for b in call({"fields": ["title", "rating"]})["books"])  # still public-only
+
+
+def test_suggest_favorites_multi_cooked_and_parse_truncation(c, dl):
+    old = (date.today() - timedelta(days=200)).isoformat()
+    recent = (date.today() - timedelta(days=2)).isoformat()
+    # Cooked twice: once 200 days ago (rated 9) and once 2 days ago (rated 9)
+    dl(old, "Zuni Roast Chicken with Bread Salad", title="The Zuni Cafe Cookbook", detail="342", rating=9)
+    dl(recent, "Zuni Roast Chicken with Bread Salad", title="The Zuni Cafe Cookbook", detail="342", rating=9)
+    favs = c.get("/admin/api/suggest?mode=favorites&n=50").json["recipes"]
+    assert all(r["name"] != "Zuni Roast Chicken with Bread Salad" for r in favs)
+
+    # Truncation before first '|' on trailing line keeps the preceding complete line
+    rows = X.parse_claude_rows("Chicken | braised | 350\nPork", truncated=True)
+    assert rows == [{"heading": "Chicken", "name": "braised", "page": "350"}]
+
+
+def test_dinnerlog_resyncs_when_local_recipe_added(c, dl):
+    today = date.today().isoformat()
+    bid = c.post("/admin/api/books", json={"title": "Late Indexed Book"}).json["id"]
+    dl(today, "Special Braised Short Ribs", title="Late Indexed Book", detail="42", rating=9)
+    # Initial sync happens while book has no recipes
+    assert c.get("/admin/api/dinnerlog").json["book_only"] >= 1
+    # Adding the recipe on page 42 must invalidate dl_sig and match on next read without touching meals.db
+    rid = c.post(f"/admin/api/books/{bid}/recipes", json={"name": "Special Braised Short Ribs", "page": "42"}).json["id"]
+    book = c.get(f"/admin/api/books/{bid}").json
+    rec = next(r for r in book["recipes"] if r["id"] == rid)
+    assert rec["cooked_count"] == 1
+    c.delete(f"/admin/api/books/{bid}")
+

@@ -13,7 +13,7 @@ Environment:
   ADMIN_EMAILS    optional comma list; if set, only these emails may edit
   LAN_EDIT        1 (default) = requests that did not come through Cloudflare may edit
 """
-import csv, io, json, os, re, sqlite3, time, unicodedata, urllib.parse, urllib.request, uuid
+import csv, fcntl, io, json, os, re, sqlite3, time, unicodedata, urllib.parse, urllib.request, uuid
 from functools import wraps
 from pathlib import Path
 
@@ -87,6 +87,7 @@ def connect():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     con.create_function("fold", 1, fold, deterministic=True)
+    con.execute("PRAGMA busy_timeout=15000")
     con.execute("PRAGMA foreign_keys=ON")
     con.execute("PRAGMA journal_mode=WAL")
     return con
@@ -109,6 +110,8 @@ def init_db():
     global HAS_FTS
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     COVER_DIR.mkdir(parents=True, exist_ok=True)
+    lock_f = open(DATA_DIR / ".init.lock", "w")
+    fcntl.flock(lock_f, fcntl.LOCK_EX)
     con = connect()
     con.executescript(SCHEMA)
     import extras, eyb, ingredients, photos, online
@@ -117,10 +120,6 @@ def init_db():
     eyb.migrate(con)
     ingredients.migrate(con)
     photos.migrate(con)
-    merged = eyb.merge_garbled(con)  # recipes imported with "�" for lost letters, merged into their good copy
-    if merged:  # shown on Needs review
-        con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('garbled_merged', ?)",
-                    (json.dumps({"n": merged, "at": time.strftime("%Y-%m-%d %H:%M")}),))
     old = con.execute("SELECT sql FROM sqlite_master WHERE name='recipes_fts'").fetchone()
     if old and "content=" in old[0]:  # the old index read unfolded text straight from recipes; replace it
         con.executescript("DROP TRIGGER IF EXISTS recipes_ai; DROP TRIGGER IF EXISTS recipes_ad; "
@@ -129,6 +128,10 @@ def init_db():
         con.executescript(FTS)
     except sqlite3.OperationalError:
         HAS_FTS = False  # sqlite built without FTS5: search falls back to LIKE
+    merged = eyb.merge_garbled(con)  # recipes imported with "�" for lost letters, merged into their good copy
+    if merged:  # shown on Needs review
+        con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('garbled_merged', ?)",
+                    (json.dumps({"n": merged, "at": time.strftime("%Y-%m-%d %H:%M")}),))
     empty = con.execute("SELECT count(*) FROM books").fetchone()[0] == 0
     seed = APP_DIR / "seed.json"
     if empty and seed.exists():
@@ -139,6 +142,7 @@ def init_db():
         con.execute("INSERT INTO recipes_fts(rowid, name, heading) SELECT id, fold(name), fold(heading) FROM recipes")
     con.commit()
     con.close()
+    lock_f.close()
 
 
 def load_seed(con, data):
@@ -302,9 +306,16 @@ def access_identity():
         global _jwks
         import jwt
         try:
+            was_cached = _jwks is not None
             if _jwks is None:
                 _jwks = jwt.PyJWKClient(f"https://{CF_TEAM_DOMAIN}/cdn-cgi/access/certs", cache_keys=True)
-            key = _jwks.get_signing_key_from_jwt(token).key
+            try:
+                key = _jwks.get_signing_key_from_jwt(token).key
+            except Exception:  # noqa: BLE001 — retry once on key rotation if _jwks was cached
+                if not was_cached:
+                    raise
+                _jwks = jwt.PyJWKClient(f"https://{CF_TEAM_DOMAIN}/cdn-cgi/access/certs", cache_keys=True)
+                key = _jwks.get_signing_key_from_jwt(token).key
         except Exception as e:  # noqa: BLE001
             _jwks = None
             g.auth_reason = (f"Couldn't fetch Cloudflare's signing keys from https://{CF_TEAM_DOMAIN}/cdn-cgi/access/certs "
@@ -684,13 +695,14 @@ def update_book(book_id):
         cur_tags = [r[0] for r in con.execute("SELECT t.name FROM tags t JOIN book_tags bt ON bt.tag_id=t.id "
                                               "WHERE bt.book_id=?", (book_id,))]
         set_people(con, book_id, data.get("authors", cur_auth), data.get("tags", cur_tags))
+    reindex_book(con, book_id)
+    con.commit()
     if data.get("cover_url"):
         try:
             save_cover_from_url(book_id, data["cover_url"])
+            con.commit()
         except Exception as e:  # noqa: BLE001
             return make_err(502, f"Saved, but couldn't fetch that cover: {e}")
-    reindex_book(con, book_id)
-    con.commit()
     return get_book(book_id, private=True)
 
 
@@ -733,10 +745,16 @@ def store_cover(book_id, raw):
     return name
 
 
+def _allowed_cover_url(url):
+    p = urllib.parse.urlparse(url)
+    host = p.hostname or ""
+    return p.scheme in ("http", "https") and any(host == h or host.endswith("." + h) for h in COVER_HOSTS)
+
+
 def save_cover_from_url(book_id, url):
-    host = urllib.parse.urlparse(url).hostname or ""
-    if not any(host == h or host.endswith("." + h) for h in COVER_HOSTS):
+    if not _allowed_cover_url(url):
         raise ValueError("cover host not allowed")
+    host = urllib.parse.urlparse(url).hostname or ""
     if "openlibrary.org" in host and "default=" not in url:
         url += ("&" if "?" in url else "?") + "default=false"
     return store_cover(book_id, http_get(url, binary=True))
@@ -915,10 +933,18 @@ def index_commit(book_id):
     return jsonify(added=added, skipped=skipped)
 
 
+class _CoverRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _allowed_cover_url(newurl):
+            raise ValueError("cover redirect host not allowed")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 # ---- metadata lookup (Open Library, then Google Books)
 def http_get(url, binary=False, timeout=10):
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    opener = urllib.request.build_opener(_CoverRedirectHandler) if binary else urllib.request.build_opener()
+    with opener.open(req, timeout=timeout) as r:
         body = r.read(15 * 1024 * 1024)
     return body if binary else json.loads(body)
 

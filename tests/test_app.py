@@ -279,3 +279,24 @@ def test_team_domain_normalized(monkeypatch):
     ns = {"os": os, "re": __import__("re")}
     exec(line + "\n" + aud, ns)
     assert ns["CF_TEAM_DOMAIN"] == "team.example.com" and ns["CF_AUD"] == "aud123"
+
+
+def test_update_book_persists_edits_when_cover_fetch_fails(c, monkeypatch):
+    b = c.post("/admin/api/books", json={"title": "Original Title"}).json
+    monkeypatch.setattr(A, "http_get", lambda *a, **k: (_ for _ in ()).throw(OSError("timeout")))
+    r = c.put(f"/admin/api/books/{b['id']}", json={
+        "title": "Updated Title",
+        "cover_url": "https://covers.openlibrary.org/b/id/123-L.jpg",
+    })
+    assert r.status_code == 502
+    saved = c.get(f"/admin/api/books/{b['id']}").json
+    assert saved["title"] == "Updated Title"
+    c.delete(f"/admin/api/books/{b['id']}")
+
+
+def test_cover_url_rejects_bad_scheme_and_disallowed_redirect():
+    with pytest.raises(ValueError, match="cover host not allowed"):
+        A.save_cover_from_url(1, "file:///etc/passwd")
+    with pytest.raises(ValueError, match="cover host not allowed"):
+        A.save_cover_from_url(1, "ftp://covers.openlibrary.org/b/id/123-L.jpg")
+

@@ -536,3 +536,48 @@ def test_ops_and_installer_hardening():
 
 
 
+
+
+# ------------------------------------------------------------ stats() consistency
+def test_stats_months_count_only_cookbook_dinners(c, dl):
+    """The per-month chart is 'Cookbook dinners': website and no-book dinners are left out."""
+    today = date.today().isoformat()
+    url = "https://cooking.nytimes.com/recipes/1234-chart-site-dish"
+    c.post("/admin/api/online/commit", json={"items": [{"url": url, "title": "Chart Site Dish"}]})
+    dl(today, "Chart cookbook dinner", title="Dining In", detail="", rating=7)  # counted
+    dl(today, "Chart website dinner", stype="original", detail=url)              # saved website: not counted
+    dl(today, "Home pasta", stype="original")                                    # no book at all: not counted
+    s = c.get("/admin/api/stats").json
+    expected = A.connect().execute(
+        "SELECT count(*) FROM cooked c JOIN books b ON b.id=c.book_id WHERE b.kind IS NULL AND substr(c.day,1,7)=?",
+        (today[:7],)).fetchone()[0]
+    this_month = next((m["n"] for m in s["months"] if m["m"] == today[:7]), 0)
+    assert expected >= 1 and this_month == expected
+
+
+def test_stats_recipe_count_matches_owned_cookbooks(c):
+    """The 'recipes indexed' tile counts only recipes in owned cookbooks, like its 'from N indexes' label."""
+    owned = c.post("/admin/api/books", json={"title": "Recipe Count Owned", "authors": ["A"]}).json["id"]
+    c.post(f"/admin/api/books/{owned}/recipes", json={"name": "Owned one"})
+    c.post(f"/admin/api/books/{owned}/recipes", json={"name": "Owned two"})
+    wanted = c.post("/admin/api/books", json={"title": "Recipe Count Wanted", "status": "wanted"}).json["id"]
+    c.post(f"/admin/api/books/{wanted}/recipes", json={"name": "Wanted one"})
+    c.post("/admin/api/online/commit", json={"items": [
+        {"url": "https://cooking.nytimes.com/recipes/5678-count-site-dish", "title": "Count Site Dish"}]})
+    s = c.get("/admin/api/stats").json
+    expected = A.connect().execute(
+        "SELECT count(*) FROM recipes r JOIN books b ON b.id=r.book_id "
+        "WHERE b.status NOT IN ('gone','wanted') AND b.kind IS NULL").fetchone()[0]
+    assert s["recipes"] == expected
+
+
+def test_top_recipes_average_ignores_unrated_cooked_meals(c, dl):
+    """A recipe's cooked average uses only the cooked ratings; the static recipe rating fills in only when none exist."""
+    today = date.today().isoformat()
+    book = c.post("/admin/api/books", json={"title": "Stats Cook Test", "authors": ["A"]}).json["id"]
+    c.post(f"/admin/api/books/{book}/recipes", json={"name": "Stats Pie Fix", "page": "77", "rating": 6})
+    dl(today, "Stats Pie Fix", title="Stats Cook Test", detail="77", rating=9)
+    dl(today, "Stats Pie Fix again", title="Stats Cook Test", detail="77", rating=None)
+    s = c.get("/admin/api/stats").json
+    row = next(r for r in s["top_recipes"] if r["name"] == "Stats Pie Fix")
+    assert row["avg"] == 9.0

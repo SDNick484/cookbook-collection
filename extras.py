@@ -464,7 +464,9 @@ def stats():
     one = lambda sql, *a: con.execute(sql, a).fetchone()[0]
     year_ago = (date.today() - timedelta(days=365)).isoformat()
     months = []
-    for r in con.execute("SELECT substr(day,1,7) AS m, count(*) AS n FROM cooked WHERE day >= ? GROUP BY m ORDER BY m",
+    # Cookbook dinners only, like the other dinner counts: saved websites (kind 'online') and no-book meals are left out.
+    for r in con.execute("SELECT substr(c.day,1,7) AS m, count(*) AS n FROM cooked c JOIN books b ON b.id=c.book_id "
+                         "WHERE b.kind IS NULL AND c.day >= ? GROUP BY m ORDER BY m",
                          ((date.today().replace(day=1) - timedelta(days=335)).isoformat(),)):
         months.append(dict(r))
     return {
@@ -474,7 +476,7 @@ def stats():
             "WHERE b.kind='online' GROUP BY b.id ORDER BY recipes DESC")],
         "books_indexed": one(f"SELECT count(*) FROM books b WHERE {OWNED} "
                              "AND EXISTS (SELECT 1 FROM recipes r WHERE r.book_id=b.id)"),
-        "recipes": one("SELECT count(*) FROM recipes"),
+        "recipes": one(f"SELECT count(*) FROM recipes r JOIN books b ON b.id=r.book_id WHERE {OWNED}"),  # as in books_indexed
         "want_to_try": one("SELECT count(*) FROM recipes WHERE want_to_try=1"),
         "off_shelf": [dict(r) for r in con.execute(
             "SELECT id, title, out_since FROM books WHERE status='out' ORDER BY out_since")],
@@ -489,7 +491,7 @@ def stats():
             "WHERE b.kind IS NULL GROUP BY b.id ORDER BY n DESC, last DESC LIMIT 10")],
         "top_recipes": [dict(r) for r in con.execute(
             "SELECT r.id, r.name, r.heading, b.id AS book_id, b.title AS book_title, count(c.meal_id) AS n, "
-            "round(avg(coalesce(c.rating, r.rating)),1) AS avg FROM recipes r JOIN books b ON b.id=r.book_id "
+            "round(coalesce(avg(c.rating), r.rating),1) AS avg FROM recipes r JOIN books b ON b.id=r.book_id "
             "LEFT JOIN cooked c ON c.recipe_id=r.id WHERE c.rating IS NOT NULL OR r.rating IS NOT NULL "
             "GROUP BY r.id HAVING avg >= 7 ORDER BY avg DESC, n DESC LIMIT 10")],
         "cuisines": [dict(r) for r in con.execute(

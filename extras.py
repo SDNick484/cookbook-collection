@@ -711,7 +711,7 @@ def index_photo_job(job_id):
 @editor_required
 def features():
     return jsonify(photo_import=bool(ANTHROPIC_API_KEY), dinnerlog=dl_signature() is not None,
-                   dinnerlog_url=DINNERLOG_URL or None, wishlist=bool(WISHLIST_URL),
+                   dinnerlog_url=DINNERLOG_URL or None, wishlist=wishlist_available(),
                    mcp_private=bool(MCP_TOKEN), mcp_public=MCP_PUBLIC)
 
 
@@ -1097,13 +1097,13 @@ WISH_SCHEMA = """CREATE TABLE IF NOT EXISTS wish_items (
   person_id INTEGER, person_name TEXT, item_id INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP)"""
 
 
-def wishlist_call(method, path, body=None):
+def wishlist_call(method, path, body=None, timeout=5):
     """Talk to the wish list app over localhost (it treats loopback requests as LAN editors)."""
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(WISHLIST_URL + path, data=data, method=method, headers={
         "X-Wishlist": "1", "Content-Type": "application/json", "Accept": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=5) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.load(r)
     except urllib.error.HTTPError as e:
         try:
@@ -1113,6 +1113,19 @@ def wishlist_call(method, path, body=None):
         raise RuntimeError(msg or f"wish list answered {e.code}")
     except OSError as e:
         raise RuntimeError(f"wish list isn't reachable at {WISHLIST_URL} ({e})")
+
+
+def wishlist_available():
+    """True only when the wish list app answers on WISHLIST_URL. The URL is set by default even when the app
+    isn't installed, so checking the URL alone would show a button that always fails. A refused localhost
+    connection returns at once, so checking on each features request is cheap."""
+    if not WISHLIST_URL:
+        return False
+    try:
+        wishlist_call("GET", "/api/people", timeout=1)
+        return True
+    except RuntimeError:
+        return False
 
 
 @app.get("/admin/api/wishlist/people")

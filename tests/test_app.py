@@ -157,7 +157,7 @@ def test_isbn_lookup_and_create(c, monkeypatch):
     made = c.post("/admin/api/books", json=body)
     assert made.status_code == 201, made.json
     b = made.json
-    assert b["cover"] and (TMP / "covers" / b["cover"]).exists()
+    assert b["cover"] and (A.COVER_DIR / b["cover"]).exists()
     assert "New Tag" in b["tags"] and b["authors"] == ["Yotam Ottolenghi"]
     # duplicate ISBN
     dup = c.post("/admin/api/books", json={**body, "title": "Again"})
@@ -188,7 +188,7 @@ def test_update_upload_and_delete(c):
     assert c.put(f"/admin/api/books/{bid}", json={"isbn": "123"}).status_code == 400
     cover = up.json["cover"]
     assert c.delete(f"/admin/api/books/{bid}").status_code == 200
-    assert not (TMP / "covers" / cover).exists()
+    assert not (A.COVER_DIR / cover).exists()
     assert c.get(f"/api/books/{bid}").status_code == 404
     assert not any(a["name"] == "Solo Author Unique" for a in c.get("/api/facets").json["authors"])
 

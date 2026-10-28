@@ -12,6 +12,7 @@ Environment:
   CF_AUD          Access application AUD tag
   ADMIN_EMAILS    optional comma list; if set, only these emails may edit
   LAN_EDIT        1 (default) = requests that did not come through Cloudflare may edit
+  READ_TOKEN      optional bearer token for read-only private routes (Dinner Log's picks)
 """
 import csv, fcntl, io, json, os, re, sqlite3, time, unicodedata, urllib.parse, urllib.request, uuid
 from functools import wraps
@@ -27,6 +28,9 @@ CF_TEAM_DOMAIN = re.sub(r"^https?://", "", os.environ.get("CF_TEAM_DOMAIN", "").
 CF_AUD = os.environ.get("CF_AUD", "").strip().strip("'\"")
 ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
 LAN_EDIT = os.environ.get("LAN_EDIT", "1") == "1"
+# Bearer token for read-only private routes called by another server (Dinner Log's "Pick for tonight").
+# It never grants writes; empty = off.
+READ_TOKEN = os.environ.get("READ_TOKEN", "").strip()
 UA = "cookbooks-catalog/1.0 (personal cookbook collection)"
 COVER_HOSTS = {"covers.openlibrary.org", "archive.org", "books.google.com", "books.googleusercontent.com"}
 
@@ -372,6 +376,23 @@ def editor_required(fn):
             return jsonify(error="Sign in to edit", reason=g.auth_reason), 401
         g.editor = who
         return fn(*a, **kw)
+    return inner
+
+
+def reader_required(fn):
+    """For private routes that change nothing: an editor, or a server presenting
+    `Authorization: Bearer <READ_TOKEN>`. Never put this on a write route."""
+    import hmac
+    guarded = editor_required(fn)
+
+    @wraps(fn)
+    def inner(*a, **kw):
+        auth = request.headers.get("Authorization", "")
+        if READ_TOKEN and auth[:7].lower() == "bearer " and \
+                hmac.compare_digest(auth[7:].strip().encode(), READ_TOKEN.encode()):
+            g.editor = None
+            return fn(*a, **kw)
+        return guarded(*a, **kw)
     return inner
 
 

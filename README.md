@@ -117,7 +117,9 @@ Editors can attach photos of a dish to the recipe it came from.
 - On a book's page, tap **📷** on a recipe row and choose **Add photos**. On a phone this offers the camera or the gallery, and you can pick several at once.
 - The date is read from each photo. Set **Cooked on** to override it, and add an optional caption.
 - The book's page shows every photo under **What we've made**, with the recipe name and page. Tap one to view it full size, and use ‹ › or the arrow keys to step through them. The 📷 on a recipe row shows how many photos it has.
-- Photos are editor-only, like ratings and cooking history. They're served from `/admin/photos/`, so Cloudflare Access covers them, and they don't appear in the public catalog.
+- **Photos** in the menu is a public gallery of every dish photo, newest first by the day it was cooked, with filters for cookbook and year. Each card links to its book; tap a photo to step through the filtered set full size.
+- Viewing is public: the gallery (`/api/photos`) and the image files (`/photos/<file>`) need no sign-in, so captions are public too. Photos of recipes from websites stay editor-only, like the websites themselves. Adding, editing and deleting photos happen under `/admin`, behind Cloudflare Access. Older `/admin/photos/` links still work.
+- Image files are served with a one-day cache lifetime. If a CDN in front of the app caches them (Cloudflare caches `.jpg` by default), a deleted photo can stay reachable at its URL until that copy expires; purge the URL in your CDN if that matters.
 - Each upload is resized to at most 2048px, plus a 480px thumbnail, and saved as JPEG in `/var/lib/cookbooks/photos`. Re-encoding drops the EXIF data, including any phone GPS location.
 - Deleting a photo, recipe or book deletes its files. The nightly backup copies `photos/` to `BACKUP_TARGET`, and **Download JSON** lists each recipe's photo files.
 - iPhone HEIC photos work if the `pillow-heif` Python package is installed. Without it, Safari normally converts them to JPEG when uploading.

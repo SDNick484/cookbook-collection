@@ -1,15 +1,18 @@
-"""Photos of dishes cooked from the books, attached to a recipe and shown on its book's page.
+"""Photos of dishes cooked from the books, attached to a recipe and shown on its book's page and in the
+public Photos gallery.
 
-Editors only, like ratings and cooking history: the files are served under /admin, so Cloudflare Access
-covers them. Each upload is re-encoded to JPEG (which also drops EXIF, phone GPS included) as a large
-copy and a thumbnail in DATA_DIR/photos, which the nightly backup already copies to BACKUP_TARGET.
+Viewing is public: image files are served from /photos/<name> and /api/photos lists photos of cookbook
+recipes (recipe websites, kind 'online', stay editor-only via PUBLIC_BOOKS). Uploading, editing and
+deleting are editor-only under /admin. Each upload is re-encoded to JPEG (which also drops EXIF, phone GPS
+included) as a large copy and a thumbnail in DATA_DIR/photos, which the nightly backup already copies to
+BACKUP_TARGET. File names are random (uuid4), so a photo of an editor-only recipe can't be guessed.
 """
 import io, uuid
 from datetime import date, datetime
 
 from flask import abort, jsonify, request, send_from_directory
 
-from app import DATA_DIR, app, clean, db, editor_required, make_err
+from app import DATA_DIR, PUBLIC_BOOKS, app, clean, db, editor_required, make_err
 
 PHOTO_DIR = DATA_DIR / "photos"
 FULL, THUMB = 2048, 480
@@ -78,8 +81,8 @@ def files_where(con, where, *args):
 
 def photo_dict(r):
     d = dict(r)
-    d["url"] = f"/admin/photos/{d['file']}"
-    d["thumb"] = f"/admin/photos/{thumb_name(d['file'])}"
+    d["url"] = f"/photos/{d['file']}"
+    d["thumb"] = f"/photos/{thumb_name(d['file'])}"
     return d
 
 
@@ -107,10 +110,35 @@ def valid_day(s):
         abort(make_err(400, "Date must be YYYY-MM-DD"))
 
 
-@app.get("/admin/photos/<name>")
-@editor_required
+GALLERY_SQL = (
+    "SELECT p.id, p.file, p.width, p.height, coalesce(p.taken_on, substr(p.created_at, 1, 10)) AS taken_on, "
+    "p.caption, r.id AS recipe_id, r.name AS recipe_name, r.page AS recipe_page, b.id AS book_id, "
+    "b.title AS book_title FROM recipe_photos p JOIN recipes r ON r.id=p.recipe_id JOIN books b ON b.id=r.book_id"
+)
+
+
+def gallery(private):
+    """Every photo, newest first by the day cooked. The public list leaves out recipe websites."""
+    sql = GALLERY_SQL + ("" if private else f" WHERE {PUBLIC_BOOKS}") + \
+        " ORDER BY coalesce(p.taken_on, substr(p.created_at, 1, 10)) DESC, p.id DESC"
+    return [photo_dict(r) for r in db().execute(sql)]
+
+
+@app.get("/photos/<name>")
+@app.get("/admin/photos/<name>")  # older links; the files are no longer private
 def photo_file(name):
     return send_from_directory(PHOTO_DIR, name, max_age=86400)
+
+
+@app.get("/api/photos")
+def gallery_public():
+    return jsonify(photos=gallery(private=False))
+
+
+@app.get("/admin/api/photos")
+@editor_required
+def gallery_editor():
+    return jsonify(photos=gallery(private=True))
 
 
 @app.get("/admin/api/recipes/<int:rid>/photos")

@@ -47,8 +47,8 @@ const byline = (b) => (b.authors || []).join(", ");
 /* ---------- nav / router ---------- */
 function renderNav(route) {
   const items = ADMIN
-    ? [["#/", "Catalog"], ["#/cook", "Cook"], ["#/add", "Add"], ["#/stats", "Stats"], ["#/more", "More"]]
-    : [["#/", "Catalog"]].concat(S.editor ? [["/admin#/", "Edit"]] : [["/admin#/", "Sign in"]]);
+    ? [["#/", "Catalog"], ["#/photos", "Photos"], ["#/cook", "Cook"], ["#/add", "Add"], ["#/stats", "Stats"], ["#/more", "More"]]
+    : [["#/", "Catalog"], ["#/photos", "Photos"]].concat(S.editor ? [["/admin#/", "Edit"]] : [["/admin#/", "Sign in"]]);
   $("#nav").innerHTML = items.map(([h, t]) =>
     `<a href="${h}" class="${(h === "#/" ? route === "" : h.startsWith("#/") && route.startsWith(h.slice(2))) ? "on" : ""}">${t}</a>`).join("");
 }
@@ -62,6 +62,7 @@ async function route() {
     if (m && m[2] === "edit" && ADMIN) return await editView(+m[1]);
     if (m && m[2] === "index" && ADMIN) return await indexView(+m[1]);
     if (m) return await bookView(+m[1]);
+    if (path === "photos") return await photosView();
     if (path === "add" && ADMIN) return await addView();
     if (path === "try" && ADMIN) return await tryView();
     if (path === "review" && ADMIN) return await reviewView();
@@ -397,6 +398,51 @@ function lightbox(list, i) {
   document.body.append(d);
   draw();
   d.showModal();
+}
+
+/* ---------- photo gallery: everything we've cooked, newest first ---------- */
+const photoYear = (p) => (p.taken_on || "").slice(0, 4);
+async function photosView() {
+  const all = (await api("photos")).photos;  // already newest first
+  if (!S.photoFilter) S.photoFilter = { book: "", year: "" };
+  const F = S.photoFilter;
+  const books = [...new Map(all.map((p) => [p.book_id, p.book_title])).entries()]
+    .sort((a, b) => a[1].localeCompare(b[1], undefined, { sensitivity: "base" }));
+  const years = [...new Set(all.map(photoYear).filter(Boolean))].sort().reverse();
+  if (F.book && !books.some(([id]) => String(id) === F.book)) F.book = "";  // a filter left from an earlier visit
+  if (F.year && !years.includes(F.year)) F.year = "";
+  const count = (fn) => all.filter(fn).length;
+  view.innerHTML = `
+    <div class="section-h"><h2>What we've cooked <span class="muted small" id="pcount"></span></h2></div>
+    ${all.length ? `<div class="controls">
+      <select id="pbook" aria-label="Cookbook"><option value="">All cookbooks</option>${books.map(([id, t]) =>
+        `<option value="${id}">${esc(t)} (${count((p) => p.book_id === id)})</option>`).join("")}</select>
+      <select id="pyear" aria-label="Year"><option value="">All years</option>${years.map((y) =>
+        `<option value="${y}">${y} (${count((p) => photoYear(p) === y)})</option>`).join("")}</select>
+    </div>` : ""}
+    <div class="photos gallery" id="pgal"></div>`;
+  if (!all.length) {
+    $("#pgal").outerHTML = `<div class="empty">No photos yet.${ADMIN ? " Add some from a recipe's 📷 on its book's page." : ""}</div>`;
+    return;
+  }
+  const draw = () => {
+    const list = all.filter((p) => (!F.book || String(p.book_id) === F.book) && (!F.year || photoYear(p) === F.year));
+    $("#pcount").textContent = list.length === all.length ? all.length : `${list.length} of ${all.length}`;
+    const gal = $("#pgal");
+    gal.innerHTML = list.length ? list.map((p, i) => `<figure class="pcard">
+        <button class="ph" data-i="${i}" aria-label="View ${esc(p.recipe_name)}"><img loading="lazy" src="${esc(p.thumb)}" alt="${esc(p.recipe_name)}"
+          ${p.width && p.height ? `width="${p.width}" height="${p.height}"` : ""}></button>
+        <figcaption><a class="pn" href="#/book/${p.book_id}">${esc(p.recipe_name)}</a>
+          <a class="pb" href="#/book/${p.book_id}">${esc(p.book_title)}${p.recipe_page ? ` · p. ${esc(p.recipe_page)}` : ""}</a>
+          <span class="pd">${fmtDay(p.taken_on)}</span>${p.caption ? `<span class="pc">${esc(p.caption)}</span>` : ""}</figcaption></figure>`).join("")
+      : `<div class="empty">No photos match those filters. <button type="button" class="linkish" id="pclear">Show all</button></div>`;
+    $$(".ph", gal).forEach((el) => el.onclick = () => lightbox(list, +el.dataset.i));
+    if ($("#pclear")) $("#pclear").onclick = () => { F.book = F.year = ""; $("#pbook").value = $("#pyear").value = ""; draw(); };
+  };
+  $("#pbook").value = F.book; $("#pyear").value = F.year;
+  $("#pbook").onchange = (e) => { F.book = e.target.value; draw(); };
+  $("#pyear").onchange = (e) => { F.year = e.target.value; draw(); };
+  draw();
 }
 
 function recipeDialog(r, bookId, done) {

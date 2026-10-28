@@ -108,14 +108,72 @@ def test_merge_keeps_photos(c, tacos):
     assert [p["recipe_id"] for p in c.get(f"/admin/api/books/{bid}").json["photos"]] == [good]
 
 
-def test_photos_are_private(c, tacos):
-    bid, rid = tacos
+def test_photo_files_are_public(c, tacos):
+    _, rid = tacos
     p = upload(c, rid, jpeg()).json["photos"][0]
-    assert "photos" not in c.get(f"/api/books/{bid}").json
-    assert c.get(p["url"], headers=CF).status_code == 401
-    assert upload(c, rid, jpeg()).status_code == 201
+    assert p["url"] == f"/photos/{p['file']}" and p["thumb"] == f"/photos/{P.thumb_name(p['file'])}"
+    for url in (p["url"], p["thumb"], f"/admin/photos/{p['file']}"):  # the old /admin path still works
+        r = c.get(url, headers=CF)
+        assert r.status_code == 200 and r.mimetype == "image/jpeg"
+        assert r.cache_control.max_age == 86400
+    assert c.get("/photos/nope.jpg", headers=CF).status_code == 404
+    assert c.get("/photos/..%2Fcookbooks.db", headers=CF).status_code == 404
+
+
+def test_writes_stay_editor_only(c, tacos):
+    _, rid = tacos
+    p = upload(c, rid, jpeg()).json["photos"][0]
     assert c.post(f"/admin/api/recipes/{rid}/photos", headers=CF, content_type="multipart/form-data",
                   data={"file": (io.BytesIO(jpeg()), "x.jpg")}).status_code == 401
+    assert c.put(f"/admin/api/photos/{p['id']}", headers=CF, json={"caption": "x"}).status_code == 401
+    assert c.delete(f"/admin/api/photos/{p['id']}", headers=CF).status_code == 401
+    assert c.get(f"/admin/api/recipes/{rid}/photos", headers=CF).status_code == 401
+    assert c.get("/admin/api/photos", headers=CF).status_code == 401
+    assert (P.PHOTO_DIR / p["file"]).exists()  # the refused delete left the file alone
+    assert "photos" not in c.get(f"/api/books/{tacos[0]}").json  # the public book page is unchanged
+
+
+def test_gallery_newest_first(c, tacos):
+    bid, rid = tacos
+    for day in ("2025-06-01", "2026-10-18", "2026-01-05"):
+        upload(c, rid, jpeg(), taken_on=day, caption=f"cooked {day}")
+    upload(c, rid, jpeg(), taken_on="2026-10-18", caption="second that day")  # same day: newer id first
+    photos = [p for p in c.get("/api/photos", headers=CF).json["photos"] if p["book_id"] == bid]
+    assert [p["caption"] for p in photos] == [
+        "second that day", "cooked 2026-10-18", "cooked 2026-01-05", "cooked 2025-06-01"]
+    p = photos[0]
+    assert set(p) == {"id", "file", "thumb", "url", "width", "height", "taken_on", "caption", "recipe_id",
+                      "recipe_name", "recipe_page", "book_id", "book_title"}
+    assert (p["recipe_name"], p["recipe_page"], p["book_title"], p["recipe_id"]) == (
+        "Cochinita pibil tacos", "112", "Tacos", rid)
+    assert p["url"] == f"/photos/{p['file']}"
+
+
+def test_gallery_undated_photo_uses_upload_day(c, tacos):
+    bid, rid = tacos
+    pid = upload(c, rid, jpeg(), taken_on="2020-01-01").json["photos"][0]["id"]
+    con = A.connect()
+    con.execute("UPDATE recipe_photos SET taken_on=NULL, created_at='2024-03-02 18:00:00' WHERE id=?", (pid,))
+    con.commit(); con.close()
+    [p] = [p for p in c.get("/api/photos").json["photos"] if p["id"] == pid]
+    assert p["taken_on"] == "2024-03-02"
+
+
+def test_gallery_hides_recipe_websites_from_public(c, tacos):
+    bid, rid = tacos
+    site = c.post("/admin/api/books", json={"title": "Example Recipes Site"}).json["id"]
+    srid = c.post(f"/admin/api/books/{site}/recipes", json={"name": "Weeknight dal"}).json["id"]
+    con = A.connect()
+    con.execute("UPDATE books SET kind='online', site='recipes.example.com' WHERE id=?", (site,))
+    con.commit(); con.close()
+    web = upload(c, srid, jpeg(), taken_on="2026-10-20").json["photos"][0]["id"]
+    book = upload(c, rid, jpeg(), taken_on="2026-10-19").json["photos"][0]["id"]
+
+    public = {p["id"] for p in c.get("/api/photos", headers=CF).json["photos"]}
+    assert book in public and web not in public  # cookbooks (kind NULL) shown, websites hidden
+    editor = {p["id"] for p in c.get("/admin/api/photos").json["photos"]}
+    assert {book, web} <= editor
+    c.delete(f"/admin/api/books/{site}")
 
 
 def test_bad_uploads(c, tacos):

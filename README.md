@@ -96,6 +96,12 @@ If a companion wish list app runs on the same server, set a book's status to **W
 ## Dinner Log ⇄ Cookbook Collection
 - **In Dinner Log** (updated `setup-dinner-log.sh`): choosing a cookbook offers that book's indexed recipes, and picking one fills in the page and the dinner name. The data comes from Cookbook Collection over localhost, and the form works as before if it's down.
 - **In Cookbook Collection:** set `DINNERLOG_URL` and each recipe gets a 🍽 link that opens Dinner Log's form already filled in.
+- **Pick for tonight (in Dinner Log):** Dinner Log asks `GET /admin/api/pick` for recipes to suggest, filtered by ingredients to include or leave out and by mode: `fav` (rated 8+ and not made in the last `rest` days, default 21), `new` (never cooked) or `any`. Ingredients match the way the ingredient chips do: tagged with it, or in the title. Leaving one out is best effort, since tags cover only some recipes; the response's `title_only` lists ingredients that have no tag and so match titles alone. Starred recipes come up more often, and favorites more often the higher they're rated.
+  ```
+  curl -H "Authorization: Bearer $READ_TOKEN" \
+    'http://127.0.0.1:8767/admin/api/pick?mode=new&with=chicken,lemon&without=pork&n=5'
+  ```
+  The route is private (it returns ratings and cooking history). Editors reach it through Access; Dinner Log uses `READ_TOKEN`, which the installer generates in `/etc/conf.d/cookbooks`. The token only opens read-only routes, never edits. Call it over localhost rather than the public address, which Access protects.
 
 ## Accents and other alphabets
 - Search ignores case and accents, and also special letters: "creme brulee" finds *Crème brûlée*, "pepin" finds Jacques Pépin, "oeufs" finds *Œufs*, "smorrebrod" finds *Smørrebrød* and "strasse" finds *Straße*. The same applies to ingredient tags, the filter on a book's page and Dinner Log title matching.

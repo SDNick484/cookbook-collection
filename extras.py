@@ -415,6 +415,121 @@ def suggest_route():
         return make_err(400, str(e))
 
 
+# ======================================================== Dinner Log's "Pick for tonight"
+PICK_MODES = ("any", "fav", "new")
+PICK_FAV_MIN = 8      # the line Dinner Log draws for a favorite (its ratings are 1–10)
+PICK_MAX_TERMS = 5    # ingredients per list
+# Each recipe's cooking history: Dinner Log dinners matched to it, plus what an editor typed on the recipe.
+PICK_HIST = ("LEFT JOIN (SELECT recipe_id, max(rating) AS best, max(day) AS last, count(*) AS times FROM cooked "
+             "WHERE recipe_id IS NOT NULL GROUP BY recipe_id) h ON h.recipe_id=r.id")
+PICK_BEST = "max(coalesce(h.best, 0), coalesce(r.rating, 0))"
+PICK_LAST = "nullif(max(coalesce(h.last, ''), coalesce(r.last_made, '')), '')"
+
+
+def pick_terms(raw):
+    """'chicken, leeks' -> ['chicken', 'leeks']: trimmed, de-duplicated by fold(), at most PICK_MAX_TERMS."""
+    out, seen = [], set()
+    for s in str(raw or "").split(","):
+        s = (clean(s) or "")[:40]
+        if s and fold(s) not in seen:
+            seen.add(fold(s))
+            out.append(s)
+    return out[:PICK_MAX_TERMS]
+
+
+def pick(mode="any", include=(), exclude=(), n=10, rest_days=21, seed=None, today=None):
+    """Recipes for Dinner Log's "Pick for tonight": a weighted random draw, best candidates first.
+
+    mode  fav: best rating (from Dinner Log or the recipe itself) >= PICK_FAV_MIN, not cooked in rest_days
+          new: never cooked
+          any: not cooked in rest_days (never cooked counts)
+    include  every one must be used: tagged with it or in the title, exactly like the ingredient chips.
+    exclude  drop recipes that use any of them. Tags cover only some recipes and few ingredients, so this
+             is best effort; `title_only` in the result lists the ones with no tag at all.
+    Weight: ingredient match score (title beats tag, see ingredients.ranked), x3 for starred recipes outside
+    fav mode, and in fav mode 1 + how far the rating clears the bar. Then one per book first, like suggest().
+    """
+    if mode not in PICK_MODES:
+        raise ValueError("mode must be one of " + ", ".join(PICK_MODES))
+    import ingredients
+    ensure_synced()
+    con = db()
+    rest = ((today or date.today()) - timedelta(days=max(0, rest_days))).isoformat()
+    where, args = ["b.status NOT IN ('gone','wanted')"], []
+    for name in include:
+        cond, a = ingredients.ingredient_condition(con, name)
+        where.append(cond)
+        args += a
+    for name in exclude:
+        cond, a = ingredients.ingredient_condition(con, name)
+        where.append(f"NOT {cond}")
+        args += a
+    if mode == "fav":
+        where += [f"{PICK_BEST} >= ?", f"coalesce({PICK_LAST}, '') < ?"]
+        args += [PICK_FAV_MIN, rest]
+    elif mode == "new":
+        where.append("h.recipe_id IS NULL AND r.last_made IS NULL")
+    else:
+        where.append(f"coalesce({PICK_LAST}, '') < ?")
+        args.append(rest)
+    base = f" FROM recipes r JOIN books b ON b.id=r.book_id {PICK_HIST} WHERE " + " AND ".join(where)
+
+    terms = ingredients.search_terms("", " ".join(include))
+    scored = {x["id"]: x for x in ingredients.ranked(con, base, args, terms)} if terms else {}
+    rows = [dict(r) for r in con.execute(
+        "SELECT r.id, r.name, r.page, r.url, r.want_to_try, b.id AS book_id, b.title AS book_title, b.kind, "
+        f"{PICK_BEST} AS best, {PICK_LAST} AS last_cooked, coalesce(h.times, 0) AS times_cooked" + base, args)]
+
+    rng = random.Random(seed)
+    keyed = []
+    for r in rows:
+        w = max(scored[r["id"]]["score"], 0.25) if r["id"] in scored else 1.0
+        if mode == "fav":
+            w *= 1 + (r["best"] - PICK_FAV_MIN)
+        elif r["want_to_try"]:
+            w *= 3
+        keyed.append((rng.random() ** (1.0 / w), r))  # Efraimidis–Spirakis: weighted order in one sort
+    keyed.sort(key=lambda kr: -kr[0])
+    picked, books = [], set()
+    for _, r in keyed:  # one per book first so a heavily indexed book doesn't dominate, then fill
+        if r["book_id"] not in books and len(picked) < n:
+            picked.append(r)
+            books.add(r["book_id"])
+    for _, r in keyed:
+        if len(picked) >= n:
+            break
+        if r not in picked:
+            picked.append(r)
+
+    out = [{"id": r["id"], "name": r["name"], "page": r["page"], "url": r["url"],
+            "book_id": r["book_id"], "book_title": r["book_title"], "online": r["kind"] == "online",
+            "starred": bool(r["want_to_try"]), "best_rating": r["best"] or None,
+            "last_cooked": r["last_cooked"], "times_cooked": r["times_cooked"],
+            "match": scored[r["id"]]["match"] if r["id"] in scored else None} for r in picked]
+    title_only = [s for s in [*include, *exclude] if not ingredients.resolve(con, s)]
+    # Dinner Log names of every dinner matched to a recipe here, so Dinner Log can leave those dishes to this
+    # list (which knows their ingredient tags) instead of offering them twice.
+    linked = [r[0] for r in con.execute("SELECT DISTINCT meal_name FROM cooked WHERE recipe_id IS NOT NULL "
+                                        "AND meal_name IS NOT NULL ORDER BY meal_name")]
+    return {"mode": mode, "include": list(include), "exclude": list(exclude), "title_only": title_only,
+            "pool": len(rows), "recipes": out, "linked_dinners": linked}
+
+
+@app.get("/admin/api/pick")
+@core.reader_required
+def pick_route():
+    """GET ?mode=any|fav|new&with=chicken,leeks&without=pork&n=10&rest=21. Read-only; Dinner Log calls it
+    over localhost with READ_TOKEN."""
+    p = request.args
+    try:
+        n = max(1, min(int(p.get("n", 10)), 50))
+        rest = max(0, min(int(p.get("rest", 21)), 3650))
+        return jsonify(pick(p.get("mode") or "any", pick_terms(",".join(p.getlist("with"))),
+                            pick_terms(",".join(p.getlist("without"))), n, rest, p.get("seed")))
+    except ValueError as e:
+        return make_err(400, str(e))
+
+
 # ======================================================== stats
 OWNED = "b.status NOT IN ('gone','wanted') AND b.kind IS NULL"  # cookbooks on the shelves (or out/loaned)
 

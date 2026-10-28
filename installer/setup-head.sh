@@ -94,6 +94,8 @@ add_setting "$CONF" MCP_PUBLIC 1 "1 = /mcp without a token serves public search 
 add_setting "$CONF" WISHLIST_URL http://127.0.0.1:8766 "Family wish list app (local) for 'Add to a wish list'"
 add_setting "$CONF" WISHLIST_BOOK_URL "https://www.amazon.com/s?k={q}" "Shopping link put on wish list items; {q} = ISBN (or title + author)"
 add_setting "$CONF" DINNERLOG_URL "" "Dinner Log's public address, e.g. https://dinners.example.com — turns on 'Log this dinner' links"
+add_setting "$CONF" READ_TOKEN "$(head -c 24 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')" \
+  "Read-only bearer token for Dinner Log's 'Pick for tonight' (set the same value as COOKBOOK_TOKEN there)"
 chmod 640 "$CONF"; chown root:"$SVC_USER" "$CONF"
 
 [ -f "$OPS_CONF" ] || printf '# Backups + health alerts for the apps on this server (scripts in /usr/local/bin)\n' > "$OPS_CONF"
@@ -110,7 +112,7 @@ name="cookbooks"
 description="Cookbook Collection"
 : ${PORT:=8767}
 : ${DATA_DIR:=/var/lib/cookbooks}
-export DATA_DIR CF_TEAM_DOMAIN CF_AUD ADMIN_EMAILS LAN_EDIT DINNERLOG_DB ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_EFFORT MCP_TOKEN MCP_PUBLIC WISHLIST_URL WISHLIST_BOOK_URL DINNERLOG_URL
+export DATA_DIR CF_TEAM_DOMAIN CF_AUD ADMIN_EMAILS LAN_EDIT DINNERLOG_DB ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_EFFORT MCP_TOKEN MCP_PUBLIC WISHLIST_URL WISHLIST_BOOK_URL DINNERLOG_URL READ_TOKEN
 supervisor="supervise-daemon"
 respawn_delay=5
 respawn_max=10

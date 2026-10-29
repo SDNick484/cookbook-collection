@@ -15,6 +15,21 @@ import app as core
 from app import app, db, editor_required, fold, make_err, page_sort, clean
 
 DINNERLOG_DB = os.environ.get("DINNERLOG_DB", "/var/lib/dinner-log/meals.db")
+
+
+def clean_url(raw):
+    """A configured base address without a trailing slash."""
+    return (raw or "").strip().rstrip("/")
+
+
+# Dinner Log's private address and its HISTORY_TOKEN, for cooking history over HTTP.
+DINNERLOG_API_URL = clean_url(os.environ.get("DINNERLOG_API_URL"))
+DINNERLOG_TOKEN = os.environ.get("DINNERLOG_TOKEN", "").strip()
+PULL_EVERY = 60          # seconds a pulled history stays fresh
+PULL_BACKOFF = 300       # after a failed pull, wait this long before trying again
+LEASE_TTL = 120          # a pull lease older than this is abandoned
+PULL_TIMEOUT = 5
+MAX_HISTORY_BYTES = 10 * 1024 * 1024
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5-5").strip()
 ANTHROPIC_EFFORT = os.environ.get("ANTHROPIC_EFFORT", "low").strip()  # empty: the model's default
@@ -35,6 +50,11 @@ CREATE INDEX IF NOT EXISTS cooked_book ON cooked(book_id);
 CREATE TABLE IF NOT EXISTS dl_alias (title_key TEXT PRIMARY KEY, title TEXT, book_id INTEGER REFERENCES books(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS dl_link (meal_id INTEGER PRIMARY KEY, recipe_id INTEGER REFERENCES recipes(id) ON DELETE CASCADE,
   meal_key TEXT);  -- day|name, so links don't misfire if Dinner Log's DB is ever recreated
+CREATE TABLE IF NOT EXISTS dl_meals (       -- the last history pulled from Dinner Log, as sent
+  id INTEGER PRIMARY KEY,                   -- Dinner Log meals.id
+  day TEXT, name TEXT, source_type TEXT, source_title TEXT, source_detail TEXT,
+  rating REAL, cookbook_book_id INTEGER, cookbook_recipe_id INTEGER);
+INSERT OR IGNORE INTO meta(key, value) VALUES ('dl_lease', '0');
 """
 
 
@@ -45,6 +65,7 @@ def migrate(con):
     con.execute("UPDATE photo_jobs SET status='error', "
                 "error='Reading that photo stopped partway (the server restarted). Try it again.' "
                 "WHERE status='running'")
+    con.execute("DELETE FROM meta WHERE key='dl_sig'")  # from reading Dinner Log's file directly
     if "meal_key" not in [r[1] for r in con.execute("PRAGMA table_info(dl_link)")]:
         con.execute("ALTER TABLE dl_link ADD COLUMN meal_key TEXT")
     cols = [r[1] for r in con.execute("PRAGMA table_info(books)")]
@@ -93,6 +114,92 @@ def meta_get(con, k):
 
 def meta_set(con, k, v):
     con.execute("INSERT INTO meta(key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, v))
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect is an error: the bearer token must never follow it to another address."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_dl_opener = urllib.request.build_opener(_NoRedirect)
+
+
+def dl_open(req, timeout):
+    return _dl_opener.open(req, timeout=timeout)
+
+
+DL_MEAL_FIELDS = ("id", "day", "name", "source_type", "source_title", "source_detail", "rating",
+                  "cookbook_book_id", "cookbook_recipe_id")
+
+
+def store_snapshot(con, meals, etag, now=None):
+    """Replace the stored history with `meals` (dicts as Dinner Log sends them) and record the pull."""
+    con.execute("DELETE FROM dl_meals")
+    con.executemany(f"INSERT INTO dl_meals({', '.join(DL_MEAL_FIELDS)}) VALUES ({','.join('?' * len(DL_MEAL_FIELDS))})",
+                    [tuple(m.get(f) for f in DL_MEAL_FIELDS) for m in meals])
+    meta_set(con, "dl_etag", etag or "")
+    _pulled(con, time.time() if now is None else now)
+
+
+def _pulled(con, now):
+    meta_set(con, "dl_pulled_at", f"{now:.3f}")
+    con.execute("DELETE FROM meta WHERE key IN ('dl_error', 'dl_failed_at')")
+    con.commit()
+
+
+def _pull_failed(con, now, why):
+    app.logger.warning("Dinner Log history pull failed: %s", why)
+    meta_set(con, "dl_error", why)
+    meta_set(con, "dl_failed_at", f"{now:.3f}")
+    con.commit()
+    return {"ok": False, "changed": False, "error": why}
+
+
+def _valid_history(body):
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("meals"), list):
+        return None
+    meals = data["meals"]
+    if not all(isinstance(m, dict) and type(m.get("id")) is int for m in meals):
+        return None
+    return meals
+
+
+def pull_history(con, now=None):
+    """Fetch Dinner Log's /api/history into dl_meals. Network only: rebuilding `cooked` is separate.
+    Returns {"ok", "changed", "error"}; on any failure the stored history is left as it was."""
+    now = time.time() if now is None else now
+    if not DINNERLOG_API_URL:
+        return {"ok": False, "changed": False, "error": "not configured"}
+    headers = {"Authorization": f"Bearer {DINNERLOG_TOKEN}", "Accept": "application/json"}
+    etag = meta_get(con, "dl_etag")
+    if etag:
+        headers["If-None-Match"] = etag
+    req = urllib.request.Request(DINNERLOG_API_URL + "/api/history", headers=headers)
+    try:
+        with dl_open(req, PULL_TIMEOUT) as resp:
+            body = resp.read(MAX_HISTORY_BYTES + 1)
+            new_etag = resp.headers.get("ETag") or ""
+    except urllib.error.HTTPError as e:
+        if e.code == 304:
+            _pulled(con, now)
+            return {"ok": True, "changed": False, "error": None}
+        return _pull_failed(con, now, f"Dinner Log answered HTTP {e.code}")
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        reason = getattr(e, "reason", None) or e.__class__.__name__
+        return _pull_failed(con, now, f"couldn't reach Dinner Log ({reason})")
+    if len(body) > MAX_HISTORY_BYTES:
+        return _pull_failed(con, now, "Dinner Log's history is larger than allowed")
+    meals = _valid_history(body)
+    if meals is None:
+        return _pull_failed(con, now, "Dinner Log sent a history this version doesn't understand")
+    store_snapshot(con, meals, new_etag, now)
+    return {"ok": True, "changed": True, "error": None}
 
 
 def match_book(t, books, aliases):

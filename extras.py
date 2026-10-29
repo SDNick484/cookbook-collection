@@ -1,7 +1,8 @@
 """Cookbook Collection v2 features, registered onto the core app:
 
-- Dinner Log link: reads Dinner Log's SQLite DB read-only and matches cookbook
-  dinners to books and recipes (auto by title + page + name, with manual overrides)
+- Dinner Log link: pulls cooking history from Dinner Log's /api/history and matches
+  dinners to books and recipes (by the ids Dinner Log stamped, else title + page +
+  name, with manual overrides)
 - Photo index import via the Claude API
 - "What should we cook?" suggestions, stats, off-the-shelf tracking
 - MCP endpoint (Streamable HTTP, stateless JSON) at /mcp
@@ -14,7 +15,6 @@ from flask import abort, g, jsonify, request, Response
 import app as core
 from app import app, db, editor_required, fold, make_err, page_sort, clean
 
-DINNERLOG_DB = os.environ.get("DINNERLOG_DB", "/var/lib/dinner-log/meals.db")
 
 
 def clean_url(raw):
@@ -90,21 +90,11 @@ def tokens(s):
     return {t for t in re.findall(r"[a-z0-9]+", fold(s)) if t not in {"the", "a", "an", "of", "and", "cookbook"}}
 
 
-def dl_signature(con=None):
-    try:
-        st = [os.stat(DINNERLOG_DB)]
-    except OSError:
-        return None
-    try:
-        st.append(os.stat(DINNERLOG_DB + "-wal"))
-    except OSError:
-        pass
-    sig = DINNERLOG_DB + "|" + "|".join(f"{s.st_ino}:{s.st_mtime_ns}:{s.st_size}" for s in st)
-    if con is not None:
-        b = con.execute("SELECT count(*), coalesce(max(updated_at), '') FROM books").fetchone()
-        r = con.execute("SELECT count(*), coalesce(max(id), 0) FROM recipes").fetchone()
-        sig += f"|b:{b[0]}:{b[1]}|r:{r[0]}:{r[1]}"
-    return sig
+def catalog_sig(con):
+    """Changes whenever books or recipes do, so cooking history is matched again."""
+    b = con.execute("SELECT count(*), coalesce(max(updated_at), '') FROM books").fetchone()
+    r = con.execute("SELECT count(*), coalesce(max(id), 0) FROM recipes").fetchone()
+    return f"b:{b[0]}:{b[1]}|r:{r[0]}:{r[1]}"
 
 
 def meta_get(con, k):
@@ -140,6 +130,7 @@ def store_snapshot(con, meals, etag, now=None):
     con.executemany(f"INSERT INTO dl_meals({', '.join(DL_MEAL_FIELDS)}) VALUES ({','.join('?' * len(DL_MEAL_FIELDS))})",
                     [tuple(m.get(f) for f in DL_MEAL_FIELDS) for m in meals])
     meta_set(con, "dl_etag", etag or "")
+    meta_set(con, "dl_gen", str(int(meta_get(con, "dl_gen") or 0) + 1))  # what rebuild_cooked compares
     _pulled(con, time.time() if now is None else now)
 
 
@@ -266,69 +257,84 @@ def meal_key(day, name):
     return f"{day}|{fold(name)}"
 
 
-def sync_dinnerlog(con, force=False):
-    """Rebuild the `cooked` table from Dinner Log when its DB file or local catalog changed."""
-    sig = dl_signature(con)
-    if sig is None:
-        return {"available": False}
+def rebuild_cooked(con, force=False):
+    """Rebuild `cooked` from the stored Dinner Log history (dl_meals) and the catalog. Local only.
+
+    Runs when a new history was stored or the catalog changed (or `force`), never before the first pull,
+    so an upgrade keeps the old `cooked` until Dinner Log has answered. Per meal, the first that applies:
+    a manual link; the recipe id Dinner Log stamped; its stamped book, then the page and name within it;
+    a saved website recipe; the title, page and name (fuzzy)."""
+    gen = meta_get(con, "dl_gen")
+    if gen is None:
+        return {"rebuilt": False, "meals": 0}
+    sig = catalog_sig(con)
     with _sync_lock:
-        if not force and meta_get(con, "dl_sig") == sig:
-            return {"available": True, "changed": False}
-        try:
-            src = sqlite3.connect(f"file:{DINNERLOG_DB}?mode=ro", uri=True, timeout=5)
-            src.row_factory = sqlite3.Row
-            cols = {r[1] for r in src.execute("PRAGMA table_info(meals)")}
-            rating = "rating" if "rating" in cols else "NULL AS rating"
-            meals = src.execute(f"SELECT id, day, name, source_type, source_title, source_detail, {rating} FROM meals "
-                                f"WHERE source_type='cookbook' OR source_detail LIKE '%://%' "
-                                f"OR source_title LIKE '%://%'").fetchall()
-            src.close()
-        except sqlite3.Error as e:
-            app.logger.warning("Dinner Log read failed: %s", e)
-            return {"available": False, "error": str(e)}
+        if not force and meta_get(con, "dl_built_gen") == gen and meta_get(con, "dl_cat_sig") == sig:
+            return {"rebuilt": False, "meals": 0}
+        meals = con.execute("SELECT * FROM dl_meals ORDER BY id").fetchall()
         books = [(r[0], norm_title(r[1]), tokens(r[1]))
                  for r in con.execute("SELECT id, title FROM books WHERE kind IS NULL")]
         aliases = {r[0]: r[1] for r in con.execute("SELECT title_key, book_id FROM dl_alias")}
         links = {r[0]: (r[1], r[2]) for r in con.execute("SELECT meal_id, recipe_id, meal_key FROM dl_link")}
+        recipe_book = dict(con.execute("SELECT id, book_id FROM recipes").fetchall())
+        book_ids = {r[0] for r in con.execute("SELECT id FROM books")}
         rec_cache = {}
-        to_insert = []
+
+        def recipes_of(bid):
+            if bid not in rec_cache:
+                rec_cache[bid] = con.execute(
+                    "SELECT id, name, heading, page_sort, page FROM recipes WHERE book_id=?", (bid,)).fetchall()
+            return rec_cache[bid]
+
         import online
+        to_insert = []
         for m in meals:
-            web_bid, web_rid = online.match_meal(con, m["source_detail"], m["source_title"])
-            if m["source_type"] != "cookbook" and not web_rid:
-                continue  # a website we haven't saved, or no source at all
-            bid = match_book(m["source_title"], books, aliases)
-            rid, how = None, "none"
+            title, detail, name = m["source_title"] or "", m["source_detail"] or "", m["name"] or ""
+            stamped_rid = m["cookbook_recipe_id"] if m["cookbook_recipe_id"] in recipe_book else None
+            stamped_bid = m["cookbook_book_id"] if m["cookbook_book_id"] in book_ids else None
             link = links.get(m["id"])
-            if link and link[1] not in (None, meal_key(m["day"], m["name"])):
+            if link and link[1] not in (None, meal_key(m["day"], name)):
                 link = None  # a different meal now has this id
+            bid, rid, how = None, None, "none"
             if link:
-                rid = link[0]
-                how = "manual"
-                if rid:
-                    row = con.execute("SELECT book_id FROM recipes WHERE id=?", (rid,)).fetchone()
-                    bid = row[0] if row else bid
-            elif web_rid:  # a link to a recipe saved from a website
-                bid, rid, how = web_bid, web_rid, "auto"
-            elif bid:
-                if bid not in rec_cache:
-                    rec_cache[bid] = con.execute(
-                        "SELECT id, name, heading, page_sort, page FROM recipes WHERE book_id=?", (bid,)).fetchall()
-                rid = match_recipe(rec_cache[bid], m["source_detail"], m["name"])
+                rid, how = link[0], "manual"
+                bid = recipe_book.get(rid) if rid else (stamped_bid or match_book(title, books, aliases))
+            elif stamped_rid:
+                bid, rid, how = recipe_book[stamped_rid], stamped_rid, "linked"
+            elif stamped_bid:
+                bid = stamped_bid
+                rid = match_recipe(recipes_of(bid), detail, name)
                 how = "auto" if rid else "book"
-            to_insert.append((m["id"], m["day"], m["name"], m["source_title"], m["source_detail"], m["rating"],
-                              bid, rid, how))
+            else:
+                is_web = "://" in detail or "://" in title
+                web_bid, web_rid = online.match_meal(con, detail, title) if is_web else (None, None)
+                if web_rid:  # a link to a recipe saved from a website
+                    bid, rid, how = web_bid, web_rid, "auto"
+                elif m["source_type"] != "cookbook":
+                    continue  # a website we haven't saved, or no source at all
+                else:
+                    bid = match_book(title, books, aliases)
+                    if bid:
+                        rid = match_recipe(recipes_of(bid), detail, name)
+                        how = "auto" if rid else "book"
+            to_insert.append((m["id"], m["day"], name, title, detail, m["rating"], bid, rid, how))
         con.execute("DELETE FROM cooked")
         con.executemany("INSERT INTO cooked VALUES (?,?,?,?,?,?,?,?,?)", to_insert)
-        meta_set(con, "dl_sig", sig)
+        meta_set(con, "dl_built_gen", gen)
+        meta_set(con, "dl_cat_sig", sig)
         meta_set(con, "dl_synced", time.strftime("%Y-%m-%d %H:%M:%S"))
         con.commit()
-        return {"available": True, "changed": True, "meals": len(meals)}
+        return {"rebuilt": True, "meals": len(to_insert)}
+
+
+def dinnerlog_available(con):
+    """Configured, pulled at least once, and the last pull worked."""
+    return bool(DINNERLOG_API_URL) and meta_get(con, "dl_gen") is not None and meta_get(con, "dl_error") is None
 
 
 def ensure_synced():
     if not getattr(g, "_dl_synced", False):
-        sync_dinnerlog(db())
+        rebuild_cooked(db())
         g._dl_synced = True
 
 
@@ -351,14 +357,17 @@ def cooked_by_book(ids):
 @editor_required
 def dinnerlog_status():
     con = db()
-    st = sync_dinnerlog(con, force=request.args.get("force") == "1")
-    if not st.get("available"):
-        return jsonify(available=False, path=DINNERLOG_DB, error=st.get("error"))
+    force = request.args.get("force") == "1"
+    if force:
+        pull_history(con)
+    rebuild_cooked(con, force=force)
+    if not dinnerlog_available(con):
+        return jsonify(available=False, error=meta_get(con, "dl_error"))
     q = lambda sql: con.execute(sql).fetchone()[0]
     unmatched = [dict(r) for r in con.execute(
         "SELECT dl_title AS title, count(*) AS n, max(day) AS last FROM cooked WHERE book_id IS NULL "
         "AND trim(coalesce(dl_title,'')) <> '' GROUP BY fold(dl_title) ORDER BY n DESC")]
-    return jsonify(available=True, path=DINNERLOG_DB, synced=meta_get(con, "dl_synced"),
+    return jsonify(available=True, synced=meta_get(con, "dl_synced"),
                    meals=q("SELECT count(*) FROM cooked"),
                    recipe_matched=q("SELECT count(*) FROM cooked WHERE recipe_id IS NOT NULL"),
                    book_only=q("SELECT count(*) FROM cooked WHERE book_id IS NOT NULL AND recipe_id IS NULL"),
@@ -378,7 +387,7 @@ def dinnerlog_alias():
                     (norm_title(title), title, int(bid)))
     else:
         con.execute("DELETE FROM dl_alias WHERE title_key=?", (norm_title(title),))
-    sync_dinnerlog(con, force=True)
+    rebuild_cooked(con, force=True)
     return jsonify(ok=True)
 
 
@@ -414,7 +423,7 @@ def dinnerlog_link():
         key = meal_key(row[0], row[1]) if row else None
         con.execute("INSERT INTO dl_link VALUES (?,?,?) ON CONFLICT(meal_id) DO UPDATE SET recipe_id=excluded.recipe_id, "
                     "meal_key=excluded.meal_key", (meal_id, int(rid) if rid else None, key))
-    sync_dinnerlog(con, force=True)
+    rebuild_cooked(con, force=True)
     return jsonify(ok=True, recipe_id=rid)
 
 
@@ -932,7 +941,7 @@ def index_photo_job(job_id):
 @app.get("/admin/api/features")
 @editor_required
 def features():
-    return jsonify(photo_import=bool(ANTHROPIC_API_KEY), dinnerlog=dl_signature() is not None,
+    return jsonify(photo_import=bool(ANTHROPIC_API_KEY), dinnerlog=bool(DINNERLOG_API_URL),
                    dinnerlog_url=DINNERLOG_URL or None, wishlist=wishlist_available(),
                    mcp_private=bool(MCP_TOKEN), mcp_public=MCP_PUBLIC)
 

@@ -31,7 +31,15 @@ Health alerts post to a Home Assistant webhook. To use them, build with `HA_WEBH
    - Copy the app's **Application Audience (AUD) tag**.
 3. On the server, edit `/etc/conf.d/cookbooks`. Set `CF_TEAM_DOMAIN` (e.g. `yourteam.cloudflareaccess.com`), `CF_AUD`, and optionally `ADMIN_EMAILS`. Then run `rc-service cookbooks restart`.
 
-The path rule covers `/admin` and everything under it, including the `/admin/api/*` calls that do the editing. The app also verifies the Access JWT itself, so an unsigned request that reaches it through the tunnel can't edit. Requests that don't come through Cloudflare, i.e. directly on the LAN, can edit while `LAN_EDIT=1`.
+The path rule covers `/admin` and everything under it, including the `/admin/api/*` calls that do the editing. The app also verifies the Access JWT itself, so an unsigned request that reaches it through the tunnel can't edit.
+
+### Editing from the LAN (optional, off by default)
+Set `LAN_EDIT=1` to let requests that don't come through Cloudflare edit without signing in. Only turn it on if you trust every device that can reach the server. Three checks still apply:
+- The client's address must be in `LAN_CIDRS` (default: loopback and the private ranges `10/8`, `172.16/12`, `192.168/16`, `fc00::/7`, `fe80::/10`). The app uses the connection's own address and ignores `X-Forwarded-For`.
+- The URL must use the server's IP address, `localhost`, or a name you list in `LAN_HOSTS`. This blocks DNS rebinding, where a web page re-points its own hostname at your server.
+- Every edit (POST/PUT/DELETE), LAN or Access, must come from the site's own pages: a request whose `Origin` is another site is refused with 403. This blocks cross-site request forgery. Scripts that send no `Origin` (curl, server-to-server) aren't affected. If the tunnel rewrites the `Host` header, the app falls back to `X-Forwarded-Host`; failing that, list your public origin in `ALLOWED_ORIGINS`.
+
+Upgrading doesn't change an existing `LAN_EDIT` value. If `cloudflared` runs on the same server and you don't need LAN editing, also set `BIND=127.0.0.1` so the port isn't reachable from the network at all.
 
 ## Adding books
 **Add book → Scan barcode** uses the phone camera. This needs Chrome on Android over HTTPS, so use the public HTTPS address rather than the LAN IP. The ISBN is looked up on Open Library, then Google Books, and the title, authors, publisher, year and cover are filled in.

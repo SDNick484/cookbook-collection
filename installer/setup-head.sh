@@ -83,7 +83,11 @@ fi
 add_setting "$CONF" CF_TEAM_DOMAIN "" "Cloudflare Access team domain, e.g. yourteam.cloudflareaccess.com"
 add_setting "$CONF" CF_AUD "" "AUD tag of the Cookbooks Access application (path: admin)"
 add_setting "$CONF" ADMIN_EMAILS "" "Only these emails may edit (comma separated); empty = anyone the Access policy lets in"
-add_setting "$CONF" LAN_EDIT 1 "1 = direct LAN requests (not through Cloudflare) may edit"
+add_setting "$CONF" LAN_EDIT 0 "1 = direct LAN requests (not through Cloudflare) may edit; see LAN_CIDRS and LAN_HOSTS"
+add_setting "$CONF" LAN_CIDRS "" "Networks LAN editing is allowed from, comma separated; empty = loopback + private ranges"
+add_setting "$CONF" LAN_HOSTS "" "Names (besides IP addresses and localhost) accepted in the URL for LAN editing, e.g. cookbooks.lan"
+add_setting "$CONF" ALLOWED_ORIGINS "" "Extra origins allowed to send edits, e.g. https://cookbooks.example.com (rarely needed)"
+add_setting "$CONF" BIND 0.0.0.0 "Address the app listens on; 127.0.0.1 when cloudflared runs on this server and LAN_EDIT=0"
 add_setting "$CONF" DINNERLOG_DB /var/lib/dinner-log/meals.db "Dinner Log database (read-only) for cooking history"
 add_setting "$CONF" ANTHROPIC_API_KEY "" "Claude API key for reading photos of index pages (console.anthropic.com)"
 add_setting "$CONF" ANTHROPIC_MODEL claude-sonnet-5-5 "Model used for photo import"
@@ -112,13 +116,14 @@ name="cookbooks"
 description="Cookbook Collection"
 : ${PORT:=8767}
 : ${DATA_DIR:=/var/lib/cookbooks}
-export DATA_DIR CF_TEAM_DOMAIN CF_AUD ADMIN_EMAILS LAN_EDIT DINNERLOG_DB ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_EFFORT MCP_TOKEN MCP_PUBLIC WISHLIST_URL WISHLIST_BOOK_URL DINNERLOG_URL READ_TOKEN
+: ${BIND:=0.0.0.0}
+export DATA_DIR CF_TEAM_DOMAIN CF_AUD ADMIN_EMAILS LAN_EDIT LAN_CIDRS LAN_HOSTS ALLOWED_ORIGINS DINNERLOG_DB ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_EFFORT MCP_TOKEN MCP_PUBLIC WISHLIST_URL WISHLIST_BOOK_URL DINNERLOG_URL READ_TOKEN
 supervisor="supervise-daemon"
 respawn_delay=5
 respawn_max=10
 respawn_period=600
 command="/usr/bin/gunicorn"
-command_args="--preload --workers 2 --threads 4 --timeout 180 --bind 0.0.0.0:${PORT} --chdir /opt/cookbooks --access-logfile /var/log/cookbooks.log --error-logfile /var/log/cookbooks.log app:app"
+command_args="--preload --workers 2 --threads 4 --timeout 180 --bind ${BIND}:${PORT} --chdir /opt/cookbooks --access-logfile /var/log/cookbooks.log --error-logfile /var/log/cookbooks.log app:app"
 command_user="cookbooks"
 depend() { need net; after firewall; }
 start_pre() { checkpath -f -o cookbooks /var/log/cookbooks.log; }
@@ -149,7 +154,11 @@ echo "==> Taking a first backup"
 
 IP=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n1)
 echo
-echo "Cookbook Collection is running:  http://$IP:$PORT/        (editing on the LAN: http://$IP:$PORT/admin)"
+echo "Cookbook Collection is running:  http://$IP:$PORT/"
+if grep -q '^LAN_EDIT="\?1"\?$' "$CONF"; then
+  echo "  - LAN editing is ON (http://$IP:$PORT/admin): anyone on LAN_CIDRS can edit without signing in."
+  echo "    Edits now need the IP (or a LAN_HOSTS name) in the URL and same-site pages. Set LAN_EDIT=0 to edit only via Access."
+fi
 echo "Health: $(wget -qO- http://127.0.0.1:$PORT/healthz)"
 DL=$(wget -qO- "http://127.0.0.1:$PORT/admin/api/dinnerlog" 2>/dev/null | sed -n 's/.*"available": *\(true\|false\).*/\1/p' | head -n1)
 echo "Dinner Log link: ${DL:-unknown}"

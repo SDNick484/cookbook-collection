@@ -332,10 +332,64 @@ def dinnerlog_available(con):
     return bool(DINNERLOG_API_URL) and meta_get(con, "dl_gen") is not None and meta_get(con, "dl_error") is None
 
 
+def try_lease(con, now):
+    """Claim the one Dinner Log pull allowed at a time, across workers. True if this caller got it."""
+    cur = con.execute("UPDATE meta SET value=? WHERE key='dl_lease' AND CAST(value AS REAL) < ?",
+                      (f"{now:.3f}", now - LEASE_TTL))
+    con.commit()
+    return cur.rowcount == 1
+
+
+def release_lease(con):
+    con.execute("UPDATE meta SET value='0' WHERE key='dl_lease'")
+    con.commit()
+
+
+def start_background(fn):
+    threading.Thread(target=fn, daemon=True, name="dinnerlog-pull").start()
+
+
+def background_pull():
+    """Pull and rebuild on a connection of its own; the request that started it doesn't wait."""
+    con = core.connect()
+    try:
+        pull_history(con)
+        rebuild_cooked(con)
+    except Exception as e:
+        app.logger.exception("Dinner Log history pull stopped")
+        try:
+            con.rollback()
+            _pull_failed(con, time.time(), f"pull stopped ({e.__class__.__name__})")
+        except Exception:
+            pass
+    finally:
+        try:
+            release_lease(con)
+        finally:
+            con.close()
+
+
+def pull_due(con, now):
+    """Configured, the stored history is older than PULL_EVERY, and no failure within PULL_BACKOFF."""
+    if not DINNERLOG_API_URL:
+        return False
+    pulled, failed = meta_get(con, "dl_pulled_at"), meta_get(con, "dl_failed_at")
+    if failed is not None and now - float(failed) < PULL_BACKOFF:
+        return False
+    return pulled is None or now - float(pulled) > PULL_EVERY
+
+
 def ensure_synced():
-    if not getattr(g, "_dl_synced", False):
-        rebuild_cooked(db())
-        g._dl_synced = True
+    """Once per request: rebuild `cooked` if the catalog or stored history changed (local, fast), and if
+    the stored history is stale, start a background pull. Requests never wait on Dinner Log."""
+    if getattr(g, "_dl_synced", False):
+        return
+    g._dl_synced = True
+    con = db()
+    rebuild_cooked(con)
+    now = time.time()
+    if pull_due(con, now) and try_lease(con, now):
+        start_background(background_pull)
 
 
 def cooked_by_recipe(book_id):
@@ -361,14 +415,18 @@ def dinnerlog_status():
     if force:
         pull_history(con)
     rebuild_cooked(con, force=force)
+    pulled = meta_get(con, "dl_pulled_at")
+    info = dict(source=DINNERLOG_API_URL or None, error=meta_get(con, "dl_error"), synced=meta_get(con, "dl_synced"),
+                pulled=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(pulled))) if pulled else None)
     if not dinnerlog_available(con):
-        return jsonify(available=False, error=meta_get(con, "dl_error"))
+        return jsonify(available=False, **info)
     q = lambda sql: con.execute(sql).fetchone()[0]
     unmatched = [dict(r) for r in con.execute(
         "SELECT dl_title AS title, count(*) AS n, max(day) AS last FROM cooked WHERE book_id IS NULL "
         "AND trim(coalesce(dl_title,'')) <> '' GROUP BY fold(dl_title) ORDER BY n DESC")]
-    return jsonify(available=True, synced=meta_get(con, "dl_synced"),
+    return jsonify(available=True, **info,
                    meals=q("SELECT count(*) FROM cooked"),
+                   linked=q("SELECT count(*) FROM cooked WHERE how='linked'"),
                    recipe_matched=q("SELECT count(*) FROM cooked WHERE recipe_id IS NOT NULL"),
                    book_only=q("SELECT count(*) FROM cooked WHERE book_id IS NOT NULL AND recipe_id IS NULL"),
                    unmatched_titles=unmatched)

@@ -278,3 +278,120 @@ def test_deleted_meal_disappears(configured):                           # Review
     X.store_snapshot(con, [meal(1, n1, ZUNI, str(p1))], '"v2"')
     X.rebuild_cooked(con)
     assert cooked(con) == {1: (zuni, r1, "auto")}                        # meal 3 gone; its link unused
+
+
+# ------------------------------------------------------------------ when pulls happen
+
+CF = {"Cf-Ray": "abc", "Cf-Connecting-Ip": "203.0.113.9"}   # through Cloudflare, no Access login
+
+
+@pytest.fixture()
+def started(monkeypatch):
+    calls = []
+    monkeypatch.setattr(X, "start_background", lambda fn: calls.append(fn))
+    return calls
+
+
+def set_meta(con, **kv):
+    for k, v in kv.items():
+        X.meta_set(con, k, v)
+    con.commit()
+
+
+def page(c):
+    assert c.get("/admin/api/books").status_code == 200    # the editor's list reads cooking history
+
+
+def test_lease_single_holder(configured):
+    assert X.try_lease(configured, 1000.0) is True
+    assert X.try_lease(configured, 1001.0) is False
+    assert X.try_lease(configured, 1000.0 + X.LEASE_TTL + 1) is True
+    X.release_lease(configured)
+    assert X.try_lease(configured, 1000.0 + X.LEASE_TTL + 2) is True
+
+
+def test_ensure_synced_starts_pull_without_waiting(configured, monkeypatch, started):
+    fake = use(monkeypatch)                                               # an inline pull would pop from []
+    set_meta(configured, dl_pulled_at=f"{X.time.time() - X.PULL_EVERY - 5:.3f}")
+    page(A.app.test_client())
+    assert started == [X.background_pull] and fake.requests == []
+    page(A.app.test_client())
+    assert len(started) == 1                                              # the lease is held
+
+
+def test_never_pulled_starts_pull(configured, started):
+    page(A.app.test_client())
+    assert started == [X.background_pull]
+
+
+def test_fresh_snapshot_no_pull(configured, started):
+    set_meta(configured, dl_pulled_at=f"{X.time.time() - 10:.3f}")
+    page(A.app.test_client())
+    assert started == []
+
+
+def test_backoff_suppresses_pull(configured, started):
+    now = X.time.time()
+    set_meta(configured, dl_pulled_at=f"{now - 1000:.3f}", dl_failed_at=f"{now - 100:.3f}")
+    page(A.app.test_client())
+    assert started == []
+    set_meta(configured, dl_failed_at=f"{now - X.PULL_BACKOFF - 1:.3f}")
+    page(A.app.test_client())
+    assert started == [X.background_pull]
+
+
+def test_unconfigured_never_pulls(configured, monkeypatch, started):
+    monkeypatch.setattr(X, "DINNERLOG_API_URL", "")
+    page(A.app.test_client())
+    assert started == []
+
+
+def test_background_pull_rebuilds_and_releases_lease(configured, monkeypatch):
+    use(monkeypatch, Resp(payload([meal(1, "x", ZUNI)]), headers={"ETag": '"b1"'}))
+    assert X.try_lease(configured, X.time.time())
+    X.background_pull()
+    assert meta(configured, "dl_lease") == "0" and set(cooked(configured)) == {1}
+
+
+def test_background_pull_releases_lease_on_exception(configured, monkeypatch):   # Review Focus 2
+    def boom(con, now=None):
+        raise X.sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(X, "pull_history", boom)
+    assert X.try_lease(configured, X.time.time())
+    X.background_pull()                                                   # logs, doesn't raise
+    assert meta(configured, "dl_lease") == "0"
+    assert meta(configured, "dl_error") and meta(configured, "dl_failed_at")
+
+
+def test_status_force_pulls_inline(configured, monkeypatch):
+    fake = use(monkeypatch, Resp(payload([meal(1, "x", ZUNI, cookbook_recipe_id=None)]), headers={"ETag": '"s"'}))
+    st = A.app.test_client().get("/admin/api/dinnerlog?force=1").json
+    assert len(fake.requests) == 1
+    assert st["available"] is True and st["source"] == URL and st["error"] is None
+    assert st["pulled"] and st["synced"] and st["meals"] == 1
+    assert {"linked", "recipe_matched", "book_only", "unmatched_titles"} <= set(st) and "path" not in st
+
+
+def test_status_reports_error(configured, monkeypatch):
+    use(monkeypatch, http_error(503))
+    st = A.app.test_client().get("/admin/api/dinnerlog?force=1").json
+    assert st["available"] is False and "503" in st["error"] and st["source"] == URL
+
+
+def test_status_requires_editor(configured):
+    assert A.app.test_client().get("/admin/api/dinnerlog", headers=CF).status_code in (401, 403)
+
+
+def test_alias_and_link_rebuild_without_pull(configured, monkeypatch, started):
+    con = configured
+    zuni = book_id(con, ZUNI)
+    (r1, n1, p1), = lone_recipes(con, zuni, 1)
+    X.store_snapshot(con, [meal(1, n1, "My Zuni Copy", str(p1))], '"a"')
+    fake = use(monkeypatch)
+    c = A.app.test_client()
+    assert c.post("/admin/api/dinnerlog/alias", json={"title": "My Zuni Copy", "book_id": zuni}).status_code == 200
+    assert cooked(con)[1] == (zuni, r1, "auto")
+    assert c.post("/admin/api/dinnerlog/link", json={"meal_id": 1, "recipe_id": None, "unlink": True}).status_code == 200
+    assert cooked(con)[1][2] == "manual"
+    assert fake.requests == []
+    c.post("/admin/api/dinnerlog/alias", json={"title": "My Zuni Copy", "book_id": None})

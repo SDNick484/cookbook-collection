@@ -10,6 +10,7 @@ class History:
     def __init__(self, monkeypatch):
         monkeypatch.setattr(X, "DINNERLOG_API_URL", "http://127.0.0.1:8000")
         monkeypatch.setattr(X, "DINNERLOG_TOKEN", "test-token")
+        monkeypatch.setattr(X, "start_background", lambda fn: None)   # no real pulls from tests
         self.meals = []
         self._store()
 

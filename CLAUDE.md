@@ -7,7 +7,7 @@ and an MCP server at `/mcp`. README.md is the user-facing guide; this file is ho
 | File | What's in it |
 |---|---|
 | `app.py` | Core: schema + `init_db`, `connect()`/`db()`, `fold()` (accent/case folding, also an SQL function), FTS (`books_fts`, `recipes_fts`), auth (`editor_required`), books/recipes/facets API, index paste import, `PUBLIC_BOOKS`, `cuisine_condition()` |
-| `extras.py` | Dinner Log sync, suggestions, stats, photo index import (Claude API, background jobs in `photo_jobs`), MCP server (`TOOLS`, `WRITE_TOOLS`, `handle_rpc`), wishlist |
+| `extras.py` | Dinner Log history (pulled over HTTP into `dl_meals`, rebuilt into `cooked`; `ensure_synced()` starts background pulls under a DB lease), suggestions, stats, photo index import (Claude API, background jobs in `photo_jobs`), MCP server (`TOOLS`, `WRITE_TOOLS`, `handle_rpc`), wishlist |
 | `ingredients.py` | Ingredient tags and search hints, CSV/zip import, `resolve()`, `ranked()` search ranking |
 | `eyb.py` | Eat Your Books import, merging garbled duplicate recipes |
 | `photos.py` | Photos of cooked dishes |

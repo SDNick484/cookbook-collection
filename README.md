@@ -152,7 +152,9 @@ Editors can attach photos of a dish to the recipe it came from.
 - `search_recipes` returns the best matches first, the `total`, and `next_offset` when there are more; each recipe's `match` is "title" when every word is in its title, or says per word where it came from: "chicken: title, leek: tag", "chicken: may be only chicken stock", or "chicken: only as “chicken stock” in the title". The server's instructions tell Claude that some books have no page numbers and that the recipe and book title are enough.
 
 ## Backups and alerts
-The ops scripts cover Cookbook Collection and, if they're installed on the same server, Dinner Log and the wish list. Their settings live in `/etc/conf.d/app-ops`.
+The ops scripts cover Cookbook Collection and, if they're installed on the same server, Dinner Log and the wish list. Their settings live in `/etc/conf.d/app-ops`. Alerts name the server by `HOST_LABEL` (default: its hostname).
+
+Older versions named these files after the container (`/etc/conf.d/ctNNN-ops`, `/var/backups/ctNNN`, `ctNNN-backup`, …). The installer moves them to the names above on upgrade and keeps the old `ctNNN-notify` command as a link, in case another app still calls it. It never overwrites a file that already exists under the new name. The alert text changes too, so check any Home Assistant automation that matches on it.
 - `/etc/periodic/daily/app-backup` takes consistent SQLite snapshots into `/var/backups/apps`, kept `KEEP_DAYS` days.
 - Set `BACKUP_TARGET` to a mounted folder on other storage, e.g. an NFS share from a NAS. Snapshots plus photos and covers are copied there too.
 - `/etc/periodic/15min/app-health` checks each app. After ~30 minutes down it sends one alert to a Home Assistant webhook automation, and one more on recovery. Set `HA_URL` and `HA_WEBHOOK_ID` to turn alerts on.
@@ -173,3 +175,6 @@ rc-service cookbooks start
 python3 app.py                      # http://localhost:8767, data in ./data
 python3 -m pytest -q tests
 ```
+
+## License
+MIT, see [LICENSE](LICENSE).

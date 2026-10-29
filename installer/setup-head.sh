@@ -93,7 +93,7 @@ add_setting "$CONF" ANTHROPIC_API_KEY "" "Claude API key for reading photos of i
 add_setting "$CONF" ANTHROPIC_MODEL claude-sonnet-5-5 "Model used for photo import"
 add_setting "$CONF" ANTHROPIC_EFFORT low "Claude effort for index photos (low, medium, high, or empty)"
 add_setting "$CONF" MCP_TOKEN "$(head -c 24 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')" \
-  "Secret for private MCP tools: https://<your public address>/mcp/<MCP_TOKEN>"
+  "Secret for private MCP tools: send Authorization: Bearer <MCP_TOKEN> to /mcp (or use /mcp/<MCP_TOKEN>)"
 add_setting "$CONF" MCP_PUBLIC 1 "1 = /mcp without a token serves public search (books, recipes, pages)"
 add_setting "$CONF" WISHLIST_URL http://127.0.0.1:8766 "Family wish list app (local) for 'Add to a wish list'"
 add_setting "$CONF" WISHLIST_BOOK_URL "https://www.amazon.com/s?k={q}" "Shopping link put on wish list items; {q} = ISBN (or title + author)"
@@ -167,6 +167,7 @@ grep -q '^ANTHROPIC_API_KEY=\(""\|'\'''\''\)\?$' "$CONF" && echo "  - Photo impo
 grep -q '^HA_URL=\(""\|'\'''\''\)\?$' "$OPS_CONF" && echo "  - Health alerts are off until you set HA_URL in $OPS_CONF"
 grep -q '^HA_WEBHOOK_ID=\(""\|'\'''\''\)\?$' "$OPS_CONF" && echo "  - Health alerts also need HA_WEBHOOK_ID in $OPS_CONF (the HA automation's webhook)"
 grep -q '^DINNERLOG_URL=\(""\|'\'''\''\)\?$' "$CONF" && echo "  - 'Log this dinner' links are off until you set DINNERLOG_URL in $CONF"
-echo "  - Private MCP URL: https://<your public address>/mcp/$(sed -n 's/^MCP_TOKEN=//p' "$CONF" | tr -d '"')"
+echo "  - Private MCP: https://<your public address>/mcp with header 'Authorization: Bearer <MCP_TOKEN>'"
+echo "    (or /mcp/<MCP_TOKEN> for clients that can't send headers); the token is MCP_TOKEN in $CONF"
 echo "Config: $CONF, $OPS_CONF   Backups: /var/backups/apps   Logs: /var/log/cookbooks.log, /var/log/app-ops.log"
 exit 0

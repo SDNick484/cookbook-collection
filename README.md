@@ -145,9 +145,10 @@ Editors can attach photos of a dish to the recipe it came from.
 
 ## MCP (use the catalog from Claude)
 - `https://cookbooks.example.com/mcp` is public and read-only: search books and recipes, get a book with its index.
-- `https://cookbooks.example.com/mcp/<MCP_TOKEN>`, or a `Bearer <MCP_TOKEN>` header, adds ratings, cooking history, `suggest_recipes`, `cooking_stats`, `set_want_to_try`, and `update_book` (sets a book's cuisine and adds or removes tags, nothing else).
+- An `Authorization: Bearer <MCP_TOKEN>` header on `/mcp`, or `https://cookbooks.example.com/mcp/<MCP_TOKEN>` for clients that can only take a URL, adds ratings, cooking history, `suggest_recipes`, `cooking_stats`, `set_want_to_try`, and `update_book` (sets a book's cuisine and adds or removes tags, nothing else).
 - The token is generated on install and lives in `/etc/conf.d/cookbooks`. Treat the private URL like a password.
 - `/mcp` must stay **outside** the Access app, which only protects `/admin`.
+- Prefer the header. The app keeps the token out of its own access log (`/mcp/<redacted>`), but a token in the URL still shows up in Cloudflare's request logs and anywhere the URL is pasted. The token is `MCP_TOKEN` in `/etc/conf.d/cookbooks`; the installer no longer prints it.
 - `search_recipes` returns the best matches first, the `total`, and `next_offset` when there are more; each recipe's `match` is "title" when every word is in its title, or says per word where it came from: "chicken: title, leek: tag", "chicken: may be only chicken stock", or "chicken: only as “chicken stock” in the title". The server's instructions tell Claude that some books have no page numbers and that the recipe and book title are enough.
 
 ## Backups and alerts

@@ -4,17 +4,20 @@ Public:  /            browse/search books and recipe names (read-only)
          /api/...     public JSON (no private fields)
 Editors: /admin       same UI with editing; put this path behind Cloudflare Access
          /admin/api/  full JSON + writes; requires a verified Access JWT
-                      (or a direct LAN request when LAN_EDIT=1)
+                      (or a direct LAN request when LAN_EDIT=1, see lan_identity())
 
 Environment:
   DATA_DIR        database + covers (default ./data)
   CF_TEAM_DOMAIN  e.g. yourteam.cloudflareaccess.com
   CF_AUD          Access application AUD tag
   ADMIN_EMAILS    optional comma list; if set, only these emails may edit
-  LAN_EDIT        1 (default) = requests that did not come through Cloudflare may edit
+  LAN_EDIT        1 = requests that did not come through Cloudflare may edit (default 0)
+  LAN_CIDRS       client networks LAN editing is allowed from (default: loopback + private ranges)
+  LAN_HOSTS       extra Host names accepted for LAN editing, e.g. cookbooks.lan (IP literals always are)
+  ALLOWED_ORIGINS extra origins allowed to send edits, e.g. https://cookbooks.example.com
   READ_TOKEN      optional bearer token for read-only private routes (Dinner Log's picks)
 """
-import csv, fcntl, io, json, os, re, sqlite3, time, unicodedata, urllib.parse, urllib.request, uuid
+import csv, fcntl, io, ipaddress, json, os, re, sqlite3, time, unicodedata, urllib.parse, urllib.request, uuid
 from functools import wraps
 from pathlib import Path
 
@@ -27,7 +30,22 @@ DB_PATH = DATA_DIR / "cookbooks.db"
 CF_TEAM_DOMAIN = re.sub(r"^https?://", "", os.environ.get("CF_TEAM_DOMAIN", "").strip().strip("'\"")).split("/")[0]
 CF_AUD = os.environ.get("CF_AUD", "").strip().strip("'\"")
 ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
-LAN_EDIT = os.environ.get("LAN_EDIT", "1") == "1"
+def _flag(name, default="0"):
+    """An on/off setting from the environment: "1" (quotes and spaces allowed) is on."""
+    return os.environ.get(name, default).strip().strip("'\"").strip() == "1"
+
+
+LAN_EDIT = _flag("LAN_EDIT")  # off unless explicitly turned on
+PRIVATE_NETS = "127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,fe80::/10"
+
+
+def _split(raw):
+    return [x.strip() for x in raw.strip().strip("'\"").split(",") if x.strip()]
+
+
+LAN_CIDRS = [ipaddress.ip_network(n, strict=False) for n in _split(os.environ.get("LAN_CIDRS", "") or PRIVATE_NETS)]
+LAN_HOSTS = {h.lower() for h in _split(os.environ.get("LAN_HOSTS", ""))} | {"localhost"}
+ALLOWED_ORIGINS = {o.lower().rstrip("/") for o in _split(os.environ.get("ALLOWED_ORIGINS", ""))}
 # Bearer token for read-only private routes called by another server (Dinner Log's "Pick for tonight").
 # It never grants writes; empty = off.
 READ_TOKEN = os.environ.get("READ_TOKEN", "").strip()
@@ -360,17 +378,87 @@ def access_identity():
             g.auth_reason = f"Signed in as {email or 'an unknown user'}, which isn't in ADMIN_EMAILS."
             return None
         return email or "access-user"
-    if LAN_EDIT and not via_cloudflare:
-        return "lan"
-    g.auth_reason = ("No Cloudflare Access sign-in reached the app. Check that the Access application for "
-                     "this site covers the path 'admin'." if via_cloudflare else
-                     "Editing from the LAN is turned off (LAN_EDIT=0).")
-    return None
+    if via_cloudflare:
+        g.auth_reason = ("No Cloudflare Access sign-in reached the app. Check that the Access application for "
+                         "this site covers the path 'admin'.")
+        return None
+    return lan_identity()
+
+
+def _host_only(netloc):
+    """'192.168.1.5:8767' -> '192.168.1.5', '[::1]:8767' -> '::1', 'Cookbooks.lan' -> 'cookbooks.lan'."""
+    netloc = (netloc or "").strip().lower()
+    if netloc.startswith("["):
+        return netloc[1:netloc.find("]")] if "]" in netloc else ""
+    return netloc.rsplit(":", 1)[0] if netloc.count(":") == 1 else netloc
+
+
+def _is_ip(h):
+    try:
+        ipaddress.ip_address(h)
+        return True
+    except ValueError:
+        return False
+
+
+def lan_identity():
+    """A request that didn't come through Cloudflare. It may edit only when LAN_EDIT=1, it comes from a
+    LAN_CIDRS address, and its Host is an IP address or a LAN_HOSTS name. The Host rule stops DNS
+    rebinding: a page on attacker.example re-pointed at this server still sends Host: attacker.example.
+    request.remote_addr is the socket peer (no proxy headers are trusted), so it can't be spoofed by headers."""
+    if not LAN_EDIT:
+        g.auth_reason = "Editing from the LAN is turned off (LAN_EDIT=0)."
+        return None
+    try:
+        peer = ipaddress.ip_address((request.remote_addr or "").split("%")[0])
+    except ValueError:
+        peer = None
+    if peer is not None and peer.version == 6 and peer.ipv4_mapped:
+        peer = peer.ipv4_mapped  # a dual-stack bind ([::]) reports IPv4 clients as ::ffff:a.b.c.d
+    if peer is None or not any(peer in n for n in LAN_CIDRS):
+        g.auth_reason = f"LAN editing isn't allowed from {request.remote_addr} (not in LAN_CIDRS)."
+        return None
+    host = _host_only(request.host)
+    if not (_is_ip(host) or host in LAN_HOSTS):
+        g.auth_reason = (f"LAN editing needs the server's IP address in the URL, not '{host}'. "
+                         "To use a name, add it to LAN_HOSTS.")
+        return None
+    return "lan"
+
+
+UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def cross_site_reason():
+    """For edits: None if the request came from this site's own pages (or from no browser at all),
+    else why it's refused. Browsers always send Origin on cross-origin POST/PUT/DELETE, including the
+    'simple' text/plain and form posts that skip CORS preflight, so checking it blocks CSRF."""
+    if request.method not in UNSAFE_METHODS:
+        return None
+    origin = (request.headers.get("Origin") or "").strip().lower().rstrip("/")
+    if not origin:
+        site = (request.headers.get("Sec-Fetch-Site") or "").lower()
+        return None if site in ("", "same-origin", "none") else f"Cross-site request refused ({site})."
+    if origin in ALLOWED_ORIGINS:
+        return None
+    parts = urllib.parse.urlsplit(origin)
+    hosts = {request.host.lower()}
+    via_cloudflare = request.headers.get("Cf-Ray") or request.headers.get("Cf-Connecting-Ip")
+    if via_cloudflare:
+        hosts.add((request.headers.get("X-Forwarded-Host") or "").lower())
+    # Through Cloudflare the site is only served over HTTPS, so an http:// origin of the same name isn't ours.
+    scheme_ok = parts.scheme == "https" if via_cloudflare else parts.scheme in ("http", "https")
+    if origin != "null" and scheme_ok and parts.netloc and parts.netloc in hosts:
+        return None
+    return f"Cross-site request refused (Origin {origin}). Add it to ALLOWED_ORIGINS if it's yours."
 
 
 def editor_required(fn):
     @wraps(fn)
     def inner(*a, **kw):
+        bad = cross_site_reason()
+        if bad:
+            return jsonify(error="Refused", reason=bad), 403
         who = access_identity()
         if not who:
             return jsonify(error="Sign in to edit", reason=g.auth_reason), 401

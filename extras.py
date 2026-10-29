@@ -1119,13 +1119,49 @@ TOOLS = [
 WRITE_TOOLS = {"set_want_to_try", "update_book"}
 
 
+MCP_TOKEN_KEY = "cookbooks.mcp_token"
+
+
+class RedactMcpToken:
+    """WSGI wrapper: takes the secret out of /mcp/<token> before anything logs the URL.
+
+    The token moves into environ[MCP_TOKEN_KEY], PATH_INFO becomes /mcp, and RAW_URI / REQUEST_URI read
+    /mcp/<redacted>. gunicorn's access log formats the request line from this same environ dict after the
+    app returns, so the log never sees the secret. (Cloudflare's own logs still see the path; clients that
+    can send an Authorization header should use `Bearer <MCP_TOKEN>` instead.)"""
+    PREFIX = "/mcp/"
+
+    def __init__(self, wsgi_app):
+        self.wsgi_app = wsgi_app
+
+    def __call__(self, environ, start_response):
+        path = environ.get("PATH_INFO", "")
+        token = path[len(self.PREFIX):].rstrip("/") if path.startswith(self.PREFIX) else ""
+        if token:
+            environ[MCP_TOKEN_KEY] = token
+            environ["PATH_INFO"] = "/mcp"
+            for k in ("RAW_URI", "REQUEST_URI"):
+                if k in environ:
+                    q = environ[k].partition("?")[2]
+                    environ[k] = "/mcp/<redacted>" + ("?" + q if q else "")
+        try:
+            return self.wsgi_app(environ, start_response)
+        finally:
+            # Flask has finished dispatching by now; drop the secret so no %({key}e)s log format can show it.
+            environ.pop(MCP_TOKEN_KEY, None)
+
+
+app.wsgi_app = RedactMcpToken(app.wsgi_app)
+
+
 def mcp_auth(token):
     """Returns 'private', 'public' or None."""
     auth = request.headers.get("Authorization", "")
-    bearer = auth[7:].strip() if auth.startswith("Bearer ") else ""
+    bearer = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
     supplied = token or bearer
     if supplied:
-        if MCP_TOKEN and hmac.compare_digest(supplied, MCP_TOKEN):
+        # compare bytes: compare_digest raises TypeError on non-ASCII str
+        if MCP_TOKEN and hmac.compare_digest(supplied.encode(), MCP_TOKEN.encode()):
             return "private"
         return None
     return "public" if MCP_PUBLIC else None
@@ -1183,8 +1219,8 @@ def handle_rpc(msg, private):
 
 
 @app.route("/mcp", methods=["GET", "POST", "DELETE"])
-@app.route("/mcp/<token>", methods=["GET", "POST", "DELETE"])
-def mcp(token=None):
+def mcp():
+    token = request.environ.get(MCP_TOKEN_KEY)  # set by RedactMcpToken from /mcp/<token>
     level = mcp_auth(token)
     if level is None:
         return (jsonify(error="unauthorized"), 404 if token else 401)

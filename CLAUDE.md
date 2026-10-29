@@ -23,7 +23,7 @@ Modules register routes onto `app.app` and add their tables in a `migrate(con)` 
 ```sh
 python -m pytest -q                      # full suite, ~10 s
 sh installer/build.sh                    # -> dist/setup-cookbooks.sh
-DATA_DIR=$(mktemp -d) python3 app.py     # local server on :8767 (PORT=... to change); /admin edits from localhost
+DATA_DIR=$(mktemp -d) LAN_EDIT=1 python3 app.py   # local server on :8767; /admin edits from localhost
 ```
 Chromium for Playwright checks: `/opt/pw-browsers/chromium-*/chrome-linux/chrome` (cloud sessions).
 
@@ -39,6 +39,8 @@ Chromium for Playwright checks: `/opt/pw-browsers/chromium-*/chrome-linux/chrome
 - MCP tools: add to `TOOLS` in extras.py as (name, private_only, fn, description, schema); writes go in
   `WRITE_TOOLS` and are private-only. Keep tool output compact: it stays in the assistant's context.
 - Tests: commit the test's own connection before calling the app, or SQLite reports "database is locked".
+- Every write route uses `@editor_required`, which refuses cross-site edits (Origin check) before auth.
+  LAN editing (`lan_identity()`) trusts only the socket peer, never forwarded headers.
 - Don't `pkill -f`/`pgrep -f` a server by a pattern that also matches your own shell command.
 - Keep the owner's domain, server names and personal setup out of the repo; use `cookbooks.example.com`.
 

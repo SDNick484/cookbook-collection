@@ -83,13 +83,17 @@ fi
 add_setting "$CONF" CF_TEAM_DOMAIN "" "Cloudflare Access team domain, e.g. yourteam.cloudflareaccess.com"
 add_setting "$CONF" CF_AUD "" "AUD tag of the Cookbooks Access application (path: admin)"
 add_setting "$CONF" ADMIN_EMAILS "" "Only these emails may edit (comma separated); empty = anyone the Access policy lets in"
-add_setting "$CONF" LAN_EDIT 1 "1 = direct LAN requests (not through Cloudflare) may edit"
+add_setting "$CONF" LAN_EDIT 0 "1 = direct LAN requests (not through Cloudflare) may edit; see LAN_CIDRS and LAN_HOSTS"
+add_setting "$CONF" LAN_CIDRS "" "Networks LAN editing is allowed from, comma separated; empty = loopback + private ranges"
+add_setting "$CONF" LAN_HOSTS "" "Names (besides IP addresses and localhost) accepted in the URL for LAN editing, e.g. cookbooks.lan"
+add_setting "$CONF" ALLOWED_ORIGINS "" "Extra origins allowed to send edits, e.g. https://cookbooks.example.com (rarely needed)"
+add_setting "$CONF" BIND 0.0.0.0 "Address the app listens on; 127.0.0.1 when cloudflared runs on this server and LAN_EDIT=0"
 add_setting "$CONF" DINNERLOG_DB /var/lib/dinner-log/meals.db "Dinner Log database (read-only) for cooking history"
 add_setting "$CONF" ANTHROPIC_API_KEY "" "Claude API key for reading photos of index pages (console.anthropic.com)"
 add_setting "$CONF" ANTHROPIC_MODEL claude-sonnet-5-5 "Model used for photo import"
 add_setting "$CONF" ANTHROPIC_EFFORT low "Claude effort for index photos (low, medium, high, or empty)"
 add_setting "$CONF" MCP_TOKEN "$(head -c 24 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')" \
-  "Secret for private MCP tools: https://<your public address>/mcp/<MCP_TOKEN>"
+  "Secret for private MCP tools: send Authorization: Bearer <MCP_TOKEN> to /mcp (or use /mcp/<MCP_TOKEN>)"
 add_setting "$CONF" MCP_PUBLIC 1 "1 = /mcp without a token serves public search (books, recipes, pages)"
 add_setting "$CONF" WISHLIST_URL http://127.0.0.1:8766 "Family wish list app (local) for 'Add to a wish list'"
 add_setting "$CONF" WISHLIST_BOOK_URL "https://www.amazon.com/s?k={q}" "Shopping link put on wish list items; {q} = ISBN (or title + author)"
@@ -112,13 +116,14 @@ name="cookbooks"
 description="Cookbook Collection"
 : ${PORT:=8767}
 : ${DATA_DIR:=/var/lib/cookbooks}
-export DATA_DIR CF_TEAM_DOMAIN CF_AUD ADMIN_EMAILS LAN_EDIT DINNERLOG_DB ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_EFFORT MCP_TOKEN MCP_PUBLIC WISHLIST_URL WISHLIST_BOOK_URL DINNERLOG_URL READ_TOKEN
+: ${BIND:=0.0.0.0}
+export DATA_DIR CF_TEAM_DOMAIN CF_AUD ADMIN_EMAILS LAN_EDIT LAN_CIDRS LAN_HOSTS ALLOWED_ORIGINS DINNERLOG_DB ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_EFFORT MCP_TOKEN MCP_PUBLIC WISHLIST_URL WISHLIST_BOOK_URL DINNERLOG_URL READ_TOKEN
 supervisor="supervise-daemon"
 respawn_delay=5
 respawn_max=10
 respawn_period=600
 command="/usr/bin/gunicorn"
-command_args="--preload --workers 2 --threads 4 --timeout 180 --bind 0.0.0.0:${PORT} --chdir /opt/cookbooks --access-logfile /var/log/cookbooks.log --error-logfile /var/log/cookbooks.log app:app"
+command_args="--preload --workers 2 --threads 4 --timeout 180 --bind ${BIND}:${PORT} --chdir /opt/cookbooks --access-logfile /var/log/cookbooks.log --error-logfile /var/log/cookbooks.log app:app"
 command_user="cookbooks"
 depend() { need net; after firewall; }
 start_pre() { checkpath -f -o cookbooks /var/log/cookbooks.log; }
@@ -149,7 +154,7 @@ echo "==> Taking a first backup"
 
 IP=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n1)
 echo
-echo "Cookbook Collection is running:  http://$IP:$PORT/        (editing on the LAN: http://$IP:$PORT/admin)"
+echo "Cookbook Collection is running:  http://$IP:$PORT/"
 echo "Health: $(wget -qO- http://127.0.0.1:$PORT/healthz)"
 DL=$(wget -qO- "http://127.0.0.1:$PORT/admin/api/dinnerlog" 2>/dev/null | sed -n 's/.*"available": *\(true\|false\).*/\1/p' | head -n1)
 echo "Dinner Log link: ${DL:-unknown}"
@@ -158,6 +163,14 @@ grep -q '^ANTHROPIC_API_KEY=\(""\|'\'''\''\)\?$' "$CONF" && echo "  - Photo impo
 grep -q '^HA_URL=\(""\|'\'''\''\)\?$' "$OPS_CONF" && echo "  - Health alerts are off until you set HA_URL in $OPS_CONF"
 grep -q '^HA_WEBHOOK_ID=\(""\|'\'''\''\)\?$' "$OPS_CONF" && echo "  - Health alerts also need HA_WEBHOOK_ID in $OPS_CONF (the HA automation's webhook)"
 grep -q '^DINNERLOG_URL=\(""\|'\'''\''\)\?$' "$CONF" && echo "  - 'Log this dinner' links are off until you set DINNERLOG_URL in $CONF"
-echo "  - Private MCP URL: https://<your public address>/mcp/$(sed -n 's/^MCP_TOKEN=//p' "$CONF" | tr -d '"')"
+echo "  - Private MCP: https://<your public address>/mcp with header 'Authorization: Bearer <MCP_TOKEN>'"
+echo "    (or /mcp/<MCP_TOKEN> for clients that can't send headers); the token is MCP_TOKEN in $CONF"
 echo "Config: $CONF, $OPS_CONF   Backups: /var/backups/apps   Logs: /var/log/cookbooks.log, /var/log/app-ops.log"
+if grep -Eq "^LAN_EDIT=[\"']?1[\"']?[[:space:]]*(#.*)?$" "$CONF"; then
+  echo
+  echo "!!  LAN editing is ON (LAN_EDIT=1 in $CONF): any device in LAN_CIDRS can edit at"
+  echo "!!  http://$IP:$PORT/admin without signing in. Cross-site and DNS-rebinding edits are now refused,"
+  echo "!!  and LAN edits need the IP (or a LAN_HOSTS name) in the URL. To edit only through Cloudflare"
+  echo "!!  Access, set LAN_EDIT=0 (and BIND=127.0.0.1 if cloudflared runs here), then: rc-service cookbooks restart"
+fi
 exit 0

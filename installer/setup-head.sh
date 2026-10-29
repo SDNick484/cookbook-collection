@@ -66,6 +66,9 @@ mv "$APP_DIR.new" "$APP_DIR"; rm -rf "$APP_DIR.old" "$TMP"
 chown -R root:root "$APP_DIR"
 chown -R "$SVC_USER" "$DATA_DIR"
 
+# older versions named the ops files after the container; move them to the generic names
+sh "$APP_DIR/ops/migrate-ops"
+
 # ---------------------------------------------------------------- config
 add_setting() {  # add_setting FILE KEY VALUE COMMENT — only if KEY isn't there yet
   grep -q "^$2=" "$1" 2>/dev/null && return 0
@@ -106,6 +109,7 @@ chmod 640 "$CONF"; chown root:"$SVC_USER" "$CONF"
 add_setting "$OPS_CONF" HA_URL "" "Home Assistant LAN address, e.g. http://192.168.1.50:8123 (alerts are off until set)"
 add_setting "$OPS_CONF" HA_WEBHOOK_ID "$HA_WEBHOOK_ID" "Webhook ID of the Home Assistant automation that receives app health alerts"
 add_setting "$OPS_CONF" BACKUP_TARGET "" "Optional folder on other storage (e.g. an NFS mount from a NAS) that also gets photos/covers"
+add_setting "$OPS_CONF" HOST_LABEL "" "Name for this server in alerts; empty = its hostname"
 add_setting "$OPS_CONF" KEEP_DAYS 14 "Days of nightly database snapshots to keep"
 chmod 600 "$OPS_CONF"
 

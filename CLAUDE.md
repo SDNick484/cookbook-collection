@@ -14,7 +14,7 @@ and an MCP server at `/mcp`. README.md is the user-facing guide; this file is ho
 | `online.py` | Recipes from websites (NYT Cooking): `books.kind='online'`, editor-only |
 | `static/` | Single-page app (`app.js`, `style.css`, `index.html`) |
 | `installer/` | `build.sh` -> `dist/setup-cookbooks.sh` (Alpine/OpenRC installer: `setup-head.sh` + base64 tarball) |
-| `ops/` | Backup and health-check scripts the installer sets up |
+| `ops/` | Backup and health-check scripts the installer sets up; `migrate-ops` moves files from older container-named paths |
 | `tests/` | pytest; each file sets `DATA_DIR` to a temp dir and seeds from `seed.json` |
 
 Modules register routes onto `app.app` and add their tables in a `migrate(con)` that `init_db` calls.
@@ -43,6 +43,8 @@ Chromium for Playwright checks: `/opt/pw-browsers/chromium-*/chrome-linux/chrome
   LAN editing (`lan_identity()`) trusts only the socket peer, never forwarded headers.
 - Don't `pkill -f`/`pgrep -f` a server by a pattern that also matches your own shell command.
 - Keep the owner's domain, server names and personal setup out of the repo; use `cookbooks.example.com`.
+  `tests/test_hygiene.py` fails on container/VM IDs and home-directory paths; names, hostnames and emails
+  can't be listed there, so check diffs for them yourself.
 
 ## Release flow
 Develop on a branch, run the tests, open a PR, merge it, then build the installer and hand over `dist/setup-cookbooks.sh`.

@@ -244,7 +244,7 @@ function recipeRow(r) {
     ${ADMIN && extra.length ? `<div class="extra">${extra.join(" · ")}</div>` : ""}</div>
     ${whereHTML(r)}
     ${ADMIN ? `<span class="acts">${S.features && S.features.dinnerlog_url && S.bookTitle ? `<a class="log" title="Log this dinner in Dinner Log" target="_blank" rel="noopener"
-        href="${esc(S.features.dinnerlog_url)}/new?source_type=cookbook&source_title=${encodeURIComponent(S.bookTitle)}&source_detail=${encodeURIComponent(r.page || r.url || "")}&name=${encodeURIComponent(r.heading && r.name[0] === r.name[0].toLowerCase() ? r.heading + ", " + r.name : r.name)}">🍽</a>` : ""}
+        href="${esc(S.features.dinnerlog_url)}/new?source_type=cookbook&source_title=${encodeURIComponent(S.bookTitle)}&source_detail=${encodeURIComponent(r.page || r.url || "")}&cookbook_book_id=${r.book_id}&cookbook_recipe_id=${r.id}&name=${encodeURIComponent(r.heading && r.name[0] === r.name[0].toLowerCase() ? r.heading + ", " + r.name : r.name)}">🍽</a>` : ""}
       <button title="${nph ? `${nph} photo${nph > 1 ? "s" : ""}` : "Add photos"}" class="pho ${nph ? "on" : ""}">📷${nph ? `<span class="n">${nph}</span>` : ""}</button>
       <button title="Want to try" class="want ${r.want_to_try ? "on" : ""}">${r.want_to_try ? "★" : "☆"}</button>
       <button title="Edit" class="edit">✎</button></span>` : ""}</li>`;
@@ -1172,7 +1172,7 @@ function hbars(rows, label, value, href, note) {
     <span class="hv">${value(r)}</span></a>`).join("")}</div>`;
 }
 async function statsView() {
-  const [s, dl] = await Promise.all([api("stats"), api("dinnerlog")]);
+  const [s, dl] = await Promise.all([api("stats"), api("dinnerlog?force=1")]);
   const months = [];
   const now = new Date(); now.setDate(1);
   for (let i = 11; i >= 0; i--) {
@@ -1225,11 +1225,12 @@ async function statsView() {
         ${hbars(s.by_format, (r) => r.name, (r) => r.books, null, (r) => (r.books === 1 ? " book" : " books"))}</div>` : ""}
     </div>
     <div class="panel wide" id="dlpanel"><h3>Dinner Log</h3>${dl.available ? `
-      <p class="small muted" style="margin-top:0">${dl.meals} cookbook dinners · ${dl.recipe_matched} matched to a recipe · ${dl.book_only} matched to a book only · checked ${esc(dl.synced || "")}</p>
+      <p class="small muted" style="margin-top:0">${dl.meals} cookbook dinners · ${dl.recipe_matched} matched to a recipe${dl.linked ? ` (${dl.linked} logged from here)` : ""} · ${dl.book_only} matched to a book only · fetched ${esc(dl.pulled || "")}</p>
       ${dl.unmatched_titles.length ? `<p class="small">These cookbook names from Dinner Log don't match a book here. Pick the book once and every dinner with that name follows.</p>
         <ul class="rlist">${dl.unmatched_titles.map((t) => `<li data-title="${esc(t.title)}"><div class="rn">${esc(t.title)} <span class="muted small">${t.n} dinner${t.n > 1 ? "s" : ""}</span></div>
         <select class="alias" style="max-width:55%"><option value="">Pick a book…</option></select></li>`).join("")}</ul>` : `<p class="small">Every cookbook name in Dinner Log matches a book.</p>`}`
-      : `<p class="small muted" style="margin-top:0">Couldn't read Dinner Log at <code>${esc(dl.path)}</code>${dl.error ? ` (${esc(dl.error)})` : ""}. The installer gives this app read access when both run on the same server.</p>`}</div>`;
+      : dl.source ? `<p class="small muted" style="margin-top:0">Couldn't get cooking history from Dinner Log at <code>${esc(dl.source)}</code>${dl.error ? ` (${esc(dl.error)})` : ""}.${dl.pulled ? ` Showing what it sent at ${esc(dl.pulled)}.` : ""}</p>`
+      : `<p class="small muted" style="margin-top:0">Cooking history is off. Set <code>DINNERLOG_API_URL</code> and <code>DINNERLOG_TOKEN</code> to Dinner Log's private address and its <code>HISTORY_TOKEN</code>.</p>`}</div>`;
   const sels = $$("select.alias");
   if (sels.length) {
     allBooks = (await api("books?sort=title")).books;

@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("DATA_DIR", tempfile.mkdtemp())
 import app as A  # noqa: E402
 import extras as X  # noqa: E402
+from dl_history import History  # noqa: E402
 import online as O  # noqa: E402
 
 NYT = "https://cooking.nytimes.com/recipes/1017256-french-onion-soup"
@@ -116,26 +117,16 @@ def test_mcp(c, clean_online, monkeypatch):
     assert "url instead of a page" in init["result"]["instructions"]
 
 
-def test_dinner_log_credits_saved_links(c, clean_online, monkeypatch, tmp_path):
+def test_dinner_log_credits_saved_links(c, clean_online, monkeypatch):
     r = c.post("/admin/api/online/commit", json={"items": [{"url": NYT}]}).json
     bid = r["books"][0]["id"]
     rid = c.get(f"/admin/api/books/{bid}").json["recipes"][0]["id"]
-    path = tmp_path / "meals.db"
-    dl = sqlite3.connect(path)
-    dl.executescript("""CREATE TABLE meals (id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL, name TEXT NOT NULL,
-      source_type TEXT NOT NULL DEFAULT 'original', source_title TEXT NOT NULL DEFAULT '',
-      source_detail TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, rating INTEGER);""")
+    h = History(monkeypatch)
     today = date.today().isoformat()
-    dl.execute("INSERT INTO meals(day, name, source_type, source_detail, rating) VALUES (?, 'Onion soup', 'website', ?, 9)",
-               (today, NYT + "?smid=share"))
-    dl.execute("INSERT INTO meals(day, name, source_type, source_detail) VALUES (?, 'Takeout', 'website', 'https://example.com/x')",
-               (today,))
-    dl.commit()
-    dl.close()
-    monkeypatch.setattr(X, "DINNERLOG_DB", str(path))
+    h.add(today, "Onion soup", "website", "", NYT + "?smid=share", 9)
+    h.add(today, "Takeout", "website", "", "https://example.com/x")
     con = A.connect()
-    X.sync_dinnerlog(con, force=True)
+    X.rebuild_cooked(con, force=True)
     rows = con.execute("SELECT book_id, recipe_id, how FROM cooked").fetchall()
     con.close()
     assert [tuple(x) for x in rows] == [(bid, rid, "auto")]          # the unrelated website dinner is left out

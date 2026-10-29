@@ -113,7 +113,12 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_dl_opener = urllib.request.build_opener(_NoRedirect)
+# No environment proxies either: the token goes to DINNERLOG_API_URL and nowhere else.
+def build_dl_opener():
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+
+
+_dl_opener = build_dl_opener()
 
 
 def dl_open(req, timeout):
@@ -167,6 +172,8 @@ def pull_history(con, now=None):
     now = time.time() if now is None else now
     if not DINNERLOG_API_URL:
         return {"ok": False, "changed": False, "error": "not configured"}
+    if not DINNERLOG_API_URL.lower().startswith(("http://", "https://")):
+        return _pull_failed(con, now, "DINNERLOG_API_URL must start with http:// or https://")
     headers = {"Authorization": f"Bearer {DINNERLOG_TOKEN}", "Accept": "application/json"}
     etag = meta_get(con, "dl_etag")
     if etag:
@@ -412,7 +419,7 @@ def cooked_by_book(ids):
 def dinnerlog_status():
     con = db()
     force = request.args.get("force") == "1"
-    if force:
+    if force or (DINNERLOG_API_URL and meta_get(con, "dl_gen") is None):  # nothing to show yet: fetch now
         pull_history(con)
     rebuild_cooked(con, force=force)
     pulled = meta_get(con, "dl_pulled_at")

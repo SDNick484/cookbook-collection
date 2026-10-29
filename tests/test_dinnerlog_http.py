@@ -395,3 +395,43 @@ def test_alias_and_link_rebuild_without_pull(configured, monkeypatch, started):
     assert cooked(con)[1][2] == "manual"
     assert fake.requests == []
     c.post("/admin/api/dinnerlog/alias", json={"title": "My Zuni Copy", "book_id": None})
+
+
+# ------------------------------------------------------------------ review fixes
+
+def test_status_pulls_inline_when_never_pulled(configured, monkeypatch):
+    fake = use(monkeypatch, Resp(payload([meal(1, "x", ZUNI)]), headers={"ETag": '"f"'}))
+    st = A.app.test_client().get("/admin/api/dinnerlog").json            # no force: first run, installer check
+    assert len(fake.requests) == 1 and st["available"] is True and st["meals"] == 1
+
+
+def test_status_without_force_doesnt_pull_once_pulled(configured, monkeypatch, started):
+    X.store_snapshot(configured, [meal(1, "x", ZUNI)], '"a"')
+    fake = use(monkeypatch)
+    assert A.app.test_client().get("/admin/api/dinnerlog").json["available"] is True
+    assert fake.requests == []
+
+
+def test_stats_view_and_installer_force_a_fetch():
+    js = (X.os.path.dirname(A.__file__) + "/static/app.js")
+    assert 'api("dinnerlog?force=1")' in open(js).read()
+    sh = open(X.os.path.dirname(A.__file__) + "/installer/setup-head.sh").read()
+    assert "/admin/api/dinnerlog?force=1" in sh
+
+
+@pytest.mark.parametrize("url", ["127.0.0.1:8000", "dinnerlog", "file:///etc/passwd", "ftp://h/x"])
+def test_url_without_http_scheme_is_a_clear_error(configured, monkeypatch, url):
+    monkeypatch.setattr(X, "DINNERLOG_API_URL", url)
+    fake = use(monkeypatch)
+    st = X.pull_history(configured, now=1.0)
+    assert st["ok"] is False and "http://" in st["error"] and fake.requests == []
+    r = A.app.test_client().get("/admin/api/dinnerlog?force=1")
+    assert r.status_code == 200 and "http://" in r.json["error"]
+
+
+def test_opener_ignores_environment_proxies(monkeypatch):
+    monkeypatch.setenv("http_proxy", "http://proxy.invalid:3128")
+    monkeypatch.setenv("https_proxy", "http://proxy.invalid:3128")
+    opener = X.build_dl_opener()
+    assert not any(isinstance(h, X.urllib.request.ProxyHandler) and h.proxies for h in opener.handlers)
+    assert any(isinstance(h, X._NoRedirect) for h in opener.handlers)

@@ -159,7 +159,7 @@ IP=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n1
 echo
 echo "Cookbook Collection is running:  http://$IP:$PORT/"
 echo "Health: $(wget -qO- http://127.0.0.1:$PORT/healthz)"
-DL=$(wget -qO- "http://127.0.0.1:$PORT/admin/api/dinnerlog" 2>/dev/null | sed -n 's/.*"available": *\(true\|false\).*/\1/p' | head -n1)
+DL=$(wget -qO- "http://127.0.0.1:$PORT/admin/api/dinnerlog?force=1" 2>/dev/null | sed -n 's/.*"available": *\(true\|false\).*/\1/p' | head -n1)
 echo "Dinner Log link: ${DL:-unknown}"
 [ -n "${ADDED:-}" ] && echo "New settings added:${ADDED}"
 grep -q '^ANTHROPIC_API_KEY=\(""\|'\'''\''\)\?$' "$CONF" && echo "  - Photo import is off until you set ANTHROPIC_API_KEY in $CONF"

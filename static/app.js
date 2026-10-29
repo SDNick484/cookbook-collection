@@ -1172,7 +1172,7 @@ function hbars(rows, label, value, href, note) {
     <span class="hv">${value(r)}</span></a>`).join("")}</div>`;
 }
 async function statsView() {
-  const [s, dl] = await Promise.all([api("stats"), api("dinnerlog")]);
+  const [s, dl] = await Promise.all([api("stats"), api("dinnerlog?force=1")]);
   const months = [];
   const now = new Date(); now.setDate(1);
   for (let i = 11; i >= 0; i--) {

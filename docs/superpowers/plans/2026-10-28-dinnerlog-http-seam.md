@@ -19,9 +19,7 @@ installers in POSIX sh.
 
 - Two repos, two branches, two PRs: `dinner-log` branch `feat/history-endpoint` (Tasks 1–3), merged and
   deployed first; `cookbook-collection` branch `feat/dinnerlog-http-seam` (Tasks 4–6).
-- `dinner-log` is cloned read-only at `/home/claude/sdnick484/dinner-log`. Before Task 1, attach it with
-  push access (`add_repo` owner `SDNick484`, repo `dinner-log`, access `push`) and work in the attached
-  clone at `/home/claude/dinner-log`.
+- Tasks 1–3 need a clone of `dinner-log` with push access; Tasks 4–6 run in this repo.
 - Response envelope: `{"version": 1, "meals": [...]}`; consumer rejects any other `version`.
 - Timings (Cookbook Collection): pull when snapshot older than **60 s**; backoff **300 s** after a failed
   pull; lease expires after **120 s**; request timeout **5 s**; response body cap **10 MB** (10485760 bytes).
@@ -48,7 +46,7 @@ installers in POSIX sh.
 
 ---
 
-## Dinner Log (`/home/claude/dinner-log`, branch `feat/history-endpoint`)
+## Dinner Log (repo `dinner-log`, branch `feat/history-endpoint`)
 
 ### Task 1: Id columns and saving them
 
@@ -185,7 +183,7 @@ Set `HISTORY_TOKEN` via `monkeypatch.setattr(a, "HISTORY_TOKEN", "t0ken")` after
 
 ---
 
-## Cookbook Collection (`/home/claude/cookbook-collection`, branch `feat/dinnerlog-http-seam`)
+## Cookbook Collection (this repo, branch `feat/dinnerlog-http-seam`)
 
 ### Task 4: Snapshot storage and `pull_history`
 

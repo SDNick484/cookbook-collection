@@ -30,7 +30,12 @@ DB_PATH = DATA_DIR / "cookbooks.db"
 CF_TEAM_DOMAIN = re.sub(r"^https?://", "", os.environ.get("CF_TEAM_DOMAIN", "").strip().strip("'\"")).split("/")[0]
 CF_AUD = os.environ.get("CF_AUD", "").strip().strip("'\"")
 ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
-LAN_EDIT = os.environ.get("LAN_EDIT", "0").strip().strip("'\"") == "1"
+def _flag(name, default="0"):
+    """An on/off setting from the environment: "1" (quotes and spaces allowed) is on."""
+    return os.environ.get(name, default).strip().strip("'\"").strip() == "1"
+
+
+LAN_EDIT = _flag("LAN_EDIT")  # off unless explicitly turned on
 PRIVATE_NETS = "127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,fe80::/10"
 
 
@@ -408,6 +413,8 @@ def lan_identity():
         peer = ipaddress.ip_address((request.remote_addr or "").split("%")[0])
     except ValueError:
         peer = None
+    if peer is not None and peer.version == 6 and peer.ipv4_mapped:
+        peer = peer.ipv4_mapped  # a dual-stack bind ([::]) reports IPv4 clients as ::ffff:a.b.c.d
     if peer is None or not any(peer in n for n in LAN_CIDRS):
         g.auth_reason = f"LAN editing isn't allowed from {request.remote_addr} (not in LAN_CIDRS)."
         return None
@@ -434,11 +441,14 @@ def cross_site_reason():
         return None if site in ("", "same-origin", "none") else f"Cross-site request refused ({site})."
     if origin in ALLOWED_ORIGINS:
         return None
-    netloc = urllib.parse.urlsplit(origin).netloc
+    parts = urllib.parse.urlsplit(origin)
     hosts = {request.host.lower()}
-    if request.headers.get("Cf-Ray") or request.headers.get("Cf-Connecting-Ip"):
+    via_cloudflare = request.headers.get("Cf-Ray") or request.headers.get("Cf-Connecting-Ip")
+    if via_cloudflare:
         hosts.add((request.headers.get("X-Forwarded-Host") or "").lower())
-    if origin != "null" and netloc and netloc in hosts:
+    # Through Cloudflare the site is only served over HTTPS, so an http:// origin of the same name isn't ours.
+    scheme_ok = parts.scheme == "https" if via_cloudflare else parts.scheme in ("http", "https")
+    if origin != "null" and scheme_ok and parts.netloc and parts.netloc in hosts:
         return None
     return f"Cross-site request refused (Origin {origin}). Add it to ALLOWED_ORIGINS if it's yours."
 

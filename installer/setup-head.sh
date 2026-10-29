@@ -155,10 +155,6 @@ echo "==> Taking a first backup"
 IP=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n1)
 echo
 echo "Cookbook Collection is running:  http://$IP:$PORT/"
-if grep -q '^LAN_EDIT="\?1"\?$' "$CONF"; then
-  echo "  - LAN editing is ON (http://$IP:$PORT/admin): anyone on LAN_CIDRS can edit without signing in."
-  echo "    Edits now need the IP (or a LAN_HOSTS name) in the URL and same-site pages. Set LAN_EDIT=0 to edit only via Access."
-fi
 echo "Health: $(wget -qO- http://127.0.0.1:$PORT/healthz)"
 DL=$(wget -qO- "http://127.0.0.1:$PORT/admin/api/dinnerlog" 2>/dev/null | sed -n 's/.*"available": *\(true\|false\).*/\1/p' | head -n1)
 echo "Dinner Log link: ${DL:-unknown}"
@@ -170,4 +166,11 @@ grep -q '^DINNERLOG_URL=\(""\|'\'''\''\)\?$' "$CONF" && echo "  - 'Log this dinn
 echo "  - Private MCP: https://<your public address>/mcp with header 'Authorization: Bearer <MCP_TOKEN>'"
 echo "    (or /mcp/<MCP_TOKEN> for clients that can't send headers); the token is MCP_TOKEN in $CONF"
 echo "Config: $CONF, $OPS_CONF   Backups: /var/backups/apps   Logs: /var/log/cookbooks.log, /var/log/app-ops.log"
+if grep -Eq "^LAN_EDIT=[\"']?1[\"']?[[:space:]]*(#.*)?$" "$CONF"; then
+  echo
+  echo "!!  LAN editing is ON (LAN_EDIT=1 in $CONF): any device in LAN_CIDRS can edit at"
+  echo "!!  http://$IP:$PORT/admin without signing in. Cross-site and DNS-rebinding edits are now refused,"
+  echo "!!  and LAN edits need the IP (or a LAN_HOSTS name) in the URL. To edit only through Cloudflare"
+  echo "!!  Access, set LAN_EDIT=0 (and BIND=127.0.0.1 if cloudflared runs here), then: rc-service cookbooks restart"
+fi
 exit 0

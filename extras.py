@@ -1136,8 +1136,9 @@ class RedactMcpToken:
 
     def __call__(self, environ, start_response):
         path = environ.get("PATH_INFO", "")
-        if path.startswith(self.PREFIX) and len(path) > len(self.PREFIX):
-            environ[MCP_TOKEN_KEY] = path[len(self.PREFIX):].rstrip("/")
+        token = path[len(self.PREFIX):].rstrip("/") if path.startswith(self.PREFIX) else ""
+        if token:
+            environ[MCP_TOKEN_KEY] = token
             environ["PATH_INFO"] = "/mcp"
             for k in ("RAW_URI", "REQUEST_URI"):
                 if k in environ:

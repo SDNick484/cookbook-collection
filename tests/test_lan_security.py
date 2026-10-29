@@ -48,10 +48,19 @@ def test_lan_edit_off_refuses(c, monkeypatch):
     assert r.status_code == 401 and "LAN_EDIT=0" in r.json["reason"]
 
 
+@pytest.mark.parametrize("raw,on", [(None, False), ("", False), ("0", False), ("1", True), ('"1"', True),
+                                    ("'1' ", True), (" 1", True), ("yes", False), ("10", False)])
+def test_flag_parsing(monkeypatch, raw, on):
+    """LAN_EDIT and friends: off unless set to 1 (conf.d quoting tolerated)."""
+    monkeypatch.delenv("X_TEST_FLAG", raising=False)
+    if raw is not None:
+        monkeypatch.setenv("X_TEST_FLAG", raw)
+    assert A._flag("X_TEST_FLAG") is on
+
+
 def test_lan_edit_defaults_off(monkeypatch):
-    """With no LAN_EDIT in the environment the module must not grant LAN editing."""
-    src = (A.APP_DIR / "app.py").read_text()
-    assert 'os.environ.get("LAN_EDIT", "0")' in src
+    monkeypatch.delenv("LAN_EDIT", raising=False)
+    assert A._flag("LAN_EDIT") is False
 
 
 @pytest.mark.parametrize("peer", ["203.0.113.9", "8.8.8.8", "2001:db8::1", "", "not-an-ip"])
@@ -64,6 +73,12 @@ def test_peer_outside_lan_cidrs_refused(c, peer):
                                   "fe80::1%eth0"])
 def test_peer_inside_default_lan_cidrs_allowed(c, peer):
     assert me(c, peer={"REMOTE_ADDR": peer}).status_code == 200
+
+
+def test_ipv4_mapped_peers_use_their_ipv4_address(c):
+    """A dual-stack bind ([::]) reports IPv4 clients as ::ffff:a.b.c.d."""
+    assert me(c, peer={"REMOTE_ADDR": "::ffff:192.168.1.20"}).status_code == 200
+    assert me(c, peer={"REMOTE_ADDR": "::ffff:8.8.8.8"}).status_code == 401
 
 
 def test_custom_lan_cidrs_narrow_access(c, monkeypatch):
@@ -202,6 +217,17 @@ def test_cloudflare_edit_when_tunnel_rewrites_host(c, monkeypatch):
 def test_x_forwarded_host_ignored_without_cloudflare(c):
     h = {"Origin": "https://evil.example", "X-Forwarded-Host": "evil.example"}
     assert post_book(c, "xfh", h).status_code == 403
+
+
+def test_cloudflare_http_origin_refused(c, monkeypatch):
+    """Through Cloudflare the site is HTTPS-only: same name over http:// is not this site."""
+    h = {**CF, "Cf-Access-Jwt-Assertion": _jwt(monkeypatch), "Origin": "http://cookbooks.example.com"}
+    r = c.post("/admin/api/books", base_url="https://cookbooks.example.com", headers=h, json={"title": "http"})
+    assert r.status_code == 403
+
+
+def test_non_http_origin_scheme_refused(c):
+    assert post_book(c, "ftp", {"Origin": "ftp://192.168.1.5:8767"}).status_code == 403
 
 
 def test_cloudflare_cross_site_refused_even_with_valid_jwt(c, monkeypatch):

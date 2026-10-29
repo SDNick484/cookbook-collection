@@ -59,6 +59,12 @@ def test_wrong_bearer_is_refused_not_500(c, monkeypatch, bad):
     assert tools(c, headers={"Authorization": f"Bearer {bad}"}).status_code == 401
 
 
+@pytest.mark.parametrize("path", ["/mcp//", "/mcp///"])
+def test_empty_path_token_is_not_public(c, path):
+    """/mcp// isn't a token and isn't /mcp: 404, as before the redaction wrapper."""
+    assert tools(c, path).status_code == 404
+
+
 def test_wrong_bearer_never_downgrades_to_public(c):
     """A bad token is refused outright, even when the public MCP is on."""
     assert tools(c, headers={"Authorization": "Bearer wrong"}).status_code == 401

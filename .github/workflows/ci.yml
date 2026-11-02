@@ -40,10 +40,14 @@ jobs:
 
       - name: Verify zero skipped JWT tests
         run: |
-          output=$(python -m pytest -q -rs -k "jwt or cloudflare")
+          output=$(python -m pytest -q -rs tests/test_app.py tests/test_lan_security.py -k "jwt or cloudflare")
           echo "$output"
           if echo "$output" | grep -qi "skipped"; then
             echo "Error: JWT/Cloudflare authentication tests were skipped!" >&2
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "passed"; then
+            echo "Error: Expected JWT/Cloudflare tests to run and pass!" >&2
             exit 1
           fi
 

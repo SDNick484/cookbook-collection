@@ -6,6 +6,11 @@ mkdir -p /usr/local/bin /sbin /run /etc/conf.d /etc/init.d /run/openrc
 touch /run/openrc/softlevel
 chmod 1777 /run
 
+# Ensure cookbooks group and user exist in container environment
+addgroup -S cookbooks 2>/dev/null || true
+id cookbooks >/dev/null 2>&1 || adduser -S -D -H -h /var/lib/cookbooks -s /sbin/nologin -G cookbooks cookbooks 2>/dev/null || true
+addgroup cookbooks cookbooks 2>/dev/null || true
+
 cat <<'EOF' > /usr/local/bin/rc-update
 #!/bin/sh
 # Stub rc-update for container environments

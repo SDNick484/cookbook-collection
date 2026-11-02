@@ -8,7 +8,7 @@
 
 **Tech Stack:** GitHub Actions, Python (3.12, 3.13), Alpine Linux (3.21), OpenRC, Gunicorn, Flask, SQLite (FTS5), Pytest.
 
-**Spec:** [docs/superpowers/specs/2026-11-02-ci-github-actions-design.md](file:///mnt/c/Users/neandrad/src/cookbook-collection/docs/superpowers/specs/2026-11-02-ci-github-actions-design.md)
+**Spec:** [docs/superpowers/specs/2026-11-02-ci-github-actions-design.md](docs/superpowers/specs/2026-11-02-ci-github-actions-design.md)
 
 ## Global Constraints
 

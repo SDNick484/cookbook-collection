@@ -2,7 +2,8 @@
 # Install OpenRC stubs (rc-service, rc-update, rc-status) for containerized CI
 set -eu
 
-mkdir -p /usr/local/bin /sbin /run
+mkdir -p /usr/local/bin /sbin /run /etc/conf.d /etc/init.d /run/openrc
+touch /run/openrc/softlevel
 chmod 1777 /run
 
 cat <<'EOF' > /usr/local/bin/rc-update

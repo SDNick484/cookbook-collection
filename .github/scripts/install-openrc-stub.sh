@@ -3,6 +3,7 @@
 set -eu
 
 mkdir -p /usr/local/bin /sbin /run
+chmod 1777 /run
 
 cat <<'EOF' > /usr/local/bin/rc-update
 #!/bin/sh
@@ -39,12 +40,12 @@ if [ "$SVC" = "cookbooks" ]; then
       DATA_DIR="${DATA_DIR:-/var/lib/cookbooks}"
       GUNICORN="$(command -v gunicorn || echo /usr/bin/gunicorn)"
 
-      touch /var/log/cookbooks.log
-      chown cookbooks /var/log/cookbooks.log 2>/dev/null || true
+      touch /var/log/cookbooks.log /run/cookbooks.pid
+      chown cookbooks /var/log/cookbooks.log /run/cookbooks.pid 2>/dev/null || true
 
-      if [ -f /run/cookbooks.pid ]; then
+      if [ -s /run/cookbooks.pid ]; then
         kill "$(cat /run/cookbooks.pid)" 2>/dev/null || true
-        rm -f /run/cookbooks.pid
+        : > /run/cookbooks.pid
       fi
       pkill -f 'gunicorn.*app:app' 2>/dev/null || true
       sleep 1
@@ -74,15 +75,15 @@ if [ "$SVC" = "cookbooks" ]; then
       "
       ;;
     stop)
-      if [ -f /run/cookbooks.pid ]; then
+      if [ -s /run/cookbooks.pid ]; then
         kill "$(cat /run/cookbooks.pid)" 2>/dev/null || true
-        rm -f /run/cookbooks.pid
+        : > /run/cookbooks.pid
       fi
       pkill -f 'gunicorn.*app:app' 2>/dev/null || true
       sleep 1
       ;;
     status)
-      if [ -f /run/cookbooks.pid ] && kill -0 "$(cat /run/cookbooks.pid)" 2>/dev/null; then
+      if [ -s /run/cookbooks.pid ] && kill -0 "$(cat /run/cookbooks.pid)" 2>/dev/null; then
         exit 0
       fi
       pgrep -f 'gunicorn.*app:app' >/dev/null 2>&1

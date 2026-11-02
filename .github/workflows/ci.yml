@@ -41,14 +41,14 @@ jobs:
         run: |
           output=$(python -m pytest -q -rs -k "jwt or cloudflare")
           echo "$output"
-          if echo "$output" | grep -q "skipped"; then
+          if echo "$output" | grep -qi "skipped"; then
             echo "Error: JWT/Cloudflare authentication tests were skipped!" >&2
             exit 1
           fi
 
       - name: Syntax-check shell scripts
         run: |
-          sh -n installer/build.sh installer/setup-head.sh ops/* .github/scripts/*
+          sh -n installer/build.sh installer/setup-head.sh ops/* .github/scripts/*.sh
 
   alpine:
     name: alpine smoke test (alpine:3.21)
@@ -56,6 +56,10 @@ jobs:
     container: alpine:3.21
 
     steps:
+      - name: Install git in container
+        run: |
+          apk add --no-cache git
+
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -141,3 +145,4 @@ jobs:
           test ! -d /opt/cookbooks
           test ! -f /etc/init.d/cookbooks
           test -d /var/lib/cookbooks
+          ! wget -qO- http://127.0.0.1:8767/healthz >/dev/null 2>&1

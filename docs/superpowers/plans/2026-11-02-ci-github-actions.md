@@ -40,7 +40,7 @@
 - Consumes: Package dependencies specified in `installer/setup-head.sh` and test requirements in `tests/`.
 - Produces: Pinned dependency file for dev and CI environments.
 
-- [ ] **Step 1: Write `requirements-dev.txt`**
+- [x] **Step 1: Write `requirements-dev.txt`**
 
 ```text
 flask==3.1.0
@@ -51,12 +51,12 @@ cryptography==44.0.1
 pytest==8.3.4
 ```
 
-- [ ] **Step 2: Verify `requirements-dev.txt` format and syntax**
+- [x] **Step 2: Verify `requirements-dev.txt` format and syntax**
 
 Run: `grep -E '^[a-z0-9_-]+==[0-9.]+$' requirements-dev.txt | wc -l`
 Expected: `6`
 
-- [ ] **Step 3: Commit `requirements-dev.txt`**
+- [x] **Step 3: Commit `requirements-dev.txt`**
 
 ```bash
 git add requirements-dev.txt
@@ -74,7 +74,7 @@ git commit -m "chore(ci): add pinned requirements-dev.txt for local and CI repro
 - Consumes: OpenRC service configurations in `/etc/conf.d/cookbooks` and `/etc/init.d/cookbooks`.
 - Produces: Executables `/usr/local/bin/rc-service` and `/usr/local/bin/rc-update`.
 
-- [ ] **Step 1: Write `.github/scripts/install-openrc-stub.sh`**
+- [x] **Step 1: Write `.github/scripts/install-openrc-stub.sh`**
 
 Implement the script that creates:
 1. `/usr/local/bin/rc-update`: exits 0 on all calls.
@@ -84,12 +84,12 @@ Implement the script that creates:
    - `restart`: calls stop, sleeps 1, calls start.
    - `status`: checks `pgrep -u cookbooks gunicorn`.
 
-- [ ] **Step 2: Verify script syntax**
+- [x] **Step 2: Verify script syntax**
 
 Run: `sh -n .github/scripts/install-openrc-stub.sh`
 Expected: Exit code 0 (no syntax errors).
 
-- [ ] **Step 3: Commit `.github/scripts/install-openrc-stub.sh`**
+- [x] **Step 3: Commit `.github/scripts/install-openrc-stub.sh`**
 
 ```bash
 git add .github/scripts/install-openrc-stub.sh
@@ -107,7 +107,7 @@ git commit -m "ci: add OpenRC container stub helper for Alpine CI smoke test"
 - Consumes: `requirements-dev.txt`, `.github/scripts/install-openrc-stub.sh`, `installer/build.sh`, `dist/setup-cookbooks.sh`.
 - Produces: GitHub Actions CI workflow executing on `push` to `main` and `pull_request`.
 
-- [ ] **Step 1: Write `.github/workflows/ci.yml`**
+- [x] **Step 1: Write `.github/workflows/ci.yml`**
 
 Include:
 - Triggers: `push` to `main`, `pull_request` to `main`.
@@ -138,12 +138,12 @@ Include:
   - Step B: Verify installer idempotency and pre-upgrade backup creation
   - Step B: Verify installer `--uninstall` keeps data in `/var/lib/cookbooks` while removing `/opt/cookbooks`
 
-- [ ] **Step 2: Validate YAML syntax of `.github/workflows/ci.yml`**
+- [x] **Step 2: Validate YAML syntax of `.github/workflows/ci.yml`**
 
 Run: `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"`
 Expected: Exit code 0 (valid YAML structure).
 
-- [ ] **Step 3: Commit `.github/workflows/ci.yml`**
+- [x] **Step 3: Commit `.github/workflows/ci.yml`**
 
 ```bash
 git add .github/workflows/ci.yml
@@ -157,24 +157,24 @@ git commit -m "ci: add GitHub Actions CI workflow for pytest and Alpine smoke te
 **Files:**
 - Modify/Check: all newly created files
 
-- [ ] **Step 1: Check out new branch `ci/github-actions` based on `main`**
+- [x] **Step 1: Check out new branch `ci/github-actions` based on `main`**
 
 ```bash
 git checkout main
 git checkout -b ci/github-actions
 ```
 
-- [ ] **Step 2: Run all syntax checks locally**
+- [x] **Step 2: Run all syntax checks locally**
 
 Run: `sh -n installer/build.sh installer/setup-head.sh ops/* .github/scripts/*.sh`
 Expected: Exit code 0.
 
-- [ ] **Step 3: Build the installer locally**
+- [x] **Step 3: Build the installer locally**
 
 Run: `sh installer/build.sh`
 Expected: Output `Built dist/setup-cookbooks.sh` and exit code 0.
 
-- [ ] **Step 4: Verify git status and commits**
+- [x] **Step 4: Verify git status and commits**
 
 Run: `git status`
 Expected: Clean working tree on branch `ci/github-actions`.

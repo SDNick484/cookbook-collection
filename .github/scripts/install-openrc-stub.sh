@@ -2,7 +2,7 @@
 # Install OpenRC stubs (rc-service, rc-update, rc-status) for containerized CI
 set -eu
 
-mkdir -p /usr/local/bin
+mkdir -p /usr/local/bin /sbin /run
 
 cat <<'EOF' > /usr/local/bin/rc-update
 #!/bin/sh
@@ -10,6 +10,7 @@ cat <<'EOF' > /usr/local/bin/rc-update
 exit 0
 EOF
 chmod +x /usr/local/bin/rc-update
+cp /usr/local/bin/rc-update /sbin/rc-update
 
 cat <<'EOF' > /usr/local/bin/rc-status
 #!/bin/sh
@@ -17,6 +18,7 @@ cat <<'EOF' > /usr/local/bin/rc-status
 exit 0
 EOF
 chmod +x /usr/local/bin/rc-status
+cp /usr/local/bin/rc-status /sbin/rc-status
 
 cat <<'EOF' > /usr/local/bin/rc-service
 #!/bin/sh
@@ -40,7 +42,11 @@ if [ "$SVC" = "cookbooks" ]; then
       touch /var/log/cookbooks.log
       chown cookbooks /var/log/cookbooks.log 2>/dev/null || true
 
-      pkill -u cookbooks gunicorn 2>/dev/null || true
+      if [ -f /run/cookbooks.pid ]; then
+        kill "$(cat /run/cookbooks.pid)" 2>/dev/null || true
+        rm -f /run/cookbooks.pid
+      fi
+      pkill -f 'gunicorn.*app:app' 2>/dev/null || true
       sleep 1
 
       su -s /bin/sh cookbooks -c "
@@ -64,15 +70,22 @@ if [ "$SVC" = "cookbooks" ]; then
         export WISHLIST_BOOK_URL='${WISHLIST_BOOK_URL:-https://www.amazon.com/s?k={q}}'
         export DINNERLOG_URL='${DINNERLOG_URL:-}'
         export READ_TOKEN='${READ_TOKEN:-}'
-        nohup $GUNICORN --preload --workers 2 --threads 4 --timeout 180 --bind ${BIND}:${PORT} --chdir /opt/cookbooks --access-logfile /var/log/cookbooks.log --error-logfile /var/log/cookbooks.log app:app >/dev/null 2>&1 &
+        nohup $GUNICORN --preload --workers 2 --threads 4 --timeout 180 --bind ${BIND}:${PORT} --pid /run/cookbooks.pid --chdir /opt/cookbooks --access-logfile /var/log/cookbooks.log --error-logfile /var/log/cookbooks.log app:app >/dev/null 2>&1 &
       "
       ;;
     stop)
-      pkill -u cookbooks gunicorn 2>/dev/null || true
+      if [ -f /run/cookbooks.pid ]; then
+        kill "$(cat /run/cookbooks.pid)" 2>/dev/null || true
+        rm -f /run/cookbooks.pid
+      fi
+      pkill -f 'gunicorn.*app:app' 2>/dev/null || true
       sleep 1
       ;;
     status)
-      pgrep -u cookbooks gunicorn >/dev/null 2>&1
+      if [ -f /run/cookbooks.pid ] && kill -0 "$(cat /run/cookbooks.pid)" 2>/dev/null; then
+        exit 0
+      fi
+      pgrep -f 'gunicorn.*app:app' >/dev/null 2>&1
       ;;
     restart)
       "$0" cookbooks stop
@@ -90,5 +103,6 @@ fi
 exit 0
 EOF
 chmod +x /usr/local/bin/rc-service
+cp /usr/local/bin/rc-service /sbin/rc-service
 
-echo "OpenRC stubs installed in /usr/local/bin"
+echo "OpenRC stubs installed in /usr/local/bin and /sbin"

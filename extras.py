@@ -6,7 +6,7 @@
 - "What should we cook?" suggestions, stats, off-the-shelf tracking
 - MCP endpoint (Streamable HTTP, stateless JSON) at /mcp
 """
-import base64, difflib, hmac, io, json, os, random, re, secrets, sqlite3, threading, time, urllib.error, urllib.request
+import base64, difflib, hmac, io, json, logging, os, random, re, secrets, sqlite3, threading, time, urllib.error, urllib.request
 from datetime import date, timedelta
 
 from flask import abort, g, jsonify, request, Response
@@ -846,6 +846,71 @@ MCP_INSTRUCTIONS = ("Search a home cookbook collection: books, and recipes index
                     "the stock itself); when next_offset is present there are more results to fetch.")
 
 
+class ToolError(ValueError):
+    """A tool error written for the model: shown as is, so it says what to change and never shows internals.
+    Any other exception from a tool is a bug: it's logged, and the model gets a generic message."""
+
+
+def _check_value(label, p, v):
+    t = p.get("type")
+    if t == "integer":
+        if isinstance(v, str) and re.fullmatch(r"\s*-?\d+\s*", v):
+            v = int(v)  # models often send numbers as strings
+        elif isinstance(v, float) and v.is_integer():
+            v = int(v)
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise ToolError(f"{label} must be a whole number")
+    elif t == "boolean":
+        if isinstance(v, str) and v.strip().lower() in ("true", "false", "yes", "no", "1", "0"):
+            v = v.strip().lower() in ("true", "yes", "1")
+        elif isinstance(v, int) and v in (0, 1):
+            v = bool(v)
+        if not isinstance(v, bool):
+            raise ToolError(f"{label} must be true or false")
+    elif t == "string":
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            v = str(v)
+        if not isinstance(v, str):
+            raise ToolError(f"{label} must be a string")
+    elif t == "array":
+        if isinstance(v, str):
+            v = [v]  # one tag for add_tags, one field for fields
+        if not isinstance(v, list):
+            raise ToolError(f"{label} must be a list")
+        if p.get("items"):
+            v = [_check_value(f"each item of {label}", p["items"], x) for x in v]
+    if "enum" in p and t != "array" and v not in p["enum"]:
+        raise ToolError(f"{label} must be one of: {', '.join(map(str, p['enum']))}")
+    return v
+
+
+def check_args(schema, args):
+    """Check a tools/call's arguments against the tool's inputSchema before the tool runs, so a bad call gets
+    a message the model can act on. Converts in place where models are often loose (numbers as strings, a
+    single string for a list). Unknown arguments are ignored; limits are clamped by the tools themselves."""
+    if not isinstance(args, dict):
+        raise ToolError("arguments must be an object")
+    props = schema.get("properties", {})
+    for k in schema.get("required", []):
+        if args.get(k) in (None, ""):
+            raise ToolError(f"'{k}' is required")
+    for k, v in list(args.items()):
+        if k in props and v is not None:
+            args[k] = _check_value(f"'{k}'", props[k], v)
+
+
+def fill_tags(x, tags):
+    """Put the ingredient tag list wherever "{tags}" appears in a tool's description or schema. Works on the
+    decoded structure, so tag names need no escaping (a backslash or tab in one used to break tools/list)."""
+    if isinstance(x, str):
+        return x.replace("{tags}", tags)
+    if isinstance(x, dict):
+        return {k: fill_tags(v, tags) for k, v in x.items()}
+    if isinstance(x, list):
+        return [fill_tags(v, tags) for v in x]
+    return x
+
+
 BOOK_FIELDS = ["title", "subtitle", "authors", "publisher", "year", "cuisine", "tags", "recipe_count",
                "status", "location", "rating", "cooked_count", "cooked_last", "want_count"]  # the last six: private only
 
@@ -865,7 +930,7 @@ def _recipe_out(r, private):
 def t_search_recipes(a, private):
     q = (a.get("query") or "").strip()
     if not q and not a.get("ingredient"):
-        raise ValueError("query (or ingredient) is required")
+        raise ToolError("query (or ingredient) is required")
     import ingredients
     where, args = core.recipe_filter({"q": q, "cuisine": a.get("cuisine"), "book": a.get("book_id"),
                                       "ingredient": a.get("ingredient")}, private)
@@ -894,20 +959,22 @@ def t_search_recipes(a, private):
         out["ingredient_note"] = (
             f"Matched recipes tagged {' and '.join(tags)}, or with '{a['ingredient']}' in the title." if tags else
             f"No ingredient tag for '{a['ingredient']}', so it was matched against recipe titles only. "
-            f"Tags: {ingredient_tag_summary()}.")
+            f"Tags: {ingredient_tag_summary(private)}.")
     return out
 
 
-def ingredient_tag_names(hint=0):
+def ingredient_tag_names(hint=0, private=True):
     """Major ingredient tags (hint=0), or the search-hint ones (hint=1), most-used first."""
+    pub = "" if private else f" AND {core.PUBLIC_BOOKS}"
     return [r[0] for r in db().execute(
-        "SELECT i.name FROM ingredients i JOIN recipe_ingredients ri ON ri.ingredient_id=i.id WHERE i.hint=? "
-        "GROUP BY i.id ORDER BY count(*) DESC", (hint,))]
+        "SELECT i.name FROM ingredients i JOIN recipe_ingredients ri ON ri.ingredient_id=i.id "
+        "JOIN recipes r ON r.id=ri.recipe_id JOIN books b ON b.id=r.book_id WHERE i.hint=?" + pub
+        + " GROUP BY i.id ORDER BY count(*) DESC", (hint,))]
 
 
-def ingredient_tag_summary():
+def ingredient_tag_summary(private=True):
     """'Eggs, Chicken, … plus search hints: Zucchini, Kale' for the MCP to know which tags exist."""
-    major, hints = ", ".join(ingredient_tag_names(0)) or "none yet", ", ".join(ingredient_tag_names(1))
+    major, hints = ", ".join(ingredient_tag_names(0, private)) or "none yet", ", ".join(ingredient_tag_names(1, private))
     return major + (f"; plus search hints: {hints}" if hints else "")
 
 
@@ -967,12 +1034,18 @@ def t_get_book(a, private):
         if not row and core.HAS_FTS:
             fts_q = core.fts_query(a["title"])
             if fts_q:
-                row = con.execute("SELECT b.* FROM books b WHERE b.id IN (SELECT rowid FROM books_fts WHERE books_fts MATCH ?)"
-                                  + pub + " LIMIT 1", (fts_q,)).fetchone()
+                hits = con.execute(
+                    "SELECT b.* FROM books b WHERE b.id IN (SELECT rowid FROM books_fts WHERE books_fts MATCH ?)"
+                    + pub + " ORDER BY b.title LIMIT 10", (fts_q,)).fetchall()
+                if len(hits) == 1:
+                    row = hits[0]
+                elif len(hits) > 1:
+                    choices = ", ".join(f"{h['title']} (book_id={h['id']})" for h in hits)
+                    raise ToolError(f"Multiple books match '{a['title']}': {choices}. Call get_book with book_id.")
     else:
-        raise ValueError("book_id or title is required")
+        raise ToolError("book_id or title is required")
     if not row or (not private and row["kind"]):
-        raise ValueError("No such book")
+        raise ToolError("No such book")
     b = core.book_dicts([row], private)[0]
     recs = [dict(r) for r in con.execute("SELECT * FROM recipes WHERE book_id=? ORDER BY page_sort", (b["id"],))]
     if private:
@@ -1024,7 +1097,7 @@ def t_set_want(a, private):
     rid = int(a["recipe_id"])
     con = db()
     if not con.execute("SELECT 1 FROM recipes WHERE id=?", (rid,)).fetchone():
-        raise ValueError("No such recipe")
+        raise ToolError("No such recipe")
     want = a.get("want", True) not in (False, 0, "false", "False", "0", "no")
     con.execute("UPDATE recipes SET want_to_try=? WHERE id=?", (1 if want else 0, rid))
     con.commit()
@@ -1037,7 +1110,7 @@ def t_update_book(a, private):
     bid = int(a["book_id"])
     row = con.execute("SELECT * FROM books WHERE id=?", (bid,)).fetchone()
     if not row:
-        raise ValueError("No such book")
+        raise ToolError("No such book")
     tag_names = lambda: [r[0] for r in con.execute(
         "SELECT t.name FROM tags t JOIN book_tags bt ON bt.tag_id=t.id WHERE bt.book_id=? ORDER BY t.name", (bid,))]
     before = {"cuisine": row["cuisine"], "tags": tag_names()}
@@ -1079,8 +1152,10 @@ TOOLS = [
            cuisine={"type": "string"}, book_id={"type": "integer"},
            ingredient={"type": "string", "description": "Only recipes using this ingredient: tagged with the major "
                        "tag it names ('ground beef' uses Beef) or with it in the title. Tags: {tags}."},
-           limit={"type": "integer", "description": "Max results, default 25, at most 100"},
-           offset={"type": "integer", "description": "Skip this many results: pass next_offset from the previous "
+           limit={"type": "integer", "minimum": 1, "maximum": 100, "default": 25,
+                  "description": "Max results, default 25, at most 100"},
+           offset={"type": "integer", "minimum": 0, "default": 0,
+                   "description": "Skip this many results: pass next_offset from the previous "
                    "call to get the next page"})}),
     ("search_books", False, t_search_books,
      "Find cookbooks in the collection by words (title, author, publisher, tags), cuisine, tag or author. A book has one "
@@ -1092,7 +1167,8 @@ TOOLS = [
         fields={"type": "array", "items": {"type": "string", "enum": BOOK_FIELDS},
                 "description": "Return only these fields (id is always included), e.g. [\"title\", \"cuisine\", \"tags\"] "
                 "when listing many books: the full records are several times larger"},
-        limit={"type": "integer", "description": "Max books, default 50, at most 200"})),
+        limit={"type": "integer", "minimum": 1, "maximum": 200, "default": 50,
+               "description": "Max books, default 50, at most 200"})),
     ("get_book", False, t_get_book, "A cookbook's details and every recipe indexed from it, in page order.",
      _S(book_id={"type": "integer"}, title={"type": "string"})),
     ("list_categories", False, t_list_categories, "Cuisines and tags used in the collection, with book counts.", _S()),
@@ -1100,7 +1176,8 @@ TOOLS = [
      "Random dinner ideas from the collection. Modes: want (starred, never cooked), untried (never cooked), "
      "neglected (from books not cooked from in a year), favorites (rated 8+, not made in 3 months).",
      _S(mode={"type": "string", "enum": list(SUGGEST_MODES)}, cuisine={"type": "string"}, tag={"type": "string"},
-        count={"type": "integer"})),
+        count={"type": "integer", "minimum": 1, "maximum": 20, "default": 5,
+               "description": "How many ideas, default 5, at most 20"})),
     ("cooking_stats", True, t_stats,
      "What we've cooked from our cookbooks (from Dinner Log): most-used books, top-rated recipes, books never cooked from.",
      _S()),
@@ -1116,7 +1193,12 @@ TOOLS = [
            add_tags={"type": "array", "items": {"type": "string"}},
            remove_tags={"type": "array", "items": {"type": "string"}}), "required": ["book_id"]}),
 ]
-WRITE_TOOLS = {"set_want_to_try", "update_book"}
+WRITE_TOOLS = {
+    "set_want_to_try": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+    "update_book": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False},
+}
+if app.logger.level == logging.NOTSET:  # Flask's default is WARNING, which would drop the INFO MCP write log
+    app.logger.setLevel(logging.INFO)
 
 
 MCP_TOKEN_KEY = "cookbooks.mcp_token"
@@ -1198,23 +1280,33 @@ def handle_rpc(msg, private):
     if method == "ping":
         return rpc_result(mid, {})
     if method == "tools/list":
-        tags = ingredient_tag_summary()
-        fill = lambda x: json.loads(json.dumps(x).replace("{tags}", tags.replace('"', "'")))
+        tags = ingredient_tag_summary(private)
         return rpc_result(mid, {"tools": [
-            {"name": n, "description": fill(d), "inputSchema": fill(s),
-             "annotations": {"readOnlyHint": n not in WRITE_TOOLS}}
+            {"name": n, "description": fill_tags(d, tags), "inputSchema": fill_tags(s, tags),
+             "annotations": WRITE_TOOLS.get(n, {"readOnlyHint": True, "openWorldHint": False})}
             for n, priv_only, _, d, s in TOOLS if private or not priv_only]})
     if method == "tools/call":
         name, args = params.get("name"), params.get("arguments") or {}
         tool = next((t for t in TOOLS if t[0] == name and (private or not t[1])), None)
         if not tool:
             return rpc_error(mid, -32602, f"Unknown tool: {name}")
+        err = lambda text: rpc_result(mid, {"content": [{"type": "text", "text": text}], "isError": True})
         try:
+            check_args(tool[4], args)
             res = tool[2](args, private)
-            return rpc_result(mid, {"content": [{"type": "text", "text": json.dumps(res, ensure_ascii=False)}],
-                                    "structuredContent": res})
-        except Exception as e:  # noqa: BLE001 — tool errors go back to the model
-            return rpc_result(mid, {"content": [{"type": "text", "text": f"Error: {e}"}], "isError": True})
+        except ToolError as e:  # written for the model: says what to change
+            return err(str(e))
+        except Exception:  # noqa: BLE001 — a bug: log it, and keep exception text (SQL, internals) from the model
+            ref = secrets.token_hex(4)
+            app.logger.exception("MCP tool %s failed (ref %s), arguments %s", name, ref,
+                                 json.dumps(args, ensure_ascii=False)[:500])
+            return err(f"{name} failed with an internal error (ref {ref}). The same call will fail again: "
+                       "try other arguments or another tool.")
+        if name in WRITE_TOOLS:  # what the assistant changed, for the owner to review
+            app.logger.info("MCP write %s %s -> %s", name, json.dumps(args, ensure_ascii=False)[:500],
+                            json.dumps(res, ensure_ascii=False)[:1000])
+        return rpc_result(mid, {"content": [{"type": "text", "text": json.dumps(res, ensure_ascii=False)}],
+                                "structuredContent": res})
     return rpc_error(mid, -32601, f"Method not found: {method}")
 
 

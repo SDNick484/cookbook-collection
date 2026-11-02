@@ -112,7 +112,7 @@ jobs:
         run: |
           res=$(wget -qO- http://127.0.0.1:8767/healthz)
           echo "Health response: $res"
-          test "$res" = "ok"
+          echo "$res" | grep -Eq '"ok": *(true|1)|(^ok$)'
 
       - name: Step B - Verify /mcp JSON-RPC initialize
         run: |
@@ -142,7 +142,7 @@ jobs:
           echo "Found pre-upgrade backup: $backup"
           test -n "$backup"
           test -f "$backup"
-          test "$(wget -qO- http://127.0.0.1:8767/healthz)" = "ok"
+          wget -qO- http://127.0.0.1:8767/healthz | grep -Eq '"ok": *(true|1)|(^ok$)'
 
       - name: Step B - Verify installer --uninstall
         run: |

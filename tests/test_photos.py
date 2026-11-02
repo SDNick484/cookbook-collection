@@ -27,7 +27,9 @@ def jpeg(day=None, size=(3000, 2000)):
     img = Image.new("RGB", size, (180, 90, 40))
     exif = Image.Exif()
     if day:
-        exif.get_ifd(0x8769)[36867] = day.replace("-", ":") + " 19:30:00"
+        dt = day.replace("-", ":") + " 19:30:00"
+        exif.get_ifd(0x8769)[36867] = dt
+        exif[306] = dt
     exif[0x8825] = {2: (32.0, 42.0, 0.0)}  # GPS, which must not survive the re-encode
     out = io.BytesIO()
     img.save(out, "JPEG", exif=exif)

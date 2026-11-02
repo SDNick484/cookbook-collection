@@ -1,0 +1,153 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  pytest:
+    name: pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+          cache-dependency-path: "requirements-dev.txt"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Verify SQLite FTS5 support
+        run: |
+          python -c "import sqlite3; c=sqlite3.connect(':memory:'); c.execute('create virtual table t using fts5(x)')"
+
+      - name: Run test suite
+        run: |
+          python -m pytest -q
+
+      - name: Verify zero skipped JWT tests
+        run: |
+          output=$(python -m pytest -q -rs tests/test_app.py tests/test_lan_security.py -k "jwt or cloudflare")
+          echo "$output"
+          if echo "$output" | grep -qi "skipped"; then
+            echo "Error: JWT/Cloudflare authentication tests were skipped!" >&2
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "passed"; then
+            echo "Error: Expected JWT/Cloudflare tests to run and pass!" >&2
+            exit 1
+          fi
+
+      - name: Syntax-check shell scripts
+        run: |
+          sh -n installer/build.sh installer/setup-head.sh ops/* .github/scripts/*.sh
+
+  alpine:
+    name: alpine smoke test (alpine:3.21)
+    runs-on: ubuntu-latest
+    container: alpine:3.21
+
+    steps:
+      - name: Install git in container
+        run: |
+          apk add --no-cache git
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step A — Native Alpine apk test run
+      - name: Step A - Install native Alpine packages
+        run: |
+          apk add --no-cache python3 py3-flask py3-gunicorn py3-pillow py3-jwt py3-cryptography py3-pytest sqlite
+
+      - name: Step A - Verify SQLite FTS5 in Alpine Python
+        run: |
+          python3 -c "import sqlite3; c=sqlite3.connect(':memory:'); c.execute('create virtual table t using fts5(x)')"
+
+      - name: Step A - Run test suite against system Python
+        run: |
+          pytest -q
+
+      # Step B — End-to-end installer smoke test
+      - name: Step B - Install installer prerequisites
+        run: |
+          apk add --no-cache tar iproute2 curl
+
+      - name: Step B - Install OpenRC container stubs
+        run: |
+          sh .github/scripts/install-openrc-stub.sh
+
+      - name: Step B - Build installer
+        run: |
+          sh installer/build.sh
+
+      - name: Step B - Run installer
+        run: |
+          sh dist/setup-cookbooks.sh
+
+      - name: Step B - Verify permissions
+        run: |
+          test -d /opt/cookbooks
+          test -d /var/lib/cookbooks
+          test "$(stat -c %a /etc/conf.d/cookbooks)" = "640"
+          test "$(stat -c %a /etc/conf.d/app-ops)" = "600"
+          test "$(stat -c %U /opt/cookbooks)" = "root"
+          test "$(stat -c %U /var/lib/cookbooks)" = "cookbooks"
+          test "$(stat -c %U:%G /etc/conf.d/cookbooks)" = "root:cookbooks"
+
+      - name: Step B - Verify Gunicorn health endpoint
+        run: |
+          res=$(wget -qO- http://127.0.0.1:8767/healthz)
+          echo "Health response: $res"
+          echo "$res" | grep -Eq '"ok": *(true|1)|(^ok$)'
+
+      - name: Step B - Verify /mcp JSON-RPC initialize
+        run: |
+          http_code=$(curl -s -o /tmp/mcp_init.json -w "%{http_code}" -X POST http://127.0.0.1:8767/mcp \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}')
+          echo "MCP HTTP status code: $http_code"
+          cat /tmp/mcp_init.json
+          test "$http_code" = "200"
+          grep -q '"jsonrpc": *"2.0"' /tmp/mcp_init.json
+
+      - name: Step B - Verify app-backup creates .db.gz snapshot
+        run: |
+          /usr/local/bin/app-backup
+          snapshot=$(find /var/backups/apps -name "cookbooks-*.db.gz" | head -n1)
+          echo "Found snapshot: $snapshot"
+          test -n "$snapshot"
+          test -f "$snapshot"
+
+      - name: Step B - Verify installer idempotency and pre-upgrade backup
+        run: |
+          token_before=$(grep '^MCP_TOKEN=' /etc/conf.d/cookbooks)
+          sh dist/setup-cookbooks.sh
+          token_after=$(grep '^MCP_TOKEN=' /etc/conf.d/cookbooks)
+          test "$token_before" = "$token_after"
+          backup=$(find /var/backups/apps -name "cookbooks-before-upgrade-*.db.gz" | head -n1)
+          echo "Found pre-upgrade backup: $backup"
+          test -n "$backup"
+          test -f "$backup"
+          wget -qO- http://127.0.0.1:8767/healthz | grep -Eq '"ok": *(true|1)|(^ok$)'
+
+      - name: Step B - Verify installer --uninstall
+        run: |
+          sh dist/setup-cookbooks.sh --uninstall
+          test ! -d /opt/cookbooks
+          test ! -f /etc/init.d/cookbooks
+          test -d /var/lib/cookbooks
+          ! wget -qO- http://127.0.0.1:8767/healthz >/dev/null 2>&1

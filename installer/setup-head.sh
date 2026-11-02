@@ -49,7 +49,9 @@ fi
 [ -x /etc/init.d/cookbooks ] && rc-service cookbooks stop >/dev/null 2>&1 || true
 
 echo "==> Creating user and folders"
-id "$SVC_USER" >/dev/null 2>&1 || adduser -S -D -H -h "$DATA_DIR" -s /sbin/nologin "$SVC_USER"
+addgroup -S "$SVC_USER" 2>/dev/null || true
+id "$SVC_USER" >/dev/null 2>&1 || adduser -S -D -H -h "$DATA_DIR" -s /sbin/nologin -G "$SVC_USER" "$SVC_USER"
+addgroup "$SVC_USER" "$SVC_USER" 2>/dev/null || true
 mkdir -p "$APP_DIR" "$DATA_DIR/covers" "$DATA_DIR/photos" /var/lib/app-ops /var/backups/apps
 # Cooking history now comes from Dinner Log over HTTP (DINNERLOG_API_URL); older versions read its
 # database file through this group, so take that access away.

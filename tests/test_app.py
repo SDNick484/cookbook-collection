@@ -87,8 +87,8 @@ def test_cloudflare_without_jwt_is_rejected(c):
 
 
 def _jwt_setup(monkeypatch):
-    import jwt
-    from cryptography.hazmat.primitives.asymmetric import rsa
+    jwt = pytest.importorskip("jwt")  # PyJWT; production gets it from py3-jwt
+    rsa = pytest.importorskip("cryptography.hazmat.primitives.asymmetric.rsa")
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
     class FakeJWKS:
@@ -306,6 +306,6 @@ def test_cover_url_rejects_bad_scheme_and_disallowed_redirect():
 def test_static_assets_version_and_anonymized_meta(c):
     html = c.get("/").data.decode()
     assert 'content="A family cookbook collection"' in html
-    assert "/static/style.css?v=19" in html and "/static/app.js?v=19" in html
+    assert "/static/style.css?v=21" in html and "/static/app.js?v=21" in html
 
 

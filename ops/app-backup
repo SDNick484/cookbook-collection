@@ -54,6 +54,6 @@ if [ -n "$BACKUP_TARGET" ]; then
 fi
 
 if [ "$fail" != 0 ] && [ -x /usr/local/bin/app-notify ]; then
-  /usr/local/bin/app-notify "Backups" down "Last night's the server backup had a problem. See /var/log/app-ops.log."
+  /usr/local/bin/app-notify "Backups" down "Last night's backup on ${HOST_LABEL:-$(hostname)} had a problem. See /var/log/app-ops.log."
 fi
 exit $fail

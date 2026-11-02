@@ -1,12 +1,13 @@
 """Cookbook Collection v2 features, registered onto the core app:
 
-- Dinner Log link: reads Dinner Log's SQLite DB read-only and matches cookbook
-  dinners to books and recipes (auto by title + page + name, with manual overrides)
+- Dinner Log link: pulls cooking history from Dinner Log's /api/history and matches
+  dinners to books and recipes (by the ids Dinner Log stamped, else title + page +
+  name, with manual overrides)
 - Photo index import via the Claude API
 - "What should we cook?" suggestions, stats, off-the-shelf tracking
 - MCP endpoint (Streamable HTTP, stateless JSON) at /mcp
 """
-import base64, difflib, hmac, io, json, os, random, re, secrets, sqlite3, threading, time, urllib.error, urllib.request
+import base64, difflib, hmac, io, json, logging, os, random, re, secrets, sqlite3, threading, time, urllib.error, urllib.request
 from datetime import date, timedelta
 
 from flask import abort, g, jsonify, request, Response
@@ -14,7 +15,21 @@ from flask import abort, g, jsonify, request, Response
 import app as core
 from app import app, db, editor_required, fold, make_err, page_sort, clean
 
-DINNERLOG_DB = os.environ.get("DINNERLOG_DB", "/var/lib/dinner-log/meals.db")
+
+
+def clean_url(raw):
+    """A configured base address without a trailing slash."""
+    return (raw or "").strip().rstrip("/")
+
+
+# Dinner Log's private address and its HISTORY_TOKEN, for cooking history over HTTP.
+DINNERLOG_API_URL = clean_url(os.environ.get("DINNERLOG_API_URL"))
+DINNERLOG_TOKEN = os.environ.get("DINNERLOG_TOKEN", "").strip()
+PULL_EVERY = 60          # seconds a pulled history stays fresh
+PULL_BACKOFF = 300       # after a failed pull, wait this long before trying again
+LEASE_TTL = 120          # a pull lease older than this is abandoned
+PULL_TIMEOUT = 5
+MAX_HISTORY_BYTES = 10 * 1024 * 1024
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5-5").strip()
 ANTHROPIC_EFFORT = os.environ.get("ANTHROPIC_EFFORT", "low").strip()  # empty: the model's default
@@ -35,6 +50,11 @@ CREATE INDEX IF NOT EXISTS cooked_book ON cooked(book_id);
 CREATE TABLE IF NOT EXISTS dl_alias (title_key TEXT PRIMARY KEY, title TEXT, book_id INTEGER REFERENCES books(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS dl_link (meal_id INTEGER PRIMARY KEY, recipe_id INTEGER REFERENCES recipes(id) ON DELETE CASCADE,
   meal_key TEXT);  -- day|name, so links don't misfire if Dinner Log's DB is ever recreated
+CREATE TABLE IF NOT EXISTS dl_meals (       -- the last history pulled from Dinner Log, as sent
+  id INTEGER PRIMARY KEY,                   -- Dinner Log meals.id
+  day TEXT, name TEXT, source_type TEXT, source_title TEXT, source_detail TEXT,
+  rating REAL, cookbook_book_id INTEGER, cookbook_recipe_id INTEGER);
+INSERT OR IGNORE INTO meta(key, value) VALUES ('dl_lease', '0');
 """
 
 
@@ -45,6 +65,7 @@ def migrate(con):
     con.execute("UPDATE photo_jobs SET status='error', "
                 "error='Reading that photo stopped partway (the server restarted). Try it again.' "
                 "WHERE status='running'")
+    con.execute("DELETE FROM meta WHERE key='dl_sig'")  # from reading Dinner Log's file directly
     if "meal_key" not in [r[1] for r in con.execute("PRAGMA table_info(dl_link)")]:
         con.execute("ALTER TABLE dl_link ADD COLUMN meal_key TEXT")
     cols = [r[1] for r in con.execute("PRAGMA table_info(books)")]
@@ -69,21 +90,11 @@ def tokens(s):
     return {t for t in re.findall(r"[a-z0-9]+", fold(s)) if t not in {"the", "a", "an", "of", "and", "cookbook"}}
 
 
-def dl_signature(con=None):
-    try:
-        st = [os.stat(DINNERLOG_DB)]
-    except OSError:
-        return None
-    try:
-        st.append(os.stat(DINNERLOG_DB + "-wal"))
-    except OSError:
-        pass
-    sig = DINNERLOG_DB + "|" + "|".join(f"{s.st_ino}:{s.st_mtime_ns}:{s.st_size}" for s in st)
-    if con is not None:
-        b = con.execute("SELECT count(*), coalesce(max(updated_at), '') FROM books").fetchone()
-        r = con.execute("SELECT count(*), coalesce(max(id), 0) FROM recipes").fetchone()
-        sig += f"|b:{b[0]}:{b[1]}|r:{r[0]}:{r[1]}"
-    return sig
+def catalog_sig(con):
+    """Changes whenever books or recipes do, so cooking history is matched again."""
+    b = con.execute("SELECT count(*), coalesce(max(updated_at), '') FROM books").fetchone()
+    r = con.execute("SELECT count(*), coalesce(max(id), 0) FROM recipes").fetchone()
+    return f"b:{b[0]}:{b[1]}|r:{r[0]}:{r[1]}"
 
 
 def meta_get(con, k):
@@ -93,6 +104,100 @@ def meta_get(con, k):
 
 def meta_set(con, k, v):
     con.execute("INSERT INTO meta(key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, v))
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect is an error: the bearer token must never follow it to another address."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+# No environment proxies either: the token goes to DINNERLOG_API_URL and nowhere else.
+def build_dl_opener():
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+
+
+_dl_opener = build_dl_opener()
+
+
+def dl_open(req, timeout):
+    return _dl_opener.open(req, timeout=timeout)
+
+
+DL_MEAL_FIELDS = ("id", "day", "name", "source_type", "source_title", "source_detail", "rating",
+                  "cookbook_book_id", "cookbook_recipe_id")
+
+
+def store_snapshot(con, meals, etag, now=None):
+    """Replace the stored history with `meals` (dicts as Dinner Log sends them) and record the pull."""
+    con.execute("DELETE FROM dl_meals")
+    con.executemany(f"INSERT INTO dl_meals({', '.join(DL_MEAL_FIELDS)}) VALUES ({','.join('?' * len(DL_MEAL_FIELDS))})",
+                    [tuple(m.get(f) for f in DL_MEAL_FIELDS) for m in meals])
+    meta_set(con, "dl_etag", etag or "")
+    meta_set(con, "dl_gen", str(int(meta_get(con, "dl_gen") or 0) + 1))  # what rebuild_cooked compares
+    _pulled(con, time.time() if now is None else now)
+
+
+def _pulled(con, now):
+    meta_set(con, "dl_pulled_at", f"{now:.3f}")
+    con.execute("DELETE FROM meta WHERE key IN ('dl_error', 'dl_failed_at')")
+    con.commit()
+
+
+def _pull_failed(con, now, why):
+    app.logger.warning("Dinner Log history pull failed: %s", why)
+    meta_set(con, "dl_error", why)
+    meta_set(con, "dl_failed_at", f"{now:.3f}")
+    con.commit()
+    return {"ok": False, "changed": False, "error": why}
+
+
+def _valid_history(body):
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("meals"), list):
+        return None
+    meals = data["meals"]
+    if not all(isinstance(m, dict) and type(m.get("id")) is int for m in meals):
+        return None
+    return meals
+
+
+def pull_history(con, now=None):
+    """Fetch Dinner Log's /api/history into dl_meals. Network only: rebuilding `cooked` is separate.
+    Returns {"ok", "changed", "error"}; on any failure the stored history is left as it was."""
+    now = time.time() if now is None else now
+    if not DINNERLOG_API_URL:
+        return {"ok": False, "changed": False, "error": "not configured"}
+    if not DINNERLOG_API_URL.lower().startswith(("http://", "https://")):
+        return _pull_failed(con, now, "DINNERLOG_API_URL must start with http:// or https://")
+    headers = {"Authorization": f"Bearer {DINNERLOG_TOKEN}", "Accept": "application/json"}
+    etag = meta_get(con, "dl_etag")
+    if etag:
+        headers["If-None-Match"] = etag
+    req = urllib.request.Request(DINNERLOG_API_URL + "/api/history", headers=headers)
+    try:
+        with dl_open(req, PULL_TIMEOUT) as resp:
+            body = resp.read(MAX_HISTORY_BYTES + 1)
+            new_etag = resp.headers.get("ETag") or ""
+    except urllib.error.HTTPError as e:
+        if e.code == 304:
+            _pulled(con, now)
+            return {"ok": True, "changed": False, "error": None}
+        return _pull_failed(con, now, f"Dinner Log answered HTTP {e.code}")
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        reason = getattr(e, "reason", None) or e.__class__.__name__
+        return _pull_failed(con, now, f"couldn't reach Dinner Log ({reason})")
+    if len(body) > MAX_HISTORY_BYTES:
+        return _pull_failed(con, now, "Dinner Log's history is larger than allowed")
+    meals = _valid_history(body)
+    if meals is None:
+        return _pull_failed(con, now, "Dinner Log sent a history this version doesn't understand")
+    store_snapshot(con, meals, new_etag, now)
+    return {"ok": True, "changed": True, "error": None}
 
 
 def match_book(t, books, aliases):
@@ -159,70 +264,139 @@ def meal_key(day, name):
     return f"{day}|{fold(name)}"
 
 
-def sync_dinnerlog(con, force=False):
-    """Rebuild the `cooked` table from Dinner Log when its DB file or local catalog changed."""
-    sig = dl_signature(con)
-    if sig is None:
-        return {"available": False}
+def rebuild_cooked(con, force=False):
+    """Rebuild `cooked` from the stored Dinner Log history (dl_meals) and the catalog. Local only.
+
+    Runs when a new history was stored or the catalog changed (or `force`), never before the first pull,
+    so an upgrade keeps the old `cooked` until Dinner Log has answered. Per meal, the first that applies:
+    a manual link; the recipe id Dinner Log stamped; its stamped book, then the page and name within it;
+    a saved website recipe; the title, page and name (fuzzy)."""
+    gen = meta_get(con, "dl_gen")
+    if gen is None:
+        return {"rebuilt": False, "meals": 0}
+    sig = catalog_sig(con)
     with _sync_lock:
-        if not force and meta_get(con, "dl_sig") == sig:
-            return {"available": True, "changed": False}
-        try:
-            src = sqlite3.connect(f"file:{DINNERLOG_DB}?mode=ro", uri=True, timeout=5)
-            src.row_factory = sqlite3.Row
-            cols = {r[1] for r in src.execute("PRAGMA table_info(meals)")}
-            rating = "rating" if "rating" in cols else "NULL AS rating"
-            meals = src.execute(f"SELECT id, day, name, source_type, source_title, source_detail, {rating} FROM meals "
-                                f"WHERE source_type='cookbook' OR source_detail LIKE '%://%' "
-                                f"OR source_title LIKE '%://%'").fetchall()
-            src.close()
-        except sqlite3.Error as e:
-            app.logger.warning("Dinner Log read failed: %s", e)
-            return {"available": False, "error": str(e)}
+        if not force and meta_get(con, "dl_built_gen") == gen and meta_get(con, "dl_cat_sig") == sig:
+            return {"rebuilt": False, "meals": 0}
+        meals = con.execute("SELECT * FROM dl_meals ORDER BY id").fetchall()
         books = [(r[0], norm_title(r[1]), tokens(r[1]))
                  for r in con.execute("SELECT id, title FROM books WHERE kind IS NULL")]
         aliases = {r[0]: r[1] for r in con.execute("SELECT title_key, book_id FROM dl_alias")}
         links = {r[0]: (r[1], r[2]) for r in con.execute("SELECT meal_id, recipe_id, meal_key FROM dl_link")}
+        recipe_book = dict(con.execute("SELECT id, book_id FROM recipes").fetchall())
+        book_ids = {r[0] for r in con.execute("SELECT id FROM books")}
         rec_cache = {}
-        to_insert = []
+
+        def recipes_of(bid):
+            if bid not in rec_cache:
+                rec_cache[bid] = con.execute(
+                    "SELECT id, name, heading, page_sort, page FROM recipes WHERE book_id=?", (bid,)).fetchall()
+            return rec_cache[bid]
+
         import online
+        to_insert = []
         for m in meals:
-            web_bid, web_rid = online.match_meal(con, m["source_detail"], m["source_title"])
-            if m["source_type"] != "cookbook" and not web_rid:
-                continue  # a website we haven't saved, or no source at all
-            bid = match_book(m["source_title"], books, aliases)
-            rid, how = None, "none"
+            title, detail, name = m["source_title"] or "", m["source_detail"] or "", m["name"] or ""
+            stamped_rid = m["cookbook_recipe_id"] if m["cookbook_recipe_id"] in recipe_book else None
+            stamped_bid = m["cookbook_book_id"] if m["cookbook_book_id"] in book_ids else None
             link = links.get(m["id"])
-            if link and link[1] not in (None, meal_key(m["day"], m["name"])):
+            if link and link[1] not in (None, meal_key(m["day"], name)):
                 link = None  # a different meal now has this id
+            bid, rid, how = None, None, "none"
             if link:
-                rid = link[0]
-                how = "manual"
-                if rid:
-                    row = con.execute("SELECT book_id FROM recipes WHERE id=?", (rid,)).fetchone()
-                    bid = row[0] if row else bid
-            elif web_rid:  # a link to a recipe saved from a website
-                bid, rid, how = web_bid, web_rid, "auto"
-            elif bid:
-                if bid not in rec_cache:
-                    rec_cache[bid] = con.execute(
-                        "SELECT id, name, heading, page_sort, page FROM recipes WHERE book_id=?", (bid,)).fetchall()
-                rid = match_recipe(rec_cache[bid], m["source_detail"], m["name"])
+                rid, how = link[0], "manual"
+                bid = recipe_book.get(rid) if rid else (stamped_bid or match_book(title, books, aliases))
+            elif stamped_rid:
+                bid, rid, how = recipe_book[stamped_rid], stamped_rid, "linked"
+            elif stamped_bid:
+                bid = stamped_bid
+                rid = match_recipe(recipes_of(bid), detail, name)
                 how = "auto" if rid else "book"
-            to_insert.append((m["id"], m["day"], m["name"], m["source_title"], m["source_detail"], m["rating"],
-                              bid, rid, how))
+            else:
+                is_web = "://" in detail or "://" in title
+                web_bid, web_rid = online.match_meal(con, detail, title) if is_web else (None, None)
+                if web_rid:  # a link to a recipe saved from a website
+                    bid, rid, how = web_bid, web_rid, "auto"
+                elif m["source_type"] != "cookbook":
+                    continue  # a website we haven't saved, or no source at all
+                else:
+                    bid = match_book(title, books, aliases)
+                    if bid:
+                        rid = match_recipe(recipes_of(bid), detail, name)
+                        how = "auto" if rid else "book"
+            to_insert.append((m["id"], m["day"], name, title, detail, m["rating"], bid, rid, how))
         con.execute("DELETE FROM cooked")
         con.executemany("INSERT INTO cooked VALUES (?,?,?,?,?,?,?,?,?)", to_insert)
-        meta_set(con, "dl_sig", sig)
+        meta_set(con, "dl_built_gen", gen)
+        meta_set(con, "dl_cat_sig", sig)
         meta_set(con, "dl_synced", time.strftime("%Y-%m-%d %H:%M:%S"))
         con.commit()
-        return {"available": True, "changed": True, "meals": len(meals)}
+        return {"rebuilt": True, "meals": len(to_insert)}
+
+
+def dinnerlog_available(con):
+    """Configured, pulled at least once, and the last pull worked."""
+    return bool(DINNERLOG_API_URL) and meta_get(con, "dl_gen") is not None and meta_get(con, "dl_error") is None
+
+
+def try_lease(con, now):
+    """Claim the one Dinner Log pull allowed at a time, across workers. True if this caller got it."""
+    cur = con.execute("UPDATE meta SET value=? WHERE key='dl_lease' AND CAST(value AS REAL) < ?",
+                      (f"{now:.3f}", now - LEASE_TTL))
+    con.commit()
+    return cur.rowcount == 1
+
+
+def release_lease(con):
+    con.execute("UPDATE meta SET value='0' WHERE key='dl_lease'")
+    con.commit()
+
+
+def start_background(fn):
+    threading.Thread(target=fn, daemon=True, name="dinnerlog-pull").start()
+
+
+def background_pull():
+    """Pull and rebuild on a connection of its own; the request that started it doesn't wait."""
+    con = core.connect()
+    try:
+        pull_history(con)
+        rebuild_cooked(con)
+    except Exception as e:
+        app.logger.exception("Dinner Log history pull stopped")
+        try:
+            con.rollback()
+            _pull_failed(con, time.time(), f"pull stopped ({e.__class__.__name__})")
+        except Exception:
+            pass
+    finally:
+        try:
+            release_lease(con)
+        finally:
+            con.close()
+
+
+def pull_due(con, now):
+    """Configured, the stored history is older than PULL_EVERY, and no failure within PULL_BACKOFF."""
+    if not DINNERLOG_API_URL:
+        return False
+    pulled, failed = meta_get(con, "dl_pulled_at"), meta_get(con, "dl_failed_at")
+    if failed is not None and now - float(failed) < PULL_BACKOFF:
+        return False
+    return pulled is None or now - float(pulled) > PULL_EVERY
 
 
 def ensure_synced():
-    if not getattr(g, "_dl_synced", False):
-        sync_dinnerlog(db())
-        g._dl_synced = True
+    """Once per request: rebuild `cooked` if the catalog or stored history changed (local, fast), and if
+    the stored history is stale, start a background pull. Requests never wait on Dinner Log."""
+    if getattr(g, "_dl_synced", False):
+        return
+    g._dl_synced = True
+    con = db()
+    rebuild_cooked(con)
+    now = time.time()
+    if pull_due(con, now) and try_lease(con, now):
+        start_background(background_pull)
 
 
 def cooked_by_recipe(book_id):
@@ -244,15 +418,22 @@ def cooked_by_book(ids):
 @editor_required
 def dinnerlog_status():
     con = db()
-    st = sync_dinnerlog(con, force=request.args.get("force") == "1")
-    if not st.get("available"):
-        return jsonify(available=False, path=DINNERLOG_DB, error=st.get("error"))
+    force = request.args.get("force") == "1"
+    if force or (DINNERLOG_API_URL and meta_get(con, "dl_gen") is None):  # nothing to show yet: fetch now
+        pull_history(con)
+    rebuild_cooked(con, force=force)
+    pulled = meta_get(con, "dl_pulled_at")
+    info = dict(source=DINNERLOG_API_URL or None, error=meta_get(con, "dl_error"), synced=meta_get(con, "dl_synced"),
+                pulled=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(pulled))) if pulled else None)
+    if not dinnerlog_available(con):
+        return jsonify(available=False, **info)
     q = lambda sql: con.execute(sql).fetchone()[0]
     unmatched = [dict(r) for r in con.execute(
         "SELECT dl_title AS title, count(*) AS n, max(day) AS last FROM cooked WHERE book_id IS NULL "
         "AND trim(coalesce(dl_title,'')) <> '' GROUP BY fold(dl_title) ORDER BY n DESC")]
-    return jsonify(available=True, path=DINNERLOG_DB, synced=meta_get(con, "dl_synced"),
+    return jsonify(available=True, **info,
                    meals=q("SELECT count(*) FROM cooked"),
+                   linked=q("SELECT count(*) FROM cooked WHERE how='linked'"),
                    recipe_matched=q("SELECT count(*) FROM cooked WHERE recipe_id IS NOT NULL"),
                    book_only=q("SELECT count(*) FROM cooked WHERE book_id IS NOT NULL AND recipe_id IS NULL"),
                    unmatched_titles=unmatched)
@@ -271,7 +452,7 @@ def dinnerlog_alias():
                     (norm_title(title), title, int(bid)))
     else:
         con.execute("DELETE FROM dl_alias WHERE title_key=?", (norm_title(title),))
-    sync_dinnerlog(con, force=True)
+    rebuild_cooked(con, force=True)
     return jsonify(ok=True)
 
 
@@ -307,7 +488,7 @@ def dinnerlog_link():
         key = meal_key(row[0], row[1]) if row else None
         con.execute("INSERT INTO dl_link VALUES (?,?,?) ON CONFLICT(meal_id) DO UPDATE SET recipe_id=excluded.recipe_id, "
                     "meal_key=excluded.meal_key", (meal_id, int(rid) if rid else None, key))
-    sync_dinnerlog(con, force=True)
+    rebuild_cooked(con, force=True)
     return jsonify(ok=True, recipe_id=rid)
 
 
@@ -825,7 +1006,7 @@ def index_photo_job(job_id):
 @app.get("/admin/api/features")
 @editor_required
 def features():
-    return jsonify(photo_import=bool(ANTHROPIC_API_KEY), dinnerlog=dl_signature() is not None,
+    return jsonify(photo_import=bool(ANTHROPIC_API_KEY), dinnerlog=bool(DINNERLOG_API_URL),
                    dinnerlog_url=DINNERLOG_URL or None, wishlist=wishlist_available(),
                    mcp_private=bool(MCP_TOKEN), mcp_public=MCP_PUBLIC)
 
@@ -844,6 +1025,71 @@ MCP_INSTRUCTIONS = ("Search a home cookbook collection: books, and recipes index
                     "title doesn't say so), 'chicken: may be only chicken stock' (the ingredient may only be used as stock, "
                     "tomato paste, rice wine…) or 'chicken: only as \u201cchicken stock\u201d in the title' (a recipe for "
                     "the stock itself); when next_offset is present there are more results to fetch.")
+
+
+class ToolError(ValueError):
+    """A tool error written for the model: shown as is, so it says what to change and never shows internals.
+    Any other exception from a tool is a bug: it's logged, and the model gets a generic message."""
+
+
+def _check_value(label, p, v):
+    t = p.get("type")
+    if t == "integer":
+        if isinstance(v, str) and re.fullmatch(r"\s*-?\d+\s*", v):
+            v = int(v)  # models often send numbers as strings
+        elif isinstance(v, float) and v.is_integer():
+            v = int(v)
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise ToolError(f"{label} must be a whole number")
+    elif t == "boolean":
+        if isinstance(v, str) and v.strip().lower() in ("true", "false", "yes", "no", "1", "0"):
+            v = v.strip().lower() in ("true", "yes", "1")
+        elif isinstance(v, int) and v in (0, 1):
+            v = bool(v)
+        if not isinstance(v, bool):
+            raise ToolError(f"{label} must be true or false")
+    elif t == "string":
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            v = str(v)
+        if not isinstance(v, str):
+            raise ToolError(f"{label} must be a string")
+    elif t == "array":
+        if isinstance(v, str):
+            v = [v]  # one tag for add_tags, one field for fields
+        if not isinstance(v, list):
+            raise ToolError(f"{label} must be a list")
+        if p.get("items"):
+            v = [_check_value(f"each item of {label}", p["items"], x) for x in v]
+    if "enum" in p and t != "array" and v not in p["enum"]:
+        raise ToolError(f"{label} must be one of: {', '.join(map(str, p['enum']))}")
+    return v
+
+
+def check_args(schema, args):
+    """Check a tools/call's arguments against the tool's inputSchema before the tool runs, so a bad call gets
+    a message the model can act on. Converts in place where models are often loose (numbers as strings, a
+    single string for a list). Unknown arguments are ignored; limits are clamped by the tools themselves."""
+    if not isinstance(args, dict):
+        raise ToolError("arguments must be an object")
+    props = schema.get("properties", {})
+    for k in schema.get("required", []):
+        if args.get(k) in (None, ""):
+            raise ToolError(f"'{k}' is required")
+    for k, v in list(args.items()):
+        if k in props and v is not None:
+            args[k] = _check_value(f"'{k}'", props[k], v)
+
+
+def fill_tags(x, tags):
+    """Put the ingredient tag list wherever "{tags}" appears in a tool's description or schema. Works on the
+    decoded structure, so tag names need no escaping (a backslash or tab in one used to break tools/list)."""
+    if isinstance(x, str):
+        return x.replace("{tags}", tags)
+    if isinstance(x, dict):
+        return {k: fill_tags(v, tags) for k, v in x.items()}
+    if isinstance(x, list):
+        return [fill_tags(v, tags) for v in x]
+    return x
 
 
 BOOK_FIELDS = ["title", "subtitle", "authors", "publisher", "year", "cuisine", "tags", "recipe_count",
@@ -865,7 +1111,7 @@ def _recipe_out(r, private):
 def t_search_recipes(a, private):
     q = (a.get("query") or "").strip()
     if not q and not a.get("ingredient"):
-        raise ValueError("query (or ingredient) is required")
+        raise ToolError("query (or ingredient) is required")
     import ingredients
     where, args = core.recipe_filter({"q": q, "cuisine": a.get("cuisine"), "book": a.get("book_id"),
                                       "ingredient": a.get("ingredient")}, private)
@@ -894,20 +1140,22 @@ def t_search_recipes(a, private):
         out["ingredient_note"] = (
             f"Matched recipes tagged {' and '.join(tags)}, or with '{a['ingredient']}' in the title." if tags else
             f"No ingredient tag for '{a['ingredient']}', so it was matched against recipe titles only. "
-            f"Tags: {ingredient_tag_summary()}.")
+            f"Tags: {ingredient_tag_summary(private)}.")
     return out
 
 
-def ingredient_tag_names(hint=0):
+def ingredient_tag_names(hint=0, private=True):
     """Major ingredient tags (hint=0), or the search-hint ones (hint=1), most-used first."""
+    pub = "" if private else f" AND {core.PUBLIC_BOOKS}"
     return [r[0] for r in db().execute(
-        "SELECT i.name FROM ingredients i JOIN recipe_ingredients ri ON ri.ingredient_id=i.id WHERE i.hint=? "
-        "GROUP BY i.id ORDER BY count(*) DESC", (hint,))]
+        "SELECT i.name FROM ingredients i JOIN recipe_ingredients ri ON ri.ingredient_id=i.id "
+        "JOIN recipes r ON r.id=ri.recipe_id JOIN books b ON b.id=r.book_id WHERE i.hint=?" + pub
+        + " GROUP BY i.id ORDER BY count(*) DESC", (hint,))]
 
 
-def ingredient_tag_summary():
+def ingredient_tag_summary(private=True):
     """'Eggs, Chicken, … plus search hints: Zucchini, Kale' for the MCP to know which tags exist."""
-    major, hints = ", ".join(ingredient_tag_names(0)) or "none yet", ", ".join(ingredient_tag_names(1))
+    major, hints = ", ".join(ingredient_tag_names(0, private)) or "none yet", ", ".join(ingredient_tag_names(1, private))
     return major + (f"; plus search hints: {hints}" if hints else "")
 
 
@@ -967,12 +1215,18 @@ def t_get_book(a, private):
         if not row and core.HAS_FTS:
             fts_q = core.fts_query(a["title"])
             if fts_q:
-                row = con.execute("SELECT b.* FROM books b WHERE b.id IN (SELECT rowid FROM books_fts WHERE books_fts MATCH ?)"
-                                  + pub + " LIMIT 1", (fts_q,)).fetchone()
+                hits = con.execute(
+                    "SELECT b.* FROM books b WHERE b.id IN (SELECT rowid FROM books_fts WHERE books_fts MATCH ?)"
+                    + pub + " ORDER BY b.title LIMIT 10", (fts_q,)).fetchall()
+                if len(hits) == 1:
+                    row = hits[0]
+                elif len(hits) > 1:
+                    choices = ", ".join(f"{h['title']} (book_id={h['id']})" for h in hits)
+                    raise ToolError(f"Multiple books match '{a['title']}': {choices}. Call get_book with book_id.")
     else:
-        raise ValueError("book_id or title is required")
+        raise ToolError("book_id or title is required")
     if not row or (not private and row["kind"]):
-        raise ValueError("No such book")
+        raise ToolError("No such book")
     b = core.book_dicts([row], private)[0]
     recs = [dict(r) for r in con.execute("SELECT * FROM recipes WHERE book_id=? ORDER BY page_sort", (b["id"],))]
     if private:
@@ -1024,7 +1278,7 @@ def t_set_want(a, private):
     rid = int(a["recipe_id"])
     con = db()
     if not con.execute("SELECT 1 FROM recipes WHERE id=?", (rid,)).fetchone():
-        raise ValueError("No such recipe")
+        raise ToolError("No such recipe")
     want = a.get("want", True) not in (False, 0, "false", "False", "0", "no")
     con.execute("UPDATE recipes SET want_to_try=? WHERE id=?", (1 if want else 0, rid))
     con.commit()
@@ -1037,7 +1291,7 @@ def t_update_book(a, private):
     bid = int(a["book_id"])
     row = con.execute("SELECT * FROM books WHERE id=?", (bid,)).fetchone()
     if not row:
-        raise ValueError("No such book")
+        raise ToolError("No such book")
     tag_names = lambda: [r[0] for r in con.execute(
         "SELECT t.name FROM tags t JOIN book_tags bt ON bt.tag_id=t.id WHERE bt.book_id=? ORDER BY t.name", (bid,))]
     before = {"cuisine": row["cuisine"], "tags": tag_names()}
@@ -1079,8 +1333,10 @@ TOOLS = [
            cuisine={"type": "string"}, book_id={"type": "integer"},
            ingredient={"type": "string", "description": "Only recipes using this ingredient: tagged with the major "
                        "tag it names ('ground beef' uses Beef) or with it in the title. Tags: {tags}."},
-           limit={"type": "integer", "description": "Max results, default 25, at most 100"},
-           offset={"type": "integer", "description": "Skip this many results: pass next_offset from the previous "
+           limit={"type": "integer", "minimum": 1, "maximum": 100, "default": 25,
+                  "description": "Max results, default 25, at most 100"},
+           offset={"type": "integer", "minimum": 0, "default": 0,
+                   "description": "Skip this many results: pass next_offset from the previous "
                    "call to get the next page"})}),
     ("search_books", False, t_search_books,
      "Find cookbooks in the collection by words (title, author, publisher, tags), cuisine, tag or author. A book has one "
@@ -1092,7 +1348,8 @@ TOOLS = [
         fields={"type": "array", "items": {"type": "string", "enum": BOOK_FIELDS},
                 "description": "Return only these fields (id is always included), e.g. [\"title\", \"cuisine\", \"tags\"] "
                 "when listing many books: the full records are several times larger"},
-        limit={"type": "integer", "description": "Max books, default 50, at most 200"})),
+        limit={"type": "integer", "minimum": 1, "maximum": 200, "default": 50,
+               "description": "Max books, default 50, at most 200"})),
     ("get_book", False, t_get_book, "A cookbook's details and every recipe indexed from it, in page order.",
      _S(book_id={"type": "integer"}, title={"type": "string"})),
     ("list_categories", False, t_list_categories, "Cuisines and tags used in the collection, with book counts.", _S()),
@@ -1100,7 +1357,8 @@ TOOLS = [
      "Random dinner ideas from the collection. Modes: want (starred, never cooked), untried (never cooked), "
      "neglected (from books not cooked from in a year), favorites (rated 8+, not made in 3 months).",
      _S(mode={"type": "string", "enum": list(SUGGEST_MODES)}, cuisine={"type": "string"}, tag={"type": "string"},
-        count={"type": "integer"})),
+        count={"type": "integer", "minimum": 1, "maximum": 20, "default": 5,
+               "description": "How many ideas, default 5, at most 20"})),
     ("cooking_stats", True, t_stats,
      "What we've cooked from our cookbooks (from Dinner Log): most-used books, top-rated recipes, books never cooked from.",
      _S()),
@@ -1116,7 +1374,12 @@ TOOLS = [
            add_tags={"type": "array", "items": {"type": "string"}},
            remove_tags={"type": "array", "items": {"type": "string"}}), "required": ["book_id"]}),
 ]
-WRITE_TOOLS = {"set_want_to_try", "update_book"}
+WRITE_TOOLS = {
+    "set_want_to_try": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+    "update_book": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False},
+}
+if app.logger.level == logging.NOTSET:  # Flask's default is WARNING, which would drop the INFO MCP write log
+    app.logger.setLevel(logging.INFO)
 
 
 MCP_TOKEN_KEY = "cookbooks.mcp_token"
@@ -1198,23 +1461,33 @@ def handle_rpc(msg, private):
     if method == "ping":
         return rpc_result(mid, {})
     if method == "tools/list":
-        tags = ingredient_tag_summary()
-        fill = lambda x: json.loads(json.dumps(x).replace("{tags}", tags.replace('"', "'")))
+        tags = ingredient_tag_summary(private)
         return rpc_result(mid, {"tools": [
-            {"name": n, "description": fill(d), "inputSchema": fill(s),
-             "annotations": {"readOnlyHint": n not in WRITE_TOOLS}}
+            {"name": n, "description": fill_tags(d, tags), "inputSchema": fill_tags(s, tags),
+             "annotations": WRITE_TOOLS.get(n, {"readOnlyHint": True, "openWorldHint": False})}
             for n, priv_only, _, d, s in TOOLS if private or not priv_only]})
     if method == "tools/call":
         name, args = params.get("name"), params.get("arguments") or {}
         tool = next((t for t in TOOLS if t[0] == name and (private or not t[1])), None)
         if not tool:
             return rpc_error(mid, -32602, f"Unknown tool: {name}")
+        err = lambda text: rpc_result(mid, {"content": [{"type": "text", "text": text}], "isError": True})
         try:
+            check_args(tool[4], args)
             res = tool[2](args, private)
-            return rpc_result(mid, {"content": [{"type": "text", "text": json.dumps(res, ensure_ascii=False)}],
-                                    "structuredContent": res})
-        except Exception as e:  # noqa: BLE001 — tool errors go back to the model
-            return rpc_result(mid, {"content": [{"type": "text", "text": f"Error: {e}"}], "isError": True})
+        except ToolError as e:  # written for the model: says what to change
+            return err(str(e))
+        except Exception:  # noqa: BLE001 — a bug: log it, and keep exception text (SQL, internals) from the model
+            ref = secrets.token_hex(4)
+            app.logger.exception("MCP tool %s failed (ref %s), arguments %s", name, ref,
+                                 json.dumps(args, ensure_ascii=False)[:500])
+            return err(f"{name} failed with an internal error (ref {ref}). The same call will fail again: "
+                       "try other arguments or another tool.")
+        if name in WRITE_TOOLS:  # what the assistant changed, for the owner to review
+            app.logger.info("MCP write %s %s -> %s", name, json.dumps(args, ensure_ascii=False)[:500],
+                            json.dumps(res, ensure_ascii=False)[:1000])
+        return rpc_result(mid, {"content": [{"type": "text", "text": json.dumps(res, ensure_ascii=False)}],
+                                "structuredContent": res})
     return rpc_error(mid, -32601, f"Method not found: {method}")
 
 

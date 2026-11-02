@@ -12,14 +12,9 @@ os.environ.setdefault("CF_TEAM_DOMAIN", "team.example.com")
 os.environ.setdefault("CF_AUD", "aud123")
 import app as A  # noqa: E402
 import extras as X  # noqa: E402
+from dl_history import History  # noqa: E402
 
 CF = {"Cf-Ray": "abc", "Cf-Connecting-Ip": "203.0.113.9"}  # looks like it came through Cloudflare, no Access JWT
-DL_SCHEMA = """
-CREATE TABLE meals (id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL, name TEXT NOT NULL,
-  source_type TEXT NOT NULL DEFAULT 'original', source_title TEXT NOT NULL DEFAULT '',
-  source_detail TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, rating INTEGER CHECK (rating BETWEEN 1 AND 10));
-"""
 GARBURE = "La Garbure Landaise"  # no chicken in the title; tagged Chicken below
 
 
@@ -39,21 +34,11 @@ def tags(_own_database):
 
 
 @pytest.fixture()
-def dl(monkeypatch, tmp_path):
-    path = tmp_path / "meals.db"
-    con = sqlite3.connect(path)
-    con.executescript(DL_SCHEMA)
-    con.commit()
-    con.close()
-    monkeypatch.setattr(X, "DINNERLOG_DB", str(path))
+def dl(monkeypatch):
+    h = History(monkeypatch)
 
     def add(days_ago, name, title, page, rating=None):
-        k = sqlite3.connect(path)
-        k.execute("INSERT INTO meals(day, name, source_type, source_title, source_detail, rating) "
-                  "VALUES (?,?,'cookbook',?,?,?)",
-                  ((date.today() - timedelta(days=days_ago)).isoformat(), name, title, page, rating))
-        k.commit()
-        k.close()
+        h.add((date.today() - timedelta(days=days_ago)).isoformat(), name, "cookbook", title, page, rating)
     return add
 
 

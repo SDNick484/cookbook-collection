@@ -12,14 +12,9 @@ os.environ.setdefault("CF_TEAM_DOMAIN", "team.example.com")
 os.environ.setdefault("CF_AUD", "aud123")
 import app as A  # noqa: E402
 import extras as X  # noqa: E402
+from dl_history import History  # noqa: E402
 
 CF = {"Cf-Ray": "abc", "Cf-Connecting-Ip": "203.0.113.9"}
-DL_SCHEMA = """
-CREATE TABLE meals (id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL, name TEXT NOT NULL,
-  source_type TEXT NOT NULL DEFAULT 'original', source_title TEXT NOT NULL DEFAULT '',
-  source_detail TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, rating INTEGER CHECK (rating BETWEEN 1 AND 10));
-"""
 
 
 @pytest.fixture()
@@ -28,21 +23,11 @@ def c():
 
 
 @pytest.fixture()
-def dl(monkeypatch, tmp_path):
-    path = tmp_path / "meals.db"
-    con = sqlite3.connect(path)
-    con.executescript(DL_SCHEMA)
-    con.commit()
-    monkeypatch.setattr(X, "DINNERLOG_DB", str(path))
+def dl(monkeypatch):
+    h = History(monkeypatch)
 
     def add(day, name, stype="cookbook", title="", detail="", rating=None):
-        k = sqlite3.connect(path)
-        k.execute("INSERT INTO meals(day, name, source_type, source_title, source_detail, rating) VALUES (?,?,?,?,?,?)",
-                  (day, name, stype, title, detail, rating))
-        k.commit()
-        mid = k.execute("SELECT max(id) FROM meals").fetchone()[0]
-        k.close()
-        return mid
+        return h.add(day, name, stype, title, detail, rating)
     return add
 
 
@@ -88,13 +73,13 @@ def test_dinnerlog_matching(c, dl):
     # manual override beats auto, and survives new Dinner Log writes
     _, other = recipe_id(c, "The Zuni Cafe Cookbook", "Zuni Caesar Salad")
     c.post("/admin/api/dinnerlog/link", json={"meal_id": m1, "recipe_id": other["id"]})
-    dl(today, "New dinner", title="Dining In", detail="83")  # changes the file -> resync
+    dl(today, "New dinner", title="Dining In", detail="83")  # a new history -> rebuild
     _, caesar = recipe_id(c, "The Zuni Cafe Cookbook", "Zuni Caesar Salad")
     assert caesar["cooked_count"] == 1
 
 
 def test_dinnerlog_missing_is_harmless(c, monkeypatch):
-    monkeypatch.setattr(X, "DINNERLOG_DB", "/nonexistent/meals.db")
+    monkeypatch.setattr(X, "DINNERLOG_API_URL", "")
     assert c.get("/admin/api/dinnerlog").json["available"] is False
     assert c.get("/admin/api/books/1").status_code == 200
 
@@ -468,7 +453,7 @@ def test_dinnerlog_resyncs_when_local_recipe_added(c, dl):
     dl(today, "Special Braised Short Ribs", title="Late Indexed Book", detail="42", rating=9)
     # Initial sync happens while book has no recipes
     assert c.get("/admin/api/dinnerlog").json["book_only"] >= 1
-    # Adding the recipe on page 42 must invalidate dl_sig and match on next read without touching meals.db
+    # Adding the recipe on page 42 must change the catalog signature and match on the next read, without a pull
     rid = c.post(f"/admin/api/books/{bid}/recipes", json={"name": "Special Braised Short Ribs", "page": "42"}).json["id"]
     book = c.get(f"/admin/api/books/{bid}").json
     rec = next(r for r in book["recipes"] if r["id"] == rid)

@@ -1,0 +1,88 @@
+#!/bin/sh
+# Move ops files from the names older versions used (ctNNN-ops, ctNNN-backup, ..., named after the
+# container) to the generic ones (app-ops, app-backup, ...). Run by the installer after unpacking;
+# safe to run again. Nothing is overwritten: when an old and a new path both exist, directories are
+# merged entry by entry (entries the new one already has stay where they are), config keys missing or
+# empty in the new file are copied from the old one, and logs are joined oldest first.
+#
+# It always exits 0 so a problem here can't stop the installer halfway; problems print "!!" lines.
+#
+#   ROOT=/some/dir sh migrate-ops     # operate under a different root (used by the tests)
+set -u
+ROOT=${ROOT:-}
+say()  { echo "    migrate-ops: $*"; }
+warn() { echo "!!  migrate-ops: $*"; }
+rel()  { echo "${1#"$ROOT"}"; }
+
+# A config value is empty when it's missing, or KEY=, KEY="" or KEY=''.
+conf_value() { sed -n "s/^$2=//p" "$1" | tail -n1 | tr -d "\"'"; }
+
+merge_conf() {  # merge_conf OLD NEW: copy keys that NEW lacks or leaves empty
+  old=$1 new=$2 added=""
+  for key in $(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$old" | sort -u); do
+    [ -n "$(conf_value "$old" "$key")" ] || continue
+    [ -z "$(conf_value "$new" "$key")" ] || continue
+    line=$(grep "^$key=" "$old" | tail -n1)
+    grep -v "^$key=" "$new" > "$new.tmp" && printf '%s\n' "$line" >> "$new.tmp" && cat "$new.tmp" > "$new" \
+      && rm -f "$new.tmp" && added="$added $key"
+  done
+  if [ -n "$added" ]; then say "copied$added from $(rel "$old") into $(rel "$new")"; fi
+  say "kept $(rel "$old") for reference; delete it once $(rel "$new") looks right"
+}
+
+move() {  # move OLD NEW
+  old=$1 new=$2
+  if [ -L "$old" ]; then
+    warn "$(rel "$old") is a symlink (to $(readlink "$old")); left it alone. Point $(rel "$new") there yourself if you want it."
+    return
+  fi
+  if [ ! -e "$new" ]; then
+    mkdir -p "$(dirname "$new")" && mv "$old" "$new" && { say "moved $(rel "$old") -> $(rel "$new")"; return; }
+    warn "couldn't move $(rel "$old") to $(rel "$new")"; return
+  fi
+  if [ -d "$old" ] && [ -d "$new" ]; then
+    left=0
+    for e in "$old"/* "$old"/.[!.]* "$old"/..?*; do
+      [ -e "$e" ] || [ -L "$e" ] || continue
+      if [ -e "$new/$(basename "$e")" ]; then left=1
+      elif ! mv "$e" "$new/"; then warn "couldn't move $(rel "$e") into $(rel "$new")"; left=1
+      fi
+    done
+    if [ "$left" = 0 ] && rmdir "$old" 2>/dev/null; then say "merged $(rel "$old") into $(rel "$new")"
+    else say "merged $(rel "$old") into $(rel "$new"); entries that already existed there are still in $(rel "$old")"
+    fi
+  elif [ -f "$old" ] && [ -f "$new" ]; then
+    case "$new" in
+      *.log) if cat "$old" "$new" > "$new.tmp" && mv "$new.tmp" "$new" && rm -f "$old"; then
+               say "joined $(rel "$old") onto the start of $(rel "$new")"
+             else warn "couldn't join $(rel "$old") onto $(rel "$new")"; fi ;;
+      *) merge_conf "$old" "$new" ;;
+    esac
+  else
+    warn "$(rel "$old") and $(rel "$new") are different kinds of file; left both alone"
+  fi
+}
+
+each() {  # each TEST GLOB NEW: move every match of GLOB that passes `test TEST` (and isn't NEW)
+  for p in "$ROOT"$2; do
+    [ "$p" = "$3" ] && continue
+    if [ -L "$p" ] || [ "$1" "$p" ]; then move "$p" "$3"; fi
+  done
+}
+
+each -f "/etc/conf.d/ct[0-9]*-ops"     "$ROOT/etc/conf.d/app-ops"
+each -d "/var/backups/ct[0-9]*"        "$ROOT/var/backups/apps"
+each -d "/var/lib/ct[0-9]*-ops"        "$ROOT/var/lib/app-ops"
+each -f "/var/log/ct[0-9]*-ops.log"    "$ROOT/var/log/app-ops.log"
+
+# The old daily backup job and script: the installer installs app-backup in their place.
+for p in "$ROOT"/etc/periodic/daily/ct[0-9]*-backup "$ROOT"/usr/local/bin/ct[0-9]*-backup; do
+  if [ -e "$p" ] || [ -L "$p" ]; then rm -f "$p" && say "removed $(rel "$p")"; fi
+done
+# Other apps' scripts may still call the old notify command; keep that name working.
+for p in "$ROOT"/usr/local/bin/ct[0-9]*-notify; do
+  [ -e "$p" ] || [ -L "$p" ] || continue
+  [ -L "$p" ] && [ "$(readlink "$p")" = /usr/local/bin/app-notify ] && continue
+  rm -f "$p" && ln -s /usr/local/bin/app-notify "$p" && say "$(rel "$p") now points to app-notify"
+done
+exit 0

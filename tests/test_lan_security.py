@@ -188,8 +188,8 @@ def test_refused_before_auth_runs(c, monkeypatch):
 
 # ------------------------------------------------------------ through Cloudflare
 def _jwt(monkeypatch, email="alice@example.com"):
-    import jwt
-    from cryptography.hazmat.primitives.asymmetric import rsa
+    jwt = pytest.importorskip("jwt")  # PyJWT; production gets it from py3-jwt
+    rsa = pytest.importorskip("cryptography.hazmat.primitives.asymmetric.rsa")
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
     class FakeJWKS:

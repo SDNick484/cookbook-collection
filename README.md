@@ -55,11 +55,13 @@ Set `ANTHROPIC_API_KEY` in `/etc/conf.d/cookbooks` and restart the service. In *
 **Needs review → Not indexed yet** lists the books on hand that have no recipes in the catalog, each with an Import index link. The MCP's `search_books` has the same filter (`indexed: false`).
 
 ## Dinner Log link (optional)
-If Dinner Log, a companion meal-journal app, runs on the same server, Cookbook Collection reads `/var/lib/dinner-log/meals.db` **read-only**. The installer adds the `cookbooks` user to the `dinnerlog` group so it can.
-- Every dinner logged with source "Cookbook" is matched to a book by title, then to a recipe by page number and name.
+Dinner Log, a companion meal-journal app, serves its cooking history at `GET /api/history` behind a token. Cookbook Collection pulls it and matches each dinner to a book and recipe.
+- **Setup:** generate a token (`openssl rand -hex 32`), set it as Dinner Log's `HISTORY_TOKEN`, and in `/etc/conf.d/cookbooks` set `DINNERLOG_TOKEN` to the same value and `DINNERLOG_API_URL` to Dinner Log's **private** address, e.g. `http://127.0.0.1:8000` when both run on the same server. The token travels in plain HTTP there, so keep it on loopback or a private network, or use https. Redirects are refused, so the token never follows one to another address.
+- **Matching:** dinners logged from here (the 🍽 link, Dinner Log's **Log tonight** on a pick, or its recipe picker) carry this catalog's book and recipe ids and match exactly. Older dinners, and ones typed in by hand, are matched to a book by title, then to a recipe by page number and name.
+- **Freshness:** pages never wait on Dinner Log. When the stored history is more than a minute old, the next page that needs it starts a fetch in the background (one at a time across workers), and a reload shows the result. If Dinner Log doesn't answer, the last history it sent is kept and fetches pause for five minutes. **Stats → Dinner Log** shows when it last answered and any error, and opening it fetches right away.
 - Recipes show cooked count, average rating and last made. **Stats** shows the overall picture.
 - When a name doesn't match, pick the book once on the Stats page. When a dinner matches the book but not a recipe, link it or add it as a recipe from the book's page.
-- Dinner Log itself is unchanged.
+- **Upgrading from a version that read Dinner Log's database file:** upgrade and configure Dinner Log first, then this app. The installer removes the `cookbooks` user from the `dinnerlog` group; `DINNERLOG_DB` is no longer used. Cooking history already here is kept until the first fetch replaces it.
 
 ## Eat Your Books import
 **More → Import from Eat Your Books** accepts both of EYB's CSV exports.
@@ -103,7 +105,7 @@ If a companion wish list app runs on the same server, set a book's status to **W
 
 ## Dinner Log ⇄ Cookbook Collection
 - **In Dinner Log** (set its `COOKBOOK_URL`, or `COOKBOOK_API_URL` for a private address): choosing a cookbook offers that book's indexed recipes, and picking one fills in the page and the dinner name. Dinner Log reads them from the public `/api/books` endpoints, and its form works as before if this app is down.
-- **In Cookbook Collection:** set `DINNERLOG_URL` and each recipe gets a 🍽 link that opens Dinner Log's form already filled in.
+- **In Cookbook Collection:** set `DINNERLOG_URL` and each recipe gets a 🍽 link that opens Dinner Log's form already filled in, including this recipe's ids so the dinner matches exactly.
 - **Pick for tonight (in Dinner Log):** Dinner Log asks `GET /admin/api/pick` for recipes to suggest, filtered by ingredients to include or leave out and by mode: `fav` (rated 8+ and not made in the last `rest` days, default 21), `new` (never cooked) or `any`. Ingredients match the way the ingredient chips do: tagged with it, or in the title. Leaving one out is best effort, since tags cover only some recipes; the response's `title_only` lists ingredients that have no tag and so match titles alone. Starred recipes come up more often, and favorites more often the higher they're rated.
   ```
   curl -H "Authorization: Bearer $READ_TOKEN" \
@@ -152,7 +154,9 @@ Editors can attach photos of a dish to the recipe it came from.
 - `search_recipes` returns the best matches first, the `total`, and `next_offset` when there are more; each recipe's `match` is "title" when every word is in its title, or says per word where it came from: "chicken: title, leek: tag", "chicken: may be only chicken stock", or "chicken: only as “chicken stock” in the title". The server's instructions tell Claude that some books have no page numbers and that the recipe and book title are enough.
 
 ## Backups and alerts
-The ops scripts cover Cookbook Collection and, if they're installed on the same server, Dinner Log and the wish list. Their settings live in `/etc/conf.d/app-ops`.
+The ops scripts cover Cookbook Collection and, if they're installed on the same server, Dinner Log and the wish list. Their settings live in `/etc/conf.d/app-ops`. Alerts name the server by `HOST_LABEL` (default: its hostname).
+
+Older versions named these files after the container (`/etc/conf.d/ctNNN-ops`, `/var/backups/ctNNN`, `ctNNN-backup`, …). The installer moves them to the names above on upgrade and keeps the old `ctNNN-notify` command as a link, in case another app still calls it. It never overwrites a file that already exists under the new name. The alert text changes too, so check any Home Assistant automation that matches on it.
 - `/etc/periodic/daily/app-backup` takes consistent SQLite snapshots into `/var/backups/apps`, kept `KEEP_DAYS` days.
 - Set `BACKUP_TARGET` to a mounted folder on other storage, e.g. an NFS share from a NAS. Snapshots plus photos and covers are copied there too.
 - `/etc/periodic/15min/app-health` checks each app. After ~30 minutes down it sends one alert to a Home Assistant webhook automation, and one more on recovery. Set `HA_URL` and `HA_WEBHOOK_ID` to turn alerts on.
@@ -173,3 +177,6 @@ rc-service cookbooks start
 python3 app.py                      # http://localhost:8767, data in ./data
 python3 -m pytest -q tests
 ```
+
+## License
+MIT, see [LICENSE](LICENSE).

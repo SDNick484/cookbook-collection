@@ -3,6 +3,7 @@
 # (2 failed checks in a row, ~30 min) and when it comes back. Only state changes are sent.
 [ -f /etc/conf.d/app-ops ] && . /etc/conf.d/app-ops
 STATE=/var/lib/app-ops/health
+LABEL=${HOST_LABEL:-$(hostname)}
 mkdir -p "$STATE"
 # name|url|service  (services that aren't installed are skipped)
 CHECKS=${HEALTH_CHECKS:-"Cookbooks|http://127.0.0.1:8767/healthz|cookbooks
@@ -25,14 +26,14 @@ echo "$CHECKS" | while IFS='|' read -r name url svc; do
   esac
   if [ "$ok" = 1 ]; then
     if [ "$was" = down ]; then
-      /usr/local/bin/app-notify "$name" up "$name is answering again on this server."
+      /usr/local/bin/app-notify "$name" up "$name is answering again on $LABEL."
     fi
     echo 0 > "$STATE/$key.fails"; echo up > "$STATE/$key.state"
   else
     fails=$((fails + 1)); echo "$fails" > "$STATE/$key.fails"
     if [ "$fails" -ge 2 ] && [ "$was" != down ]; then
       st=$(rc-service "$svc" status 2>&1 | tail -n1)
-      if /usr/local/bin/app-notify "$name" down "$name on this server hasn't answered for ~30 minutes ($url). Service: $st. Log: /var/log/$svc.log"; then
+      if /usr/local/bin/app-notify "$name" down "$name on $LABEL hasn't answered for ~30 minutes ($url). Service: $st. Log: /var/log/$svc.log"; then
         echo down > "$STATE/$key.state"
       fi
     fi

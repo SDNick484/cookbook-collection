@@ -47,7 +47,14 @@ def exif_day(img):
     """The day the photo was taken, from its EXIF, or None."""
     try:
         exif = img.getexif()
-        raw = exif.get_ifd(0x8769).get(36867) or exif.get(306)  # DateTimeOriginal, else DateTime
+        raw = (
+            exif.get_ifd(0x8769).get(36867)
+            or exif.get(306)
+            or (getattr(img, "_getexif", None) and (img._getexif() or {}).get(36867))
+            or (getattr(img, "_getexif", None) and (img._getexif() or {}).get(306))
+        )
+        if not raw:
+            return None
         return datetime.strptime(str(raw).strip()[:10], "%Y:%m:%d").date().isoformat()
     except Exception:  # noqa: BLE001 — no date or a malformed one
         return None

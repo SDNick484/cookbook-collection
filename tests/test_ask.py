@@ -435,6 +435,22 @@ def test_connection_error_is_502(c, model):
     assert r.status_code == 502 and ask_rows()[-1]["status"] == "api_error"
 
 
+def test_non_object_response_is_502(c, model):
+    for bad in ([], None, "x"):
+        model(bad)
+        r = c.post("/admin/api/ask", json=OK)
+        assert r.status_code == 502 and r.get_json() == GENERIC
+        assert ask_rows()[-1]["status"] == "api_error"
+
+
+def test_truncated_response_is_502(c, model):
+    import http.client
+    model(http.client.IncompleteRead(b""))
+    r = c.post("/admin/api/ask", json=OK)
+    assert r.status_code == 502 and r.get_json() == GENERIC
+    assert ask_rows()[-1]["status"] == "api_error"
+
+
 def test_usage_summed(c, model):
     lc = tool_use("list_categories", {})
     fake = model(resp(lc, usage=(100, 10)), resp(lc, usage=(200, 20)),

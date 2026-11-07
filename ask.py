@@ -5,7 +5,7 @@ messages. The model gets the read-only MCP tools (never WRITE_TOOLS) and finishe
 ids are loaded from the database, and only if a tool returned them earlier in this request: catalog text could
 carry instructions, so at most it can change the wording of the answer or which real items are listed.
 """
-import copy, json, os, re, time, urllib.error
+import copy, http.client, json, os, re, time, urllib.error
 
 from flask import g, jsonify, request
 
@@ -259,8 +259,10 @@ def answer(messages):
             if isinstance(e.reason, TimeoutError):
                 return fail("timeout", "%s", e.reason)
             return fail("api_error", "%s", e.reason)
-        except (OSError, ValueError):  # connection dropped, or a response that isn't JSON
+        except (OSError, ValueError, http.client.HTTPException):  # dropped or truncated, or not JSON
             return fail("api_error", "bad response", exc=True)
+        if not isinstance(data, dict):
+            return fail("api_error", "response is not a JSON object: %s", type(data).__name__)
         st["rounds"] = rnd
         usage = data.get("usage") or {}
         st["input_tokens"] += _int(usage.get("input_tokens")) or 0

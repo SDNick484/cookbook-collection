@@ -838,6 +838,25 @@ PHOTO_JOB_LIMIT = 600  # seconds; a job still "running" after this died with its
 PHOTO_JOBS_MAX = 3     # reading photos at once across the server; more get 429 and the browser retries
 
 
+class ClaudeAPIError(Exception):
+    """The Messages API answered with an HTTP error status."""
+    def __init__(self, status, detail):
+        super().__init__(f"Claude API error {status}: {detail}")
+        self.status, self.detail = status, detail
+
+
+def messages_api(body, key, timeout):
+    """POST body to the Messages API and return the parsed JSON. Only HTTP errors become
+    ClaudeAPIError; timeouts and connection errors propagate unchanged."""
+    req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=json.dumps(body).encode(), headers={
+        "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        raise ClaudeAPIError(e.code, e.read().decode(errors="replace")[:300])
+
+
 def call_claude(image_jpeg, media_type="image/jpeg", effort=None):
     """Returns (text, stop_reason)."""
     effort = ANTHROPIC_EFFORT if effort is None else effort
@@ -850,16 +869,12 @@ def call_claude(image_jpeg, media_type="image/jpeg", effort=None):
     }
     if effort:  # transcription needs little thinking, and thinking is slow
         body["output_config"] = {"effort": effort}
-    req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=json.dumps(body).encode(), headers={
-        "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=PHOTO_JOB_LIMIT - 30) as r:
-            data = json.load(r)
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode(errors="replace")[:300]
-        if e.code == 400 and effort and ("effort" in detail or "output_config" in detail):
+        data = messages_api(body, ANTHROPIC_API_KEY, PHOTO_JOB_LIMIT - 30)
+    except ClaudeAPIError as e:
+        if e.status == 400 and effort and ("effort" in e.detail or "output_config" in e.detail):
             return call_claude(image_jpeg, media_type, effort="")  # a model without effort settings
-        raise RuntimeError(f"Claude API error {e.code}: {detail}")
+        raise RuntimeError(f"Claude API error {e.status}: {e.detail}")
     text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
     return text, data.get("stop_reason")
 

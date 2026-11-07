@@ -838,6 +838,25 @@ PHOTO_JOB_LIMIT = 600  # seconds; a job still "running" after this died with its
 PHOTO_JOBS_MAX = 3     # reading photos at once across the server; more get 429 and the browser retries
 
 
+class ClaudeAPIError(Exception):
+    """The Messages API answered with an HTTP error status."""
+    def __init__(self, status, detail):
+        super().__init__(f"Claude API error {status}: {detail}")
+        self.status, self.detail = status, detail
+
+
+def messages_api(body, key, timeout):
+    """POST body to the Messages API and return the parsed JSON. Only HTTP errors become
+    ClaudeAPIError; timeouts and connection errors propagate unchanged."""
+    req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=json.dumps(body).encode(), headers={
+        "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        raise ClaudeAPIError(e.code, e.read().decode(errors="replace")[:300])
+
+
 def call_claude(image_jpeg, media_type="image/jpeg", effort=None):
     """Returns (text, stop_reason)."""
     effort = ANTHROPIC_EFFORT if effort is None else effort
@@ -850,16 +869,12 @@ def call_claude(image_jpeg, media_type="image/jpeg", effort=None):
     }
     if effort:  # transcription needs little thinking, and thinking is slow
         body["output_config"] = {"effort": effort}
-    req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=json.dumps(body).encode(), headers={
-        "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=PHOTO_JOB_LIMIT - 30) as r:
-            data = json.load(r)
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode(errors="replace")[:300]
-        if e.code == 400 and effort and ("effort" in detail or "output_config" in detail):
+        data = messages_api(body, ANTHROPIC_API_KEY, PHOTO_JOB_LIMIT - 30)
+    except ClaudeAPIError as e:
+        if e.status == 400 and effort and ("effort" in e.detail or "output_config" in e.detail):
             return call_claude(image_jpeg, media_type, effort="")  # a model without effort settings
-        raise RuntimeError(f"Claude API error {e.code}: {detail}")
+        raise RuntimeError(f"Claude API error {e.status}: {e.detail}")
     text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
     return text, data.get("stop_reason")
 
@@ -1006,7 +1021,8 @@ def index_photo_job(job_id):
 @app.get("/admin/api/features")
 @editor_required
 def features():
-    return jsonify(photo_import=bool(ANTHROPIC_API_KEY), dinnerlog=bool(DINNERLOG_API_URL),
+    import ask  # local: ask imports extras
+    return jsonify(ask=ask.enabled(), photo_import=bool(ANTHROPIC_API_KEY), dinnerlog=bool(DINNERLOG_API_URL),
                    dinnerlog_url=DINNERLOG_URL or None, wishlist=wishlist_available(),
                    mcp_private=bool(MCP_TOKEN), mcp_public=MCP_PUBLIC)
 
@@ -1025,6 +1041,9 @@ MCP_INSTRUCTIONS = ("Search a home cookbook collection: books, and recipes index
                     "title doesn't say so), 'chicken: may be only chicken stock' (the ingredient may only be used as stock, "
                     "tomato paste, rice wine…) or 'chicken: only as \u201cchicken stock\u201d in the title' (a recipe for "
                     "the stock itself); when next_offset is present there are more results to fetch.")
+
+MCP_WEB_RECIPES = (" Some recipes come from recipe websites instead of a book: their book is the site (e.g. NYT Cooking) "
+                   "and they have a url instead of a page, so give the link.")  # private view only
 
 
 class ToolError(ValueError):
@@ -1438,6 +1457,33 @@ def rpc_error(mid, code, msg):
     return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": msg}}
 
 
+class UnknownTool(LookupError):
+    """No tool by that name is available to this caller (including private-only tools when not private)."""
+
+
+def run_tool(name, args, private):
+    """Run one MCP tool: (result, None) on success, (None, error_text) for a ToolError or a bug (redacted).
+    Raises UnknownTool when no tool matches. Shared by handle_rpc and the Ask search."""
+    tool = next((t for t in TOOLS if t[0] == name and (private or not t[1])), None)
+    if not tool:
+        raise UnknownTool(name)
+    try:
+        check_args(tool[4], args)
+        res = tool[2](args, private)
+    except ToolError as e:  # written for the model: says what to change
+        return None, str(e)
+    except Exception:  # noqa: BLE001 — a bug: log it, and keep exception text (SQL, internals) from the model
+        ref = secrets.token_hex(4)
+        app.logger.exception("MCP tool %s failed (ref %s), arguments %s", name, ref,
+                             json.dumps(args, ensure_ascii=False)[:500])
+        return None, (f"{name} failed with an internal error (ref {ref}). The same call will fail again: "
+                      "try other arguments or another tool.")
+    if name in WRITE_TOOLS:  # what the assistant changed, for the owner to review
+        app.logger.info("MCP write %s %s -> %s", name, json.dumps(args, ensure_ascii=False)[:500],
+                        json.dumps(res, ensure_ascii=False)[:1000])
+    return res, None
+
+
 def handle_rpc(msg, private):
     if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0" or "method" not in msg:
         return rpc_error(msg.get("id") if isinstance(msg, dict) else None, -32600, "Invalid request")
@@ -1454,9 +1500,7 @@ def handle_rpc(msg, private):
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": "cookbooks", "title": "Cookbook Collection", "version": "2.0"},
             "instructions": MCP_INSTRUCTIONS + (
-                " Some recipes come from recipe websites instead of a book: their book is the site (e.g. NYT Cooking) "
-                "and they have a url instead of a page, so give the link." if private
-                else " (Public view: no ratings or cooking history.)"),
+                MCP_WEB_RECIPES if private else " (Public view: no ratings or cooking history.)"),
         })
     if method == "ping":
         return rpc_result(mid, {})
@@ -1468,24 +1512,12 @@ def handle_rpc(msg, private):
             for n, priv_only, _, d, s in TOOLS if private or not priv_only]})
     if method == "tools/call":
         name, args = params.get("name"), params.get("arguments") or {}
-        tool = next((t for t in TOOLS if t[0] == name and (private or not t[1])), None)
-        if not tool:
-            return rpc_error(mid, -32602, f"Unknown tool: {name}")
-        err = lambda text: rpc_result(mid, {"content": [{"type": "text", "text": text}], "isError": True})
         try:
-            check_args(tool[4], args)
-            res = tool[2](args, private)
-        except ToolError as e:  # written for the model: says what to change
-            return err(str(e))
-        except Exception:  # noqa: BLE001 — a bug: log it, and keep exception text (SQL, internals) from the model
-            ref = secrets.token_hex(4)
-            app.logger.exception("MCP tool %s failed (ref %s), arguments %s", name, ref,
-                                 json.dumps(args, ensure_ascii=False)[:500])
-            return err(f"{name} failed with an internal error (ref {ref}). The same call will fail again: "
-                       "try other arguments or another tool.")
-        if name in WRITE_TOOLS:  # what the assistant changed, for the owner to review
-            app.logger.info("MCP write %s %s -> %s", name, json.dumps(args, ensure_ascii=False)[:500],
-                            json.dumps(res, ensure_ascii=False)[:1000])
+            res, err_text = run_tool(name, args, private)
+        except UnknownTool:
+            return rpc_error(mid, -32602, f"Unknown tool: {name}")
+        if err_text is not None:
+            return rpc_result(mid, {"content": [{"type": "text", "text": err_text}], "isError": True})
         return rpc_result(mid, {"content": [{"type": "text", "text": json.dumps(res, ensure_ascii=False)}],
                                 "structuredContent": res})
     return rpc_error(mid, -32601, f"Method not found: {method}")

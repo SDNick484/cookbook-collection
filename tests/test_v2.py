@@ -258,6 +258,66 @@ def test_effort_falls_back(monkeypatch):
     assert sent == [{"effort": "low"}, None]
 
 
+class _Resp(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        pass
+
+
+def test_messages_api_returns_json_and_sends_key(monkeypatch):
+    seen = {}
+
+    def urlopen(req, timeout):
+        seen["req"], seen["timeout"] = req, timeout
+        return _Resp(b'{"content": []}')
+    monkeypatch.setattr(X.urllib.request, "urlopen", urlopen)
+    assert X.messages_api({"model": "m"}, "k", 12.5) == {"content": []}
+    assert seen["req"].get_header("X-api-key") == "k"
+    assert seen["req"].full_url.endswith("/v1/messages")
+    assert json.loads(seen["req"].data) == {"model": "m"}
+    assert seen["timeout"] == 12.5
+
+
+def test_messages_api_http_error(monkeypatch):
+    def urlopen(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, 529, "x", {}, io.BytesIO(b"overloaded"))
+    monkeypatch.setattr(X.urllib.request, "urlopen", urlopen)
+    with pytest.raises(X.ClaudeAPIError) as ei:
+        X.messages_api({}, "k", 5)
+    assert ei.value.status == 529 and "overloaded" in ei.value.detail
+
+
+def test_messages_api_timeout_propagates(monkeypatch):
+    def urlopen(req, timeout):
+        raise TimeoutError("slow")
+    monkeypatch.setattr(X.urllib.request, "urlopen", urlopen)
+    with pytest.raises(TimeoutError):
+        X.messages_api({}, "k", 5)
+
+
+def test_call_claude_effort_fallback_and_error_text(monkeypatch):
+    calls = []
+
+    def urlopen(req, timeout):
+        body = json.loads(req.data)
+        calls.append(body)
+        if "output_config" in body:
+            raise urllib.error.HTTPError(req.full_url, 400, "bad", {}, io.BytesIO(b'{"error": "output_config not supported"}'))
+        return _Resp(json.dumps({"content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn"}).encode())
+    monkeypatch.setattr(X.urllib.request, "urlopen", urlopen)
+    assert X.call_claude(b"jpeg") == ("ok", "end_turn")
+    assert len(calls) == 2 and "output_config" not in calls[1]
+
+    def boom(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, 500, "x", {}, io.BytesIO(b"kaput"))
+    monkeypatch.setattr(X.urllib.request, "urlopen", boom)
+    with pytest.raises(RuntimeError) as ei:
+        X.call_claude(b"jpeg")
+    assert str(ei.value) == "Claude API error 500: kaput"
+
+
 # ------------------------------------------------------------ MCP
 def rpc(c, method, params=None, url="/mcp", headers=None, mid=1):
     body = {"jsonrpc": "2.0", "method": method, "params": params or {}}

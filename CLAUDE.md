@@ -7,7 +7,8 @@ and an MCP server at `/mcp`. README.md is the user-facing guide; this file is ho
 | File | What's in it |
 |---|---|
 | `app.py` | Core: schema + `init_db`, `connect()`/`db()`, `fold()` (accent/case folding, also an SQL function), FTS (`books_fts`, `recipes_fts`), auth (`editor_required`), books/recipes/facets API, index paste import, `PUBLIC_BOOKS`, `cuisine_condition()` |
-| `extras.py` | Dinner Log history (pulled over HTTP into `dl_meals`, rebuilt into `cooked`; `ensure_synced()` starts background pulls under a DB lease), suggestions, stats, photo index import (Claude API, background jobs in `photo_jobs`), MCP server (`TOOLS`, `WRITE_TOOLS`, `handle_rpc`), wishlist |
+| `extras.py` | Dinner Log history (pulled over HTTP into `dl_meals`, rebuilt into `cooked`; `ensure_synced()` starts background pulls under a DB lease), suggestions, stats, photo index import (Claude API, background jobs in `photo_jobs`), MCP server (`TOOLS`, `WRITE_TOOLS`, `handle_rpc`, `run_tool`), `messages_api` (Claude API call), wishlist |
+| `ask.py` | AI search: `POST /admin/api/ask`, `ask_log`, tool loop over `run_tool`, `show_results` hydration |
 | `ingredients.py` | Ingredient tags and search hints, CSV/zip import, `resolve()`, `ranked()` search ranking |
 | `eyb.py` | Eat Your Books import, merging garbled duplicate recipes |
 | `photos.py` | Photos of cooked dishes |
@@ -38,6 +39,7 @@ Chromium for Playwright checks: `/opt/pw-browsers/chromium-*/chrome-linux/chrome
 - `kind='online'` books are editor-only; public queries filter with `PUBLIC_BOOKS`.
 - MCP tools: add to `TOOLS` in extras.py as (name, private_only, fn, description, schema); writes go in
   `WRITE_TOOLS` and are private-only. Keep tool output compact: it stays in the assistant's context.
+- Ask (`ask.py`) reuses `run_tool()`; it must never be offered `WRITE_TOOLS`.
 - Tests: commit the test's own connection before calling the app, or SQLite reports "database is locked".
 - Every write route uses `@editor_required`, which refuses cross-site edits (Origin check) before auth.
   LAN editing (`lan_identity()`) trusts only the socket peer, never forwarded headers.

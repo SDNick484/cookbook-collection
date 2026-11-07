@@ -29,11 +29,16 @@ MAX_QUESTIONS = 5    # questions per thread
 BUDGET_S = 60        # total time per question
 CALL_TIMEOUT_S = 25  # time per API call
 MAX_TOKENS = 2048
+MAX_TOOL_RESULT_CHARS = 12000  # per tool result: results are re-sent every round, so each one is capped
+TRUNCATED_NOTE = " …truncated; narrow the search (e.g. search_recipes with book_id)"
+INPUT_TOKEN_CEILING = 40000    # input tokens per question; past it, the next round is forced to finish
 MAX_Q = 500
 MAX_A = 1000
 MAX_ANSWER = 600
 MAX_RECIPES, MAX_BOOKS = 25, 10
 UNAVAILABLE = "AI search is unavailable right now, try again"
+FOUND = "Here's what I found."
+NOTHING = "I couldn't find anything for that."
 
 SHOW_RESULTS = {
     "name": "show_results",
@@ -66,7 +71,7 @@ def migrate(con):
       rounds INTEGER NOT NULL,
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
-      status TEXT NOT NULL         -- ok | capped | api_error | timeout
+      status TEXT NOT NULL         -- ok | capped | api_error | timeout | error
     )""")
     con.execute("CREATE INDEX IF NOT EXISTS ask_log_ts ON ask_log(ts)")
 
@@ -134,12 +139,15 @@ def _int(v):
 
 
 def collect_ids(obj, recipes, books):
-    """Add the recipe and book ids in a tool result to these sets: a dict with id and title is a book; one with
-    id, name and a recipe field is a recipe; any integer book_id is a book."""
+    """Add the recipe and book ids in a tool result to these sets: a dict with id and title is a book, and so is
+    any dict with an id in a `books` list (search_books with `fields` may leave out the title); one with id, name
+    and a recipe field is a recipe; any integer book_id is a book."""
     if isinstance(obj, list):
         for x in obj:
             collect_ids(x, recipes, books)
     elif isinstance(obj, dict):
+        if isinstance(obj.get("books"), list):
+            books.update(i for i in (_int(x.get("id")) for x in obj["books"] if isinstance(x, dict)) if i is not None)
         oid = _int(obj.get("id"))
         if oid is not None and "title" in obj:
             books.add(oid)
@@ -221,6 +229,9 @@ def run_tools(blocks, seen_recipes, seen_books):
             collect_ids(res, seen_recipes, seen_books)
             out.append({"type": "tool_result", "tool_use_id": b.get("id"),
                         "content": json.dumps(res, ensure_ascii=False)})
+    for r in out:
+        if len(r["content"]) > MAX_TOOL_RESULT_CHARS:
+            r["content"] = r["content"][:MAX_TOOL_RESULT_CHARS] + TRUNCATED_NOTE
     return {"role": "user", "content": out}
 
 
@@ -234,6 +245,7 @@ def answer(messages):
     deadline = time.monotonic() + BUDGET_S
 
     def done(text, items=(), dropped=0):
+        text = text.strip() or (FOUND if items else NOTHING)  # an empty answer would leave the browser's thread stuck
         st["status"] = "ok"
         app.logger.info("Ask: %d rounds, %d/%d tokens, %d items, %d ids dropped", st["rounds"],
                         st["input_tokens"], st["output_tokens"], len(items), dropped)
@@ -244,43 +256,49 @@ def answer(messages):
         (app.logger.exception if exc else app.logger.warning)("Ask failed (%s): " + msg, status, *args)
         return 502, {"error": UNAVAILABLE}
 
-    for rnd in range(1, MAX_ROUNDS + 1):
-        last = rnd == MAX_ROUNDS
-        body = {"model": SEARCH_MODEL, "max_tokens": MAX_TOKENS, "system": SYSTEM, "tools": tools,
-                "tool_choice": {"type": "tool", "name": "show_results"} if last else {"type": "auto"},
-                "messages": messages}
-        try:
-            data = call_model(body, deadline)
-        except (AskTimeout, TimeoutError):
-            return fail("timeout", "no answer within the time limit (round %d)", rnd)
-        except extras.ClaudeAPIError as e:
-            return fail("api_error", "Claude API %s: %s", e.status, e.detail)
-        except urllib.error.URLError as e:
-            if isinstance(e.reason, TimeoutError):
-                return fail("timeout", "%s", e.reason)
-            return fail("api_error", "%s", e.reason)
-        except (OSError, ValueError, http.client.HTTPException):  # dropped or truncated, or not JSON
-            return fail("api_error", "bad response", exc=True)
-        if not isinstance(data, dict):
-            return fail("api_error", "response is not a JSON object: %s", type(data).__name__)
-        st["rounds"] = rnd
-        usage = data.get("usage") or {}
-        st["input_tokens"] += _int(usage.get("input_tokens")) or 0
-        st["output_tokens"] += _int(usage.get("output_tokens")) or 0
-        blocks = [b for b in data.get("content") or [] if isinstance(b, dict)]
-        text = "".join(b.get("text") or "" for b in blocks if b.get("type") == "text").strip()
-        calls = [b for b in blocks if b.get("type") == "tool_use"]
-        show = next((b for b in calls if b.get("name") == SHOW_RESULTS["name"]), None)
-        if show:  # other tools in the same response are ignored: their results were never seen
-            args = show.get("input") if isinstance(show.get("input"), dict) else {}
-            ans = args.get("answer") if isinstance(args.get("answer"), str) else ""
-            items, dropped = hydrate(args.get("recipe_ids"), args.get("book_ids"), seen_recipes, seen_books)
-            return done(ans.strip() or text, items, dropped)
-        if not calls or last:
-            return done(text)
-        messages.append({"role": "assistant", "content": data["content"]})
-        messages.append(run_tools(calls, seen_recipes, seen_books))
-    return done("")  # not reached: the last round always returns
+    def rounds():
+        for rnd in range(1, MAX_ROUNDS + 1):
+            last = rnd == MAX_ROUNDS or st["input_tokens"] > INPUT_TOKEN_CEILING
+            body = {"model": SEARCH_MODEL, "max_tokens": MAX_TOKENS, "system": SYSTEM, "tools": tools,
+                    "tool_choice": {"type": "tool", "name": "show_results"} if last else {"type": "auto"},
+                    "messages": messages}
+            try:
+                data = call_model(body, deadline)
+            except (AskTimeout, TimeoutError):
+                return fail("timeout", "no answer within the time limit (round %d)", rnd)
+            except extras.ClaudeAPIError as e:
+                return fail("api_error", "Claude API %s: %s", e.status, e.detail)
+            except urllib.error.URLError as e:
+                if isinstance(e.reason, TimeoutError):
+                    return fail("timeout", "%s", e.reason)
+                return fail("api_error", "%s", e.reason)
+            except (OSError, ValueError, http.client.HTTPException):  # dropped or truncated, or not JSON
+                return fail("api_error", "bad response", exc=True)
+            if not isinstance(data, dict):
+                return fail("api_error", "response is not a JSON object: %s", type(data).__name__)
+            st["rounds"] = rnd
+            usage = data.get("usage") or {}
+            st["input_tokens"] += _int(usage.get("input_tokens")) or 0
+            st["output_tokens"] += _int(usage.get("output_tokens")) or 0
+            blocks = [b for b in data.get("content") or [] if isinstance(b, dict)]
+            text = "".join(b.get("text") or "" for b in blocks if b.get("type") == "text").strip()
+            calls = [b for b in blocks if b.get("type") == "tool_use"]
+            show = next((b for b in calls if b.get("name") == SHOW_RESULTS["name"]), None)
+            if show:  # other tools in the same response are ignored: their results were never seen
+                args = show.get("input") if isinstance(show.get("input"), dict) else {}
+                ans = args.get("answer") if isinstance(args.get("answer"), str) else ""
+                items, dropped = hydrate(args.get("recipe_ids"), args.get("book_ids"), seen_recipes, seen_books)
+                return done(ans.strip() or text, items, dropped)
+            if not calls or last:
+                return done(text)
+            messages.append({"role": "assistant", "content": data["content"]})
+            messages.append(run_tools(calls, seen_recipes, seen_books))
+        return done("")  # not reached: the last round always returns
+
+    try:
+        return rounds()
+    except Exception:  # a bug, or a response in a shape nobody expected: JSON 502 and a log row, not an HTML 500
+        return fail("error", "unexpected error", exc=True)
 
 
 @app.post("/admin/api/ask")

@@ -1516,7 +1516,7 @@ def handle_rpc(msg, private):
             res, err_text = run_tool(name, args, private)
         except UnknownTool:
             return rpc_error(mid, -32602, f"Unknown tool: {name}")
-        if err_text:
+        if err_text is not None:
             return rpc_result(mid, {"content": [{"type": "text", "text": err_text}], "isError": True})
         return rpc_result(mid, {"content": [{"type": "text", "text": json.dumps(res, ensure_ascii=False)}],
                                 "structuredContent": res})

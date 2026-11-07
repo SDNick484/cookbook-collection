@@ -182,7 +182,11 @@ async function homeView() {
         <div class="meta"><div class="ttl">${esc(b.title)}</div><div class="by">${esc(byline(b))}</div>
         ${ADMIN && b.rating != null ? starsHTML(b.rating) : ""}</div></a>`).join("")
       : (rc.count ? "" : `<div class="empty">Nothing matches.${ADMIN && S.features && S.features.ask && S.q ? ` <a id="ask-instead" href="#/ask">Ask instead →</a>` : ""}</div>`);
-    if ($("#ask-instead")) $("#ask-instead").onclick = () => { S.askDraft = S.q; };
+    // A keyword search is a new topic: start a fresh thread, unless a question is still being answered.
+    if ($("#ask-instead")) $("#ask-instead").onclick = () => {
+      if (!S.askBusy) { S.askThread = []; S.askLeft = ASK_MAX; S.askErr = ""; }
+      S.askDraft = S.q;
+    };
   };
   $("#q").addEventListener("input", debounce((e) => { S.q = e.target.value; load(); }, 220));
   for (const k of ["cuisine", "tag", "sort"]) $("#" + k).onchange = (e) => { S[k] = e.target.value; load(); };
@@ -356,25 +360,29 @@ function askView() {
   const full = answered >= ASK_MAX || S.askLeft === 0;
   view.innerHTML = `<h1 style="margin-top:18px">Ask</h1>
     <p class="small muted" style="margin-top:0">Describe what you want in your own words. Answers come from your cookbook index.</p>
-    <div id="ask-thread">${T.map((t) => `<div class="ask-q">${esc(t.q)}</div>` + (t.a != null
-      ? `<div class="ask-a"><p class="txt">${esc(t.a)}</p><div class="ask-items">${askItemsHTML(t.items || [])}</div></div>` : "")).join("")}
+    <div id="ask-thread">${T.map((t, n) => `<div class="ask-q">${esc(t.q)}</div>` + (t.a != null
+      ? `<div class="ask-a" data-turn="${n}"><p class="txt">${esc(t.a)}</p><div class="ask-items">${askItemsHTML(t.items || [])}</div></div>` : "")).join("")}
       ${last && last.a == null && S.askBusy ? `<div class="ask-a muted">Thinking…</div>` : ""}
       ${last && last.a == null && S.askErr ? `<div class="ask-err">${esc(S.askErr)} <button id="ask-retry">Retry</button></div>` : ""}</div>
     <form id="ask-form"><input id="ask-q" type="text" enterkeyhint="search" maxlength="500" autocomplete="off"
         placeholder="${full ? "Start a new question to keep going" : T.length ? "Ask a follow-up" : "What are you in the mood for?"}"
         ${full || S.askBusy ? "disabled" : ""}>
-      ${T.length ? `<button type="button" id="ask-new">New question</button>` : ""}</form>`;
+      ${T.length && !S.askBusy ? `<button type="button" id="ask-new">New question</button>` : ""}</form>`;
   const inp = $("#ask-q");
-  inp.value = S.askDraft; S.askDraft = "";
+  inp.value = S.askDraft;
+  if (!inp.disabled) S.askDraft = "";  // a draft that arrives while the input is disabled waits for the next render
   if (!inp.disabled && !/Mobi|Android/.test(navigator.userAgent)) inp.focus();
   if (T.length) $("#ask-form").scrollIntoView({ block: "end" });
   const send = async () => {
+    const t = S.askThread[S.askThread.length - 1];
+    if (!t) return;
     S.askBusy = true; S.askErr = "";
     askView();
     try {
       const r = await api("ask", { method: "POST", body: { thread: askWire() } });
-      const t = S.askThread[S.askThread.length - 1];
-      t.a = r.answer || ""; t.items = r.items || []; S.askLeft = r.turns_left;
+      t.items = r.items || []; S.askLeft = r.turns_left;
+      // Never store an empty answer: askWire would send it back as {a: ""} and the server refuses the thread.
+      t.a = (r.answer || "").trim() || (t.items.length ? "Here's what I found." : "I couldn't find anything for that.");
     } catch (e) { S.askErr = e.message; }
     S.askBusy = false;
     if ($("#ask-form")) askView();  // skip if the user navigated away meanwhile
@@ -387,11 +395,14 @@ function askView() {
     if (last && last.a == null) last.q = q; else S.askThread.push({ q });
     send();
   };
-  if ($("#ask-new")) $("#ask-new").onclick = () => { S.askThread = []; S.askLeft = ASK_MAX; S.askErr = ""; S.askDraft = ""; askView(); };
+  if ($("#ask-new")) $("#ask-new").onclick = () => {
+    S.askThread = []; S.askLeft = ASK_MAX; S.askErr = ""; S.askDraft = inp.value; askView();
+  };
   if ($("#ask-retry")) $("#ask-retry").onclick = send;
-  $$(".ask-items li[data-id]").forEach((li) => {
-    const t = T.find((x) => (x.items || []).some((i) => i.kind === "recipe" && i.id === +li.dataset.id));
-    const r = t && t.items.find((i) => i.kind === "recipe" && i.id === +li.dataset.id);
+  // Each answer binds its own rows: the same recipe can appear in several turns, each with its own star state.
+  $$(".ask-a[data-turn] li[data-id]").forEach((li) => {
+    const t = T[+li.closest(".ask-a").dataset.turn];
+    const r = t && (t.items || []).find((i) => i.kind === "recipe" && i.id === +li.dataset.id);
     if (r) $(".want", li).onclick = () => busy($(".want", li), async () => {
       await api("recipes/" + r.id, { method: "PUT", body: { want_to_try: !r.want_to_try } });
       r.want_to_try = !r.want_to_try; const b2 = $(".want", li);

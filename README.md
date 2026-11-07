@@ -166,9 +166,9 @@ Setup:
 | `ANTHROPIC_SEARCH_MODEL` | `claude-haiku-5-5` | Model for Ask |
 | `ASK_DAILY_LIMIT` | `200` | Questions per day across all editors; further ones get a 429 until local midnight |
 
-- Cost: typically about $0.003 per question; worst case (5 tool rounds) under $0.01. At the default cap that is at most a couple of dollars a day.
+- Cost: typically about $0.003 per question. Each question is bounded in tokens: each tool result sent to the model is capped at 12,000 characters, and once a question has used 40,000 input tokens the next round must give its answer, so input stays near 40,000 tokens plus that one final round (at most 5 rounds), and output is at most 2,048 tokens per round. Set a monthly spend limit on the key in the Anthropic Console; that is the hard cap.
 - Limits: 5 questions per thread, 500 characters per question, 60 seconds per question.
-- Data sent to the Anthropic API: the thread's questions and the catalog search results the model asks for. These include editor-only data (ratings, cooking history, web recipes), as the private MCP does. Photos are never sent.
+- Data sent to the Anthropic API: the thread's questions and earlier answers, plus the catalog search results the model asks for. These include editor-only data (ratings, cooking history, web recipes), as the private MCP does. Photos are never sent.
 - Stored locally: only a log row per question (`ask_log`: time, editor, rounds, token counts, status). The question text is not stored.
 
 ## Backups and alerts

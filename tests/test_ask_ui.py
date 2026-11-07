@@ -71,13 +71,16 @@ def ok(book, turns_left=4):
 
 
 def test_ask_flow(browser, server, book):
-    page, sent = make_page(browser, server, [ok(book)], viewport={"width": 360, "height": 740})
-    # Ask lives at the top of More: at 360 px the editor nav already wraps, so it has no room for another entry.
+    page, sent = make_page(browser, server, [ok(book), ok(book)], viewport={"width": 360, "height": 740})
+    puts = []
+
+    def put(route, request):
+        puts.append(request.post_data_json)
+        route.fulfill(status=200, content_type="application/json", body="{}")
+    page.route("**/admin/api/recipes/1", put)
+    # Ask lives at the top of More, not in the nav (which may already wrap at 360 px, depending on fonts).
     page.goto(f"{server}/admin#/more")
     page.locator("#nav a").first.wait_for()
-    nav_h = page.evaluate("document.querySelector('#nav').getBoundingClientRect().height")
-    a_h = page.evaluate("document.querySelector('#nav a').getBoundingClientRect().height")
-    assert nav_h > 1.5 * a_h
     assert page.locator("#nav a", has_text="Ask").count() == 0
     page.locator("#view .panel").first.locator("a", has_text="Ask").click()
     page.fill("#ask-q", "something with stew")
@@ -91,19 +94,36 @@ def test_ask_flow(browser, server, book):
     assert row.locator("button.want").count() == 1
     assert page.locator(".grp", has_text="Ask UI Book").count() == 1
     assert sent == [{"thread": [{"q": "something with stew"}]}]
-    # "Ask instead" from an empty keyword search prefills the input without sending.
+    # The same recipe in a follow-up: each row's star toggles its own turn's item.
+    page.fill("#ask-q", "more stew")
+    page.press("#ask-q", "Enter")
+    page.locator(".ask-a").nth(1).wait_for()
+    second = page.locator('.ask-a[data-turn="1"] li[data-id="1"] button.want')
+    second.click()
+    page.locator('.ask-a[data-turn="1"] li[data-id="1"] button.want.on').wait_for()
+    assert puts == [{"want_to_try": True}]
+    assert page.locator('.ask-a[data-turn="0"] li[data-id="1"] button.want.on').count() == 0
+    second.click()
+    page.locator('.ask-a[data-turn="1"] li[data-id="1"] button.want:not(.on)').wait_for()
+    assert puts == [{"want_to_try": True}, {"want_to_try": False}]
+    # "Ask instead" from an empty keyword search starts a fresh thread and prefills the input without sending.
     page.goto(f"{server}/admin#/?q=zzzqqxnomatch")
     page.locator("a", has_text="Ask instead").click()
     page.locator("#ask-q").wait_for()
     assert page.input_value("#ask-q") == "zzzqqxnomatch"
-    assert len(sent) == 1
+    assert page.locator(".ask-q").count() == 0
+    assert len(sent) == 2
+    page.press("#ask-q", "Enter")
+    page.locator('li[data-id="1"]').wait_for()
+    assert sent[2] == {"thread": [{"q": "zzzqqxnomatch"}]}
     page.close()
 
 
 def test_ask_error_retry_and_retyped_question(browser, server, book):
     page, sent = make_page(
         browser, server,
-        [(502, {"error": "Search is unavailable."}), (502, {"error": "Search is unavailable."}), ok(book, turns_left=0)])
+        [(502, {"error": "Search is unavailable."}), (502, {"error": "Search is unavailable."}), ok(book, turns_left=0),
+         ok(book)])
     page.goto(f"{server}/admin#/ask")
     page.fill("#ask-q", "stew")
     page.press("#ask-q", "Enter")
@@ -120,4 +140,11 @@ def test_ask_error_retry_and_retyped_question(browser, server, book):
     assert page.locator("#ask-q").is_disabled()  # turns_left 0: start a new question
     page.click("#ask-new")
     assert page.locator(".ask-q").count() == 0
+    # New question keeps what was typed; it is hidden while a question is being answered.
+    page.fill("#ask-q", "keep this")
+    page.press("#ask-q", "Enter")
+    page.locator('li[data-id="1"]').wait_for()
+    page.fill("#ask-q", "draft text")
+    page.click("#ask-new")
+    assert page.input_value("#ask-q") == "draft text" and page.locator(".ask-q").count() == 0
     page.close()

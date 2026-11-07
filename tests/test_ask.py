@@ -468,3 +468,75 @@ def test_question_text_not_stored(c, model):
     assert c.post("/admin/api/ask", json={"thread": [{"q": q}]}).status_code == 200
     for row in ask_rows():
         assert all(q not in str(v) for v in tuple(row))
+
+
+def test_huge_tool_result_truncated(c, model, monkeypatch):
+    def huge(a, private):
+        return {"blob": "x" * 50000}
+    monkeypatch.setattr(X, "TOOLS", X.TOOLS + [("huge", False, huge, "Big.", {"type": "object", "properties": {}})])
+    fake = model(resp(tool_use("huge", {}), tool_use("list_categories", {}, "tu2")), show())
+    assert c.post("/admin/api/ask", json=OK).status_code == 200
+    big, small = fake.bodies[1]["messages"][-1]["content"]
+    assert len(big["content"]) == ask.MAX_TOOL_RESULT_CHARS + len(ask.TRUNCATED_NOTE)
+    assert big["content"].endswith(ask.TRUNCATED_NOTE) and "narrow the search" in big["content"]
+    assert not small["content"].endswith(ask.TRUNCATED_NOTE)
+    json.loads(small["content"])  # small results are sent whole
+
+
+def test_input_token_ceiling_forces_finish(c, model):
+    lc = tool_use("list_categories", {})
+    fake = model(resp(lc, usage=(ask.INPUT_TOKEN_CEILING + 1, 10)), show("Done."))
+    r = c.post("/admin/api/ask", json=OK)
+    assert r.status_code == 200 and r.get_json()["answer"] == "Done."
+    assert [b["tool_choice"] for b in fake.bodies] == [{"type": "auto"}, {"type": "tool", "name": "show_results"}]
+    # under the ceiling the next round stays free to search
+    fake = model(resp(lc, usage=(ask.INPUT_TOKEN_CEILING, 10)), show())
+    assert c.post("/admin/api/ask", json=OK).status_code == 200
+    assert fake.bodies[1]["tool_choice"] == {"type": "auto"}
+
+
+def test_empty_answer_falls_back(c, model):
+    bid = db_one("SELECT id FROM books WHERE title='Franklin BBQ'")[0]
+    model(resp(tool_use("search_books", {"query": "Franklin"})), show("  ", book_ids=[bid]))
+    out = c.post("/admin/api/ask", json=OK).get_json()
+    assert out["answer"] == "Here's what I found." and [i["id"] for i in out["items"]] == [bid]
+    model(show(""))
+    assert c.post("/admin/api/ask", json=OK).get_json()["answer"] == "I couldn't find anything for that."
+    model({"content": [], "stop_reason": "end_turn"})
+    r = c.post("/admin/api/ask", json=OK)
+    assert r.status_code == 200
+    assert r.get_json() == {"answer": "I couldn't find anything for that.", "items": [], "turns_left": 4}
+
+
+def test_unexpected_error_is_json_502(c, model):
+    model({"content": 5, "usage": {"input_tokens": 1, "output_tokens": 1}})
+    r = c.post("/admin/api/ask", json=OK)
+    assert r.status_code == 502 and r.get_json() == GENERIC
+    assert ask_rows()[-1]["status"] == "error"
+
+
+def test_book_ids_seen_without_title(c, model):
+    bid = db_one("SELECT id FROM books WHERE title='Franklin BBQ'")[0]
+
+    def finish(body):
+        books = results(body)[0]["books"]
+        assert [x["id"] for x in books] == [bid] and "title" not in books[0]
+        return show(book_ids=[bid])
+    model(resp(tool_use("search_books", {"query": "Franklin", "fields": ["year"]})), finish)
+    items = c.post("/admin/api/ask", json=OK).get_json()["items"]
+    assert [(i["kind"], i["id"]) for i in items] == [("book", bid)]
+
+
+def test_collect_ids_books_without_title():
+    r, b = set(), set()
+    ask.collect_ids({"count": 2, "books": [{"id": 11}, {"id": 12, "year": 2001}, "x", {"id": "13"}]}, r, b)
+    assert (r, b) == (set(), {11, 12})
+
+
+def test_rpc_empty_tool_error_unchanged(monkeypatch):
+    monkeypatch.setattr(X, "run_tool", lambda name, args, private: (None, ""))
+    with A.app.test_request_context():
+        out = X.handle_rpc({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                            "params": {"name": "search_books", "arguments": {}}}, True)
+    res = out["result"]
+    assert res["isError"] is True and res["content"] == [{"type": "text", "text": ""}]

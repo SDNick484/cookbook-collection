@@ -5,7 +5,7 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const view = $("#view");
-const S = { facets: null, q: "", cuisine: "", tag: "", author: "", publisher: "", ingredient: "", sort: "author", editor: ADMIN, ingredients: null };
+const S = { facets: null, q: "", cuisine: "", tag: "", author: "", publisher: "", ingredient: "", sort: "author", editor: ADMIN, ingredients: null, askThread: [], askDraft: "", askLeft: 5 };
 
 async function api(path, opts = {}) {
   const o = { headers: {}, ...opts };
@@ -67,6 +67,7 @@ async function route() {
     if (path === "try" && ADMIN) return await tryView();
     if (path === "review" && ADMIN) return await reviewView();
     if (path === "more" && ADMIN) return await moreView();
+    if (path === "ask" && ADMIN) return askView();
     if (path === "cook" && ADMIN) return await cookView();
     if (path === "stats" && ADMIN) return await statsView();
     if (path === "eyb" && ADMIN) return await eybView();
@@ -180,7 +181,8 @@ async function homeView() {
       <a class="card" href="#/book/${b.id}">${coverHTML(b)}
         <div class="meta"><div class="ttl">${esc(b.title)}</div><div class="by">${esc(byline(b))}</div>
         ${ADMIN && b.rating != null ? starsHTML(b.rating) : ""}</div></a>`).join("")
-      : (rc.count ? "" : `<div class="empty">Nothing matches.</div>`);
+      : (rc.count ? "" : `<div class="empty">Nothing matches.${ADMIN && S.features && S.features.ask && S.q ? ` <a id="ask-instead" href="#/ask">Ask instead →</a>` : ""}</div>`);
+    if ($("#ask-instead")) $("#ask-instead").onclick = () => { S.askDraft = S.q; };
   };
   $("#q").addEventListener("input", debounce((e) => { S.q = e.target.value; load(); }, 220));
   for (const k of ["cuisine", "tag", "sort"]) $("#" + k).onchange = (e) => { S[k] = e.target.value; load(); };
@@ -327,6 +329,72 @@ async function bookView(id) {
     });
     $(".edit", li).onclick = () => recipeDialog(r, id, () => bookView(id));
     $(".pho", li).onclick = () => photoDialog(r, () => bookView(id));
+  });
+}
+
+/* ---------- ask (natural-language search) ---------- */
+// The thread lives in S.askThread only (JS memory): [{q, a?, items?}]. Reloading starts fresh.
+const ASK_MAX = 5;
+const askWire = () => S.askThread.flatMap((t) => [{ q: t.q }].concat(t.a != null ? [{ a: t.a }] : []));
+function askItemsHTML(items) {
+  const recipes = items.filter((i) => i.kind === "recipe"), books = items.filter((i) => i.kind === "book");
+  let last = null;
+  const rows = recipes.map((r) => {
+    S.bookTitle = r.book_title; S.bookPhotos = [];  // recipeRow reads these for the Dinner Log link
+    const head = r.book_id !== last ? `<li class="grp"><a href="#/book/${r.book_id}">${esc(r.book_title)}</a></li>` : "";
+    last = r.book_id;
+    return head + recipeRow(r);
+  }).join("");
+  return (rows ? `<ul class="rlist">${rows}</ul>` : "")
+    + (books.length ? `<div class="ask-books">${books.map((b) => `<a class="ask-book" href="#/book/${b.id}">${coverHTML(b)}
+      <div><div class="ttl">${esc(b.title)}</div><div class="by">${esc(byline(b))}</div></div></a>`).join("")}</div>` : "");
+}
+function askView() {
+  const T = S.askThread;
+  const last = T[T.length - 1];
+  const answered = T.filter((t) => t.a != null).length;
+  const full = answered >= ASK_MAX || S.askLeft === 0;
+  view.innerHTML = `<h1 style="margin-top:18px">Ask</h1>
+    <p class="small muted" style="margin-top:0">Describe what you want in your own words. Answers come from your cookbook index.</p>
+    <div id="ask-thread">${T.map((t) => `<div class="ask-q">${esc(t.q)}</div>` + (t.a != null
+      ? `<div class="ask-a"><p class="txt">${esc(t.a)}</p><div class="ask-items">${askItemsHTML(t.items || [])}</div></div>` : "")).join("")}
+      ${last && last.a == null && S.askBusy ? `<div class="ask-a muted">Thinking…</div>` : ""}
+      ${last && last.a == null && S.askErr ? `<div class="ask-err">${esc(S.askErr)} <button id="ask-retry">Retry</button></div>` : ""}</div>
+    <form id="ask-form"><input id="ask-q" type="text" enterkeyhint="search" maxlength="500" autocomplete="off"
+        placeholder="${full ? "Start a new question to keep going" : T.length ? "Ask a follow-up" : "What are you in the mood for?"}"
+        ${full || S.askBusy ? "disabled" : ""}>
+      ${T.length ? `<button type="button" id="ask-new">New question</button>` : ""}</form>`;
+  const inp = $("#ask-q");
+  inp.value = S.askDraft; S.askDraft = "";
+  if (!inp.disabled && !/Mobi|Android/.test(navigator.userAgent)) inp.focus();
+  if (T.length) $("#ask-form").scrollIntoView({ block: "end" });
+  const send = async () => {
+    S.askBusy = true; S.askErr = "";
+    askView();
+    try {
+      const r = await api("ask", { method: "POST", body: { thread: askWire() } });
+      const t = S.askThread[S.askThread.length - 1];
+      t.a = r.answer || ""; t.items = r.items || []; S.askLeft = r.turns_left;
+    } catch (e) { S.askErr = e.message; }
+    S.askBusy = false;
+    if ($("#ask-form")) askView();  // skip if the user navigated away meanwhile
+  };
+  $("#ask-form").onsubmit = (e) => {
+    e.preventDefault();
+    const q = inp.value.trim();
+    if (!q || inp.disabled) return;
+    S.askThread.push({ q }); send();
+  };
+  if ($("#ask-new")) $("#ask-new").onclick = () => { S.askThread = []; S.askLeft = ASK_MAX; S.askErr = ""; S.askDraft = ""; askView(); };
+  if ($("#ask-retry")) $("#ask-retry").onclick = send;
+  $$(".ask-items li[data-id]").forEach((li) => {
+    const t = T.find((x) => (x.items || []).some((i) => i.kind === "recipe" && i.id === +li.dataset.id));
+    const r = t && t.items.find((i) => i.kind === "recipe" && i.id === +li.dataset.id);
+    if (r) $(".want", li).onclick = () => busy($(".want", li), async () => {
+      await api("recipes/" + r.id, { method: "PUT", body: { want_to_try: !r.want_to_try } });
+      r.want_to_try = !r.want_to_try; const b2 = $(".want", li);
+      b2.classList.toggle("on", !!r.want_to_try); b2.textContent = r.want_to_try ? "★" : "☆";
+    });
   });
 }
 
@@ -816,6 +884,9 @@ async function moreView() {
   let feat = {}; try { feat = await api("features"); } catch { /* ignore */ }
   const mcpUrl = `${location.origin}/mcp`;
   view.innerHTML = `<h1 style="margin-top:18px">More</h1>
+    ${feat.ask ? `<div class="panel"><h3>Ask</h3>
+      <p class="small muted" style="margin-top:0">Describe what you want to cook in your own words and get matching recipes and books.</p>
+      <a class="btn primary" href="#/ask">Ask about your cookbooks</a></div>` : ""}
     <div class="panel"><h3>Import from Eat Your Books</h3>
       <p class="small muted" style="margin-top:0">Bring in your EYB Bookshelf (ISBNs, formats) and indexed recipes, then fetch covers.</p>
       <a class="btn primary" href="#/eyb">Open importer</a></div>

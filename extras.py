@@ -1042,6 +1042,9 @@ MCP_INSTRUCTIONS = ("Search a home cookbook collection: books, and recipes index
                     "tomato paste, rice wine…) or 'chicken: only as \u201cchicken stock\u201d in the title' (a recipe for "
                     "the stock itself); when next_offset is present there are more results to fetch.")
 
+MCP_WEB_RECIPES = (" Some recipes come from recipe websites instead of a book: their book is the site (e.g. NYT Cooking) "
+                   "and they have a url instead of a page, so give the link.")  # private view only
+
 
 class ToolError(ValueError):
     """A tool error written for the model: shown as is, so it says what to change and never shows internals.
@@ -1497,9 +1500,7 @@ def handle_rpc(msg, private):
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": "cookbooks", "title": "Cookbook Collection", "version": "2.0"},
             "instructions": MCP_INSTRUCTIONS + (
-                " Some recipes come from recipe websites instead of a book: their book is the site (e.g. NYT Cooking) "
-                "and they have a url instead of a page, so give the link." if private
-                else " (Public view: no ratings or cooking history.)"),
+                MCP_WEB_RECIPES if private else " (Public view: no ratings or cooking history.)"),
         })
     if method == "ping":
         return rpc_result(mid, {})

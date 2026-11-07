@@ -1021,7 +1021,8 @@ def index_photo_job(job_id):
 @app.get("/admin/api/features")
 @editor_required
 def features():
-    return jsonify(photo_import=bool(ANTHROPIC_API_KEY), dinnerlog=bool(DINNERLOG_API_URL),
+    import ask  # local: ask imports extras
+    return jsonify(ask=ask.enabled(), photo_import=bool(ANTHROPIC_API_KEY), dinnerlog=bool(DINNERLOG_API_URL),
                    dinnerlog_url=DINNERLOG_URL or None, wishlist=wishlist_available(),
                    mcp_private=bool(MCP_TOKEN), mcp_public=MCP_PUBLIC)
 

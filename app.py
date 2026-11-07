@@ -143,12 +143,13 @@ def _init_db_locked():
     global HAS_FTS
     con = connect()
     con.executescript(SCHEMA)
-    import extras, eyb, ingredients, photos, online
+    import extras, eyb, ingredients, photos, online, ask
     online.migrate(con)
     extras.migrate(con)
     eyb.migrate(con)
     ingredients.migrate(con)
     photos.migrate(con)
+    ask.migrate(con)
     old = con.execute("SELECT sql FROM sqlite_master WHERE name='recipes_fts'").fetchone()
     if old and "content=" in old[0]:  # the old index read unfolded text straight from recipes; replace it
         con.executescript("DROP TRIGGER IF EXISTS recipes_ai; DROP TRIGGER IF EXISTS recipes_ad; "
@@ -1221,4 +1222,5 @@ else:
     import ingredients  # noqa: E402,F401 — ingredient tags
     import photos  # noqa: E402,F401 — photos of dishes cooked from the books
     import online  # noqa: E402,F401 — recipes from websites
+    import ask  # noqa: E402,F401 — AI search
     init_db()

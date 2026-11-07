@@ -153,6 +153,24 @@ Editors can attach photos of a dish to the recipe it came from.
 - Prefer the header. The app keeps the token out of its own access log (`/mcp/<redacted>`), but a token in the URL still shows up in Cloudflare's request logs and anywhere the URL is pasted. The token is `MCP_TOKEN` in `/etc/conf.d/cookbooks`; the installer no longer prints it.
 - `search_recipes` returns the best matches first, the `total`, and `next_offset` when there are more; each recipe's `match` is "title" when every word is in its title, or says per word where it came from: "chicken: title, leek: tag", "chicken: may be only chicken stock", or "chicken: only as “chicken stock” in the title". The server's instructions tell Claude that some books have no page numbers and that the recipe and book title are enough.
 
+## AI search (Ask)
+Editors can ask the catalog questions in plain language ("a weeknight lamb dish from a book we cook from a lot") at `/admin#/ask`. Claude searches the catalog through the same read-only tools as the private MCP (never the write tools) and lists real recipes and books, with names and pages taken from the database. An empty catalog search offers **Ask instead →**. Questions are editor-only; the public catalog shows nothing new. It is **off** until a key is set.
+
+Setup:
+1. Create an API key in the Anthropic Console, ideally in its own workspace with a monthly spend limit.
+2. Set `ANTHROPIC_SEARCH_KEY` in `/etc/conf.d/cookbooks` and restart (`rc-service cookbooks restart`). Without it, `ANTHROPIC_API_KEY` (photo import) is used if set.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ANTHROPIC_SEARCH_KEY` | empty, falls back to `ANTHROPIC_API_KEY` | API key for Ask |
+| `ANTHROPIC_SEARCH_MODEL` | `claude-haiku-5-5` | Model for Ask |
+| `ASK_DAILY_LIMIT` | `200` | Questions per day across all editors; further ones get a 429 until local midnight |
+
+- Cost: typically about $0.003 per question; worst case (5 tool rounds) under $0.01. At the default cap that is at most a couple of dollars a day.
+- Limits: 5 questions per thread, 500 characters per question, 60 seconds per question.
+- Data sent to the Anthropic API: the thread's questions and the catalog search results the model asks for. These include editor-only data (ratings, cooking history, web recipes), as the private MCP does. Photos are never sent.
+- Stored locally: only a log row per question (`ask_log`: time, editor, rounds, token counts, status). The question text is not stored.
+
 ## Backups and alerts
 The ops scripts cover Cookbook Collection and, if they're installed on the same server, Dinner Log and the wish list. Their settings live in `/etc/conf.d/app-ops`. Alerts name the server by `HOST_LABEL` (default: its hostname).
 

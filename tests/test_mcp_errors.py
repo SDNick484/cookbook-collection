@@ -165,3 +165,23 @@ def test_get_book_ambiguous_title_lists_matches_instead_of_guessing(c):
     msg = text(res)
     assert "Multiple books match 'cookbook'" in msg and "My First Cookbook" in msg and "book_id=" in msg
 
+
+
+def test_run_tool_success_and_errors(monkeypatch):
+    with A.app.app_context():  # tools reach the DB through flask.g
+        res, err = X.run_tool("list_categories", {}, True)
+        assert err is None and "cuisines" in res
+        res, err = X.run_tool("get_book", {}, True)
+        assert res is None and err == "book_id or title is required"
+
+    def boom(a, p): raise RuntimeError("SELECT secret FROM internals")
+    monkeypatch.setattr(X, "TOOLS", [("boom", False, boom, "d", X._S())])
+    res, err = X.run_tool("boom", {}, True)
+    assert res is None and "internal error (ref " in err and "secret" not in err
+
+
+def test_run_tool_unknown_and_private_only():
+    with pytest.raises(X.UnknownTool):
+        X.run_tool("nope", {}, True)
+    with pytest.raises(X.UnknownTool):
+        X.run_tool("cooking_stats", {}, False)

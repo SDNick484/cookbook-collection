@@ -1438,6 +1438,33 @@ def rpc_error(mid, code, msg):
     return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": msg}}
 
 
+class UnknownTool(LookupError):
+    """No tool by that name is available to this caller (including private-only tools when not private)."""
+
+
+def run_tool(name, args, private):
+    """Run one MCP tool: (result, None) on success, (None, error_text) for a ToolError or a bug (redacted).
+    Raises UnknownTool when no tool matches. Shared by handle_rpc and the Ask search."""
+    tool = next((t for t in TOOLS if t[0] == name and (private or not t[1])), None)
+    if not tool:
+        raise UnknownTool(name)
+    try:
+        check_args(tool[4], args)
+        res = tool[2](args, private)
+    except ToolError as e:  # written for the model: says what to change
+        return None, str(e)
+    except Exception:  # noqa: BLE001 — a bug: log it, and keep exception text (SQL, internals) from the model
+        ref = secrets.token_hex(4)
+        app.logger.exception("MCP tool %s failed (ref %s), arguments %s", name, ref,
+                             json.dumps(args, ensure_ascii=False)[:500])
+        return None, (f"{name} failed with an internal error (ref {ref}). The same call will fail again: "
+                      "try other arguments or another tool.")
+    if name in WRITE_TOOLS:  # what the assistant changed, for the owner to review
+        app.logger.info("MCP write %s %s -> %s", name, json.dumps(args, ensure_ascii=False)[:500],
+                        json.dumps(res, ensure_ascii=False)[:1000])
+    return res, None
+
+
 def handle_rpc(msg, private):
     if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0" or "method" not in msg:
         return rpc_error(msg.get("id") if isinstance(msg, dict) else None, -32600, "Invalid request")
@@ -1468,24 +1495,12 @@ def handle_rpc(msg, private):
             for n, priv_only, _, d, s in TOOLS if private or not priv_only]})
     if method == "tools/call":
         name, args = params.get("name"), params.get("arguments") or {}
-        tool = next((t for t in TOOLS if t[0] == name and (private or not t[1])), None)
-        if not tool:
-            return rpc_error(mid, -32602, f"Unknown tool: {name}")
-        err = lambda text: rpc_result(mid, {"content": [{"type": "text", "text": text}], "isError": True})
         try:
-            check_args(tool[4], args)
-            res = tool[2](args, private)
-        except ToolError as e:  # written for the model: says what to change
-            return err(str(e))
-        except Exception:  # noqa: BLE001 — a bug: log it, and keep exception text (SQL, internals) from the model
-            ref = secrets.token_hex(4)
-            app.logger.exception("MCP tool %s failed (ref %s), arguments %s", name, ref,
-                                 json.dumps(args, ensure_ascii=False)[:500])
-            return err(f"{name} failed with an internal error (ref {ref}). The same call will fail again: "
-                       "try other arguments or another tool.")
-        if name in WRITE_TOOLS:  # what the assistant changed, for the owner to review
-            app.logger.info("MCP write %s %s -> %s", name, json.dumps(args, ensure_ascii=False)[:500],
-                            json.dumps(res, ensure_ascii=False)[:1000])
+            res, err_text = run_tool(name, args, private)
+        except UnknownTool:
+            return rpc_error(mid, -32602, f"Unknown tool: {name}")
+        if err_text:
+            return rpc_result(mid, {"content": [{"type": "text", "text": err_text}], "isError": True})
         return rpc_result(mid, {"content": [{"type": "text", "text": json.dumps(res, ensure_ascii=False)}],
                                 "structuredContent": res})
     return rpc_error(mid, -32601, f"Method not found: {method}")

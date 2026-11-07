@@ -51,7 +51,11 @@ function renderNav(route) {
     : [["#/", "Catalog"], ["#/photos", "Photos"]].concat(S.editor ? [["/admin#/", "Edit"]] : [["/admin#/", "Sign in"]]);
   $("#nav").innerHTML = items.map(([h, t]) =>
     `<a href="${h}" class="${(h === "#/" ? route === "" : h.startsWith("#/") && route.startsWith(h.slice(2))) ? "on" : ""}">${t}</a>`).join("");
+  const slot = $("#ask-slot");
+  if (slot) slot.innerHTML = ADMIN && S.features && S.features.ask
+    ? `<a id="ask-top" href="#/ask" class="${route === "ask" ? "on" : ""}" title="Ask about your cookbooks">${CHAT_ICON}Ask</a>` : "";
 }
+const CHAT_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M5 4.5h14A1.5 1.5 0 0 1 20.5 6v9a1.5 1.5 0 0 1-1.5 1.5h-8.5L6 20v-3.5H5A1.5 1.5 0 0 1 3.5 15V6A1.5 1.5 0 0 1 5 4.5z"/></svg>`;
 async function route() {
   const hash = location.hash.replace(/^#\/?/, "");
   const [path, qs] = hash.split("?");
@@ -897,9 +901,6 @@ async function moreView() {
   let feat = {}; try { feat = await api("features"); } catch { /* ignore */ }
   const mcpUrl = `${location.origin}/mcp`;
   view.innerHTML = `<h1 style="margin-top:18px">More</h1>
-    ${feat.ask ? `<div class="panel"><h3>Ask</h3>
-      <p class="small muted" style="margin-top:0">Describe what you want to cook in your own words and get matching recipes and books.</p>
-      <a class="btn primary" href="#/ask">Ask about your cookbooks</a></div>` : ""}
     <div class="panel"><h3>Import from Eat Your Books</h3>
       <p class="small muted" style="margin-top:0">Bring in your EYB Bookshelf (ISBNs, formats) and indexed recipes, then fetch covers.</p>
       <a class="btn primary" href="#/eyb">Open importer</a></div>

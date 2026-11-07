@@ -78,11 +78,19 @@ def test_ask_flow(browser, server, book):
         puts.append(request.post_data_json)
         route.fulfill(status=200, content_type="application/json", body="{}")
     page.route("**/admin/api/recipes/1", put)
-    # Ask lives at the top of More, not in the nav (which may already wrap at 360 px, depending on fonts).
+    # Ask is a button on the header's brand row (not a nav tab, and no longer listed under More).
     page.goto(f"{server}/admin#/more")
-    page.locator("#nav a").first.wait_for()
+    page.locator("#view .panel").first.wait_for()
+    assert page.locator("#view a", has_text="Ask").count() == 0
     assert page.locator("#nav a", has_text="Ask").count() == 0
-    page.locator("#view .panel").first.locator("a", has_text="Ask").click()
+    btn = page.locator(".top-row #ask-top")
+    assert btn.is_visible()
+    # At phone width it shares the brand's row instead of adding a line.
+    brand_top = page.locator(".brand").bounding_box()["y"]
+    assert abs(btn.bounding_box()["y"] - brand_top) < 12
+    btn.click()
+    page.locator("#ask-q").wait_for()
+    assert "on" in (btn.get_attribute("class") or "")
     page.fill("#ask-q", "something with stew")
     page.press("#ask-q", "Enter")
     ans = page.locator(".ask-a .txt")
@@ -116,6 +124,16 @@ def test_ask_flow(browser, server, book):
     page.press("#ask-q", "Enter")
     page.locator('li[data-id="1"]').wait_for()
     assert sent[2] == {"thread": [{"q": "zzzqqxnomatch"}]}
+    page.close()
+
+
+def test_no_ask_button_when_off(browser, server):
+    page = browser.new_page(viewport={"width": 360, "height": 740})
+    page.route("**/admin/api/features", lambda r: r.fulfill(
+        status=200, content_type="application/json", body=json.dumps({"ask": False})))
+    page.goto(f"{server}/admin#/")
+    page.locator("#nav a").first.wait_for()
+    assert page.locator("#ask-top").count() == 0
     page.close()
 
 

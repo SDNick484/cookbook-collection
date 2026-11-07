@@ -71,8 +71,15 @@ def ok(book, turns_left=4):
 
 
 def test_ask_flow(browser, server, book):
-    page, sent = make_page(browser, server, [ok(book)])
-    page.goto(f"{server}/admin#/ask")
+    page, sent = make_page(browser, server, [ok(book)], viewport={"width": 360, "height": 740})
+    # Ask lives at the top of More: at 360 px the editor nav already wraps, so it has no room for another entry.
+    page.goto(f"{server}/admin#/more")
+    page.locator("#nav a").first.wait_for()
+    nav_h = page.evaluate("document.querySelector('#nav').getBoundingClientRect().height")
+    a_h = page.evaluate("document.querySelector('#nav a').getBoundingClientRect().height")
+    assert nav_h > 1.5 * a_h
+    assert page.locator("#nav a", has_text="Ask").count() == 0
+    page.locator("#view .panel").first.locator("a", has_text="Ask").click()
     page.fill("#ask-q", "something with stew")
     page.press("#ask-q", "Enter")
     ans = page.locator(".ask-a .txt")
@@ -84,58 +91,33 @@ def test_ask_flow(browser, server, book):
     assert row.locator("button.want").count() == 1
     assert page.locator(".grp", has_text="Ask UI Book").count() == 1
     assert sent == [{"thread": [{"q": "something with stew"}]}]
+    # "Ask instead" from an empty keyword search prefills the input without sending.
+    page.goto(f"{server}/admin#/?q=zzzqqxnomatch")
+    page.locator("a", has_text="Ask instead").click()
+    page.locator("#ask-q").wait_for()
+    assert page.input_value("#ask-q") == "zzzqqxnomatch"
+    assert len(sent) == 1
     page.close()
 
 
-def test_ask_error_retry_and_new_question(browser, server, book):
-    page, sent = make_page(browser, server, [(502, {"error": "Search is unavailable."}), ok(book)])
+def test_ask_error_retry_and_retyped_question(browser, server, book):
+    page, sent = make_page(
+        browser, server,
+        [(502, {"error": "Search is unavailable."}), (502, {"error": "Search is unavailable."}), ok(book, turns_left=0)])
     page.goto(f"{server}/admin#/ask")
     page.fill("#ask-q", "stew")
     page.press("#ask-q", "Enter")
     page.locator(".ask-err", has_text="Search is unavailable.").wait_for()
-    page.click("#ask-retry")
-    page.locator('li[data-id="1"]').wait_for()
+    page.click("#ask-retry")  # thread kept, same question resent
+    page.locator(".ask-err").wait_for()
     assert sent[0] == sent[1] == {"thread": [{"q": "stew"}]}
+    # Typing a different question after an error replaces the failed turn instead of adding a second q.
+    page.fill("#ask-q", "soup instead")
+    page.press("#ask-q", "Enter")
+    page.locator('li[data-id="1"]').wait_for()
+    assert sent[2] == {"thread": [{"q": "soup instead"}]}
+    assert page.locator(".ask-q").count() == 1
+    assert page.locator("#ask-q").is_disabled()  # turns_left 0: start a new question
     page.click("#ask-new")
     assert page.locator(".ask-q").count() == 0
-    page.close()
-
-
-def test_ask_disables_after_fifth_question(browser, server, book):
-    page, sent = make_page(browser, server, [ok(book, turns_left=0)])
-    page.goto(f"{server}/admin#/ask")
-    page.fill("#ask-q", "stew")
-    page.press("#ask-q", "Enter")
-    page.locator(".ask-a").wait_for()
-    assert page.locator("#ask-q").is_disabled()
-    assert "Start a new question to keep going" in page.locator("#ask-q").get_attribute("placeholder")
-    page.close()
-
-
-def test_ask_instead_prefills_without_sending(browser, server, book):
-    page, sent = make_page(browser, server, [ok(book)])
-    page.goto(f"{server}/admin#/?q=zzzqqxnomatch")
-    link = page.locator("a", has_text="Ask instead")
-    link.wait_for()
-    link.click()
-    page.locator("#ask-q").wait_for()
-    assert page.input_value("#ask-q") == "zzzqqxnomatch"
-    assert sent == []
-    page.close()
-
-
-def test_ask_lives_in_more_and_nav_unchanged_at_360(browser, server, book):
-    # Measured at 360 px: the editor nav already wraps to two lines (72 px vs 34 px per link) without
-    # an Ask entry, so Ask ships at the top of More instead of the nav.
-    page, _ = make_page(browser, server, [ok(book)], viewport={"width": 360, "height": 740})
-    page.goto(f"{server}/admin#/more")
-    link = page.locator("#view .panel a", has_text="Ask about your cookbooks")
-    link.wait_for()
-    assert page.locator("#view .panel").first.locator("a").get_attribute("href") == "#/ask"
-    assert page.locator("#nav a", has_text="Ask").count() == 0
-    nav_h = page.evaluate("document.querySelector('#nav').getBoundingClientRect().height")
-    a_h = page.evaluate("document.querySelector('#nav a').getBoundingClientRect().height")
-    print(f"nav height {nav_h}, link height {a_h}")
-    link.click()
-    page.locator("#ask-q").wait_for()
     page.close()

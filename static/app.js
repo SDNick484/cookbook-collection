@@ -383,7 +383,9 @@ function askView() {
     e.preventDefault();
     const q = inp.value.trim();
     if (!q || inp.disabled) return;
-    S.askThread.push({ q }); send();
+    // After a failed send the last turn has no answer yet: the new wording replaces it, so the thread never has two q in a row.
+    if (last && last.a == null) last.q = q; else S.askThread.push({ q });
+    send();
   };
   if ($("#ask-new")) $("#ask-new").onclick = () => { S.askThread = []; S.askLeft = ASK_MAX; S.askErr = ""; S.askDraft = ""; askView(); };
   if ($("#ask-retry")) $("#ask-retry").onclick = send;

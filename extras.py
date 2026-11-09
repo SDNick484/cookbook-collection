@@ -886,12 +886,24 @@ def call_claude(image_jpeg, media_type="image/jpeg", effort=None):
     return text, data.get("stop_reason")
 
 
+_ODD_PAGE_RE = re.compile(rf"^{core.ODD_PAGE}$")
+
+
 def _photo_row(heading, name, page):
     name, page = clean(str(name or "")), clean(str(page or ""))
-    if not name or not page or not re.search(r"\d", page):
+    if not name or not page:
         return None
-    page = re.sub(r"\s*[-—]\s*", "–", re.sub(r"\s*,\s*", ", ", page))
-    return {"heading": clean(str(heading or "")) or None, "name": name, "page": page}
+    page = re.sub(rf"^{core.PAGE_PREFIX}", "", page)  # "p. 42" -> "42"
+    row = {"heading": clean(str(heading or "")) or None, "name": name, "page": page}
+    if not re.search(r"\d", page):
+        if not _ODD_PAGE_RE.match(page):
+            return None
+        row["warn"] = "page"  # a roman numeral: kept for the review, flagged
+        return row
+    row["page"] = re.sub(r"\s*[-—]\s*", "–", re.sub(r"\s*,\s*", ", ", page))
+    if _ODD_PAGE_RE.match(page):
+        row["warn"] = "page"  # "12a"
+    return row
 
 
 def parse_claude_rows(text, truncated=False):

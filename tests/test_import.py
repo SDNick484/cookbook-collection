@@ -637,3 +637,95 @@ def test_a_symlink_in_the_photos_folder_is_not_followed(new_catalog, tmp_path_fa
     rep = importer.import_data(con, _book_with_files(), photos_dir=src)
     assert not (photos.PHOTO_DIR / PHOTO_OK).exists() and rep.files["copied"] == 0
     con.close()
+
+
+# ------------------------------------------------------------------ python3 -m importer
+def _cli(args, data_dir, **kw):
+    """Run the real command line against a data folder, as the installer's copy of the app would."""
+    import os, subprocess, sys
+    from pathlib import Path
+    env = {k: v for k, v in os.environ.items() if k != "SKIP_SEED"}  # the CLI must set that itself
+    env["DATA_DIR"] = str(data_dir)
+    return subprocess.run([sys.executable, "-m", "importer", *map(str, args)], cwd=Path(A.__file__).parent, env=env,
+                          capture_output=True, text=True, timeout=120, **kw)
+
+
+def _db_counts(data_dir):
+    import sqlite3
+    con = sqlite3.connect(data_dir / "cookbooks.db")
+    try:
+        return tuple(con.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in ("books", "recipes"))
+    finally:
+        con.close()
+
+
+@pytest.fixture()
+def export_file(client, tmp_path):
+    import json
+    decorate_catalog()
+    data = export(client)
+    f = tmp_path / "export.json"
+    f.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return f, data
+
+
+def test_cli_imports_into_an_empty_data_folder_without_loading_the_seed(export_file, tmp_path):
+    f, data = export_file
+    target = tmp_path / "data"
+    r = _cli([f], target)
+    assert r.returncode == 0, r.stderr
+    # seed.json has 153 books with uids of their own: had it been loaded first, they'd be here as well
+    assert _db_counts(target) == (len(data["books"]), sum(len(b["recipes"]) for b in data["books"]))
+    assert "Books" in r.stdout and f"{len(data['books'])} inserted" in r.stdout
+    again = _cli([f], target)                               # a second run finds everything already there
+    assert again.returncode == 0 and "0 inserted, 0 updated" in again.stdout
+
+
+def test_cli_dry_run_prints_the_plan_and_changes_nothing(export_file, tmp_path):
+    import json
+    f, data = export_file
+    target = tmp_path / "data"
+    assert _cli([f], target).returncode == 0
+    before = _db_counts(target)
+    smaller = tmp_path / "smaller.json"
+    smaller.write_text(json.dumps({**data, "books": data["books"][:5]}))
+    r = _cli([smaller, "--replace", "--dry-run"], target)
+    assert r.returncode == 0, r.stderr
+    assert "Dry run" in r.stdout and "would be deleted" in r.stdout
+    assert f"{len(data['books']) - 5} book(s)" in r.stdout
+    assert _db_counts(target) == before
+
+
+def test_cli_refuses_what_it_cannot_import(export_file, tmp_path):
+    import json
+    f, data = export_file
+    target = tmp_path / "data"
+    newer = tmp_path / "newer.json"
+    newer.write_text(json.dumps({**data, "version": A.EXPORT_VERSION + 1}))
+    r = _cli([newer], target)
+    assert r.returncode == 1 and "version" in r.stderr
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json")
+    r = _cli([bad], target)
+    assert r.returncode == 1 and "JSON" in r.stderr
+    assert _cli([tmp_path / "missing.json"], target).returncode == 1
+    assert _cli([], target).returncode == 2                  # usage
+    assert _cli([f, "--photos", tmp_path / "nope"], target).returncode == 1
+
+
+def test_cli_exit_code_is_3_when_rows_were_left_out(tmp_path):
+    import json
+    target = tmp_path / "data"
+    a = tmp_path / "a.json"
+    a.write_text(json.dumps({"version": 1, "books": [{"uid": "a" * 32, "title": "First", "isbn": _isbn(7)}]}))
+    b = tmp_path / "b.json"
+    b.write_text(json.dumps({"version": 1, "books": [{"uid": "b" * 32, "title": "Second", "isbn": _isbn(7)}]}))
+    assert _cli([a], target).returncode == 0
+    r = _cli([b], target)
+    assert r.returncode == 3 and "Left out" in r.stdout and "ISBN" in r.stdout
+
+
+def test_cli_help_does_not_touch_the_database(tmp_path):
+    r = _cli(["--help"], tmp_path / "data")
+    assert r.returncode == 0 and "--dry-run" in r.stdout and "--replace" in r.stdout and "--photos" in r.stdout
+    assert not (tmp_path / "data").exists()

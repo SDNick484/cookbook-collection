@@ -1,5 +1,9 @@
 """Load a Cookbook Collection JSON export (More -> Download JSON, or GET /admin/api/export.json) into a catalog.
 
+    python3 -m importer EXPORT.json [--photos DIR] [--dry-run] [--replace]
+
+It uses the catalog in $DATA_DIR (default ./data), like the app. Stop the service first (see the README).
+
 Books and recipes are reconciled by their stable `uid`: a uid that exists is updated, an unknown one is inserted
 with that uid. The columns written are the ones both the file and this database have, so a column added to the
 schema later travels without a change here. Everything goes through the app's own helpers (`clean`, `fold`,
@@ -8,12 +12,14 @@ function that only connect() registers.
 
 All writes happen in one transaction: a failure, or --dry-run, rolls the whole import back.
 """
+import json
 import math
 import os
 import re
 import shutil
 import sqlite3
 import stat
+import sys
 from pathlib import Path
 
 SAFE_FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.(?:jpe?g|png|webp)", re.I)  # a bare name, never a path
@@ -646,3 +652,99 @@ def import_data(con, data, *, replace=False, dry_run=False, photos_dir=None, log
         raise
     _transfer(ctx, rep, dry_run)
     return rep
+
+
+# ------------------------------------------------------------------ command line
+EXIT_OK, EXIT_REFUSED, EXIT_USAGE, EXIT_LEFT_OUT = 0, 1, 2, 3  # argparse itself exits 2 on a usage error
+EPILOG = """\
+The catalog is the one in $DATA_DIR (default ./data next to the app), the same as the service uses.
+Exit status: 0 done; 1 the file or options were refused, nothing changed; 2 usage error;
+3 done, but some books or recipes were left out (listed) because they clash with something already there."""
+
+
+def load_export(path):
+    """The parsed JSON in `path`."""
+    try:
+        text = Path(path).read_text(encoding="utf-8-sig")
+    except OSError as e:
+        raise ImportFileError(f"can't read {path}: {e.strerror or e}") from None
+    except UnicodeDecodeError:
+        raise ImportFileError(f"{path} isn't a UTF-8 text file") from None
+    try:
+        return json.loads(text)
+    except ValueError as e:
+        raise ImportFileError(f"{path} is not valid JSON ({e})") from None
+
+
+def _lines(title, items, limit=10):
+    if not items:
+        return []
+    out = [title]
+    out += [f"  - {x}" for x in items[:limit]]
+    if len(items) > limit:
+        out.append(f"  ... and {len(items) - limit} more")
+    return out
+
+
+def format_report(rep):
+    """The plan (dry run) or the result, as text."""
+    out = []
+    if rep.dry_run:
+        out.append("Dry run: nothing was changed. This is what an import would do.")
+    for table, title in (("books", "Books"), ("recipes", "Recipes"), ("photos", "Photos")):
+        c = rep.counts[table]
+        line = f"{title:<8}{c['insert']} inserted, {c['update']} updated, {c['skip']} skipped"
+        out.append(line + (f", {c['delete']} deleted" if c["delete"] else ""))
+    n = rep.new_names
+    out.append(f"New:    {n['authors']} authors, {n['tags']} tags, {n['ingredients']} ingredient tags"
+               + (f" ({rep.hints_set} marked as search hints)" if rep.hints_set else ""))
+    f = rep.files
+    if f["present"] or f["copied"] or f["missing"] or f["unusable"]:
+        out.append(f"Files:  {f['copied']} {'to copy' if rep.dry_run else 'copied'}, {f['present']} already here, "
+                   f"{len(f['missing'])} not found, {len(f['unusable'])} not usable")
+        out += _lines("Files not found (the rows are kept; add the files and they show up):", f["missing"])
+        out += _lines("Files not usable:", f["unusable"])
+    out += _lines(f"Left out ({len(rep.conflicts)}), because they clash with something already here:",
+                  [f"{label}: {why}" for _, label, why in rep.conflicts], limit=20)
+    out += _lines(f"Warnings ({len(rep.warnings)}):", rep.warnings, limit=20)
+    return "\n".join(out)
+
+
+def main(argv=None):
+    import argparse
+    ap = argparse.ArgumentParser(
+        prog="python3 -m importer", formatter_class=argparse.RawDescriptionHelpFormatter, epilog=EPILOG,
+        description="Import a Cookbook Collection JSON export. Books and recipes are matched by uid (older exports: by "
+                    "ISBN, then title and first author); what matches is updated, the rest is added. Nothing is "
+                    "deleted unless you pass --replace.")
+    ap.add_argument("export", type=Path, help="the file from More -> Download JSON")
+    ap.add_argument("--photos", metavar="DIR", type=Path,
+                    help="copy the cover and photo files the export references from DIR (a copy of the data folder, "
+                         "of BACKUP_TARGET/files/<app>, or one folder of files); missing ones are reported")
+    ap.add_argument("--dry-run", action="store_true", help="print what would happen and change nothing")
+    ap.add_argument("--replace", action="store_true",
+                    help="also delete the books the file doesn't list, and the recipes and photo rows it doesn't "
+                         "list for the books it does, so the catalog ends up equal to the file")
+    args = ap.parse_args(argv)
+    if "app" not in sys.modules:  # before `import app`, whose init_db() would load the seed catalog into a new database
+        os.environ["SKIP_SEED"] = "1"
+    try:
+        data = load_export(args.export)
+        con = _app().connect()
+        try:
+            print(f"Importing into {_app().DB_PATH}" + (" (dry run)" if args.dry_run else ""))
+            rep = import_data(con, data, replace=args.replace, dry_run=args.dry_run, photos_dir=args.photos, log=print)
+        finally:
+            con.close()
+    except ImportFileError as e:
+        print(f"importer: {e}", file=sys.stderr)
+        return EXIT_REFUSED
+    except sqlite3.OperationalError as e:  # "database is locked": the service is writing
+        print(f"importer: the database is busy ({e}). Stop the service and try again.", file=sys.stderr)
+        return EXIT_REFUSED
+    print(format_report(rep))
+    return EXIT_LEFT_OUT if rep.conflicts else EXIT_OK
+
+
+if __name__ == "__main__":
+    sys.exit(main())

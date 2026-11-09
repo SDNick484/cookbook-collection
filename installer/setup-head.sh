@@ -96,6 +96,7 @@ add_setting "$CONF" DINNERLOG_TOKEN "" "Dinner Log's HISTORY_TOKEN (set the same
 add_setting "$CONF" ANTHROPIC_API_KEY "" "Claude API key for reading photos of index pages (console.anthropic.com)"
 add_setting "$CONF" ANTHROPIC_MODEL claude-sonnet-5-5 "Model used for photo import"
 add_setting "$CONF" ANTHROPIC_EFFORT low "Claude effort for index photos (low, medium, high, or empty)"
+add_setting "$CONF" PHOTO_DAILY_LIMIT 100 "Most index pages read from photos per day, all editors together"
 add_setting "$CONF" ANTHROPIC_SEARCH_KEY "" "Claude API key for AI search (Ask); empty = use ANTHROPIC_API_KEY; Ask is off if both are empty"
 add_setting "$CONF" ANTHROPIC_SEARCH_MODEL claude-haiku-5-5 "Model used for AI search (Ask)"
 add_setting "$CONF" ASK_DAILY_LIMIT 200 "Most Ask questions per day, all editors together"
@@ -125,7 +126,7 @@ description="Cookbook Collection"
 : ${PORT:=8767}
 : ${DATA_DIR:=/var/lib/cookbooks}
 : ${BIND:=0.0.0.0}
-export DATA_DIR CF_TEAM_DOMAIN CF_AUD ADMIN_EMAILS LAN_EDIT LAN_CIDRS LAN_HOSTS ALLOWED_ORIGINS DINNERLOG_API_URL DINNERLOG_TOKEN ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_EFFORT ANTHROPIC_SEARCH_KEY ANTHROPIC_SEARCH_MODEL ASK_DAILY_LIMIT MCP_TOKEN MCP_PUBLIC WISHLIST_URL WISHLIST_BOOK_URL DINNERLOG_URL READ_TOKEN
+export DATA_DIR CF_TEAM_DOMAIN CF_AUD ADMIN_EMAILS LAN_EDIT LAN_CIDRS LAN_HOSTS ALLOWED_ORIGINS DINNERLOG_API_URL DINNERLOG_TOKEN ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_EFFORT ANTHROPIC_SEARCH_KEY ANTHROPIC_SEARCH_MODEL ASK_DAILY_LIMIT PHOTO_DAILY_LIMIT MCP_TOKEN MCP_PUBLIC WISHLIST_URL WISHLIST_BOOK_URL DINNERLOG_URL READ_TOKEN
 supervisor="supervise-daemon"
 respawn_delay=5
 respawn_max=10

@@ -50,7 +50,21 @@ For older books with no barcode, type the title and use **Find matches by title*
 Open a book, choose **Import index**, and paste the index text. Google Lens on Android can copy text straight from a photo of the index page. You get an editable preview before anything is saved, and re-importing the same page skips duplicates.
 
 ## Photo index import
-Set `ANTHROPIC_API_KEY` in `/etc/conf.d/cookbooks` and restart the service. In **Import index**, **📷 Take photo** opens the phone's camera; take one photo per index page, and the entries from every page collect in one preview, keeping any corrections you've made. **Choose photos** picks several existing photos at once. Each photo is sent to Claude (grayscale, ≤2576px), which returns the entries as rows for the preview. A dense page (three columns, 250+ entries) takes a minute or two, so each photo runs as a background job and the page checks back until it's done; that way Cloudflare's 100-second limit doesn't apply. If a page is ever cut off, the entries read so far are kept and a warning tells you to photograph the rest. The request asks for low effort (`ANTHROPIC_EFFORT=low`; set it empty for the model's default), since transcribing needs little reasoning and goes much faster without it.
+Set `ANTHROPIC_API_KEY` in `/etc/conf.d/cookbooks` and restart the service. In **Import index**, **📷 Take photo** opens the phone's camera and **Choose photos** picks several existing photos at once. Each photo is one page of the book's index; take them in order, as many as the index has (3 to 15 is typical). Every page is sent to Claude (grayscale, ≤2576px) and comes back as rows. A dense page (three columns, 250+ entries) takes a minute or two, so the pages are read as background jobs, a couple at a time, and the browser checks back until they're done; that way Cloudflare's 100-second limit doesn't apply. Under the photos, each page shows its state (waiting, reading, how many entries, or what went wrong) and a page that fails can be retried on its own without re-reading the others.
+
+The pages are merged into one review table:
+- A section that continues across a page or column break keeps its heading: entries at the top of a page with no heading of their own take the last heading of the page before, and are tinted so you can check them.
+- Where two photos overlap, the repeated entries at the start of the second one are dropped.
+- Page numbers written `p. 42`, `pag. 42` or `pp. 42–44` (common in Italian indexes) lose the prefix. Roman-numeral and lettered pages (`xii`, `12a`) are kept and marked ⚠ for a second look rather than dropped. Both also apply to pasted text.
+
+The table header counts how many entries will be added and how many are already in the book; entries already present are unchecked. Add the lot with one tap. If a page is ever cut off, the entries read so far are kept and a warning tells you to photograph the rest of that page. The request asks for low effort (`ANTHROPIC_EFFORT=low`; set it empty for the model's default), since transcribing needs little reasoning and goes much faster without it.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | empty (photo import off) | API key for reading index photos |
+| `ANTHROPIC_MODEL` | `claude-sonnet-5-5` | Model for photo import |
+| `ANTHROPIC_EFFORT` | `low` | Effort setting; empty for the model's default |
+| `PHOTO_DAILY_LIMIT` | `100` | Index pages read per day across all editors (each is one model call with up to 16k output tokens); further pages get a clear refusal until local midnight. Retrying a page doesn't count twice. |
 
 **Needs review → Not indexed yet** lists the books on hand that have no recipes in the catalog, each with an Import index link. The MCP's `search_books` has the same filter (`indexed: false`).
 

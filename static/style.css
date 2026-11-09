@@ -41,6 +41,7 @@ h1 { font-size: 1.8rem; } h2 { font-size: 1.3rem; } h3 { font-size: 1.05rem; }
 @media (max-width: 640px) {
   .brand, #nav a, #ask-top { min-height: 40px; display: inline-flex; align-items: center; }
   #nav a { padding: 0 8px; }
+  .top-row { padding-top: 6px; }
 }
 /* controls */
 .controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 8px; align-items: center; }

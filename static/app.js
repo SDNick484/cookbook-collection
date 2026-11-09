@@ -44,6 +44,40 @@ function coverHTML(b) {
 }
 const byline = (b) => (b.authors || []).join(", ");
 
+/* ---------- editor check (public view) ---------- */
+// Only /admin is behind Cloudflare Access, so the server never sees a family member's sign-in on /api/*.
+// /admin/api/me is: the browser sends its Access cookie, Access adds the identity header, the app answers 200.
+// Anonymous visitors get Access's login redirect (redirect:"manual" keeps that quiet) or a 401. This is only a
+// hint for showing the Ask button; the real gate is still Access plus @editor_required on every /admin/api route.
+// The result is kept for the tab session so the check isn't repeated on every page load, and anonymous visitors
+// don't hit /admin on every visit. A "not an editor" answer expires sooner, since someone may sign in meanwhile.
+const EDITOR_KEY = "cb.editor", EDITOR_TTL = { yes: 30 * 60e3, no: 10 * 60e3 };
+function cachedEditor() {
+  try {
+    const c = JSON.parse(sessionStorage.getItem(EDITOR_KEY));
+    if (c && Date.now() - c.t < (c.editor ? EDITOR_TTL.yes : EDITOR_TTL.no)) return c;
+  } catch { /* storage blocked or garbled: just check again */ }
+  return null;
+}
+async function probeEditor() {
+  const out = { editor: false, ask: false, t: Date.now() };
+  try {
+    const me = await fetch("/admin/api/me", { redirect: "manual", credentials: "same-origin" });
+    if (me.ok) out.editor = (await me.json()).editor === true;
+    if (out.editor) {   // one more call, editors only: is AI search switched on?
+      const f = await fetch("/admin/api/features", { redirect: "manual", credentials: "same-origin" });
+      if (f.ok) out.ask = (await f.json()).ask === true;
+    }
+  } catch (e) {
+    if (e instanceof TypeError) return { editor: false, ask: false };   // offline: don't remember a guess
+    /* anything else (a non-JSON reply from a proxy) counts as "not an editor" */
+  }
+  try { sessionStorage.setItem(EDITOR_KEY, JSON.stringify(out)); } catch { /* fine without it */ }
+  return out;
+}
+function applyEditor(p) { S.editor = !!p.editor; S.askPublic = !!(p.editor && p.ask); }
+const currentRoute = () => location.hash.replace(/^#\/?/, "").split("?")[0];
+
 /* ---------- nav / router ---------- */
 function renderNav(route) {
   const items = ADMIN
@@ -51,9 +85,13 @@ function renderNav(route) {
     : [["#/", "Catalog"], ["#/photos", "Photos"]].concat(S.editor ? [["/admin#/", "Edit"]] : [["/admin#/", "Sign in"]]);
   $("#nav").innerHTML = items.map(([h, t]) =>
     `<a href="${h}" class="${(h === "#/" ? route === "" : h.startsWith("#/") && route.startsWith(h.slice(2))) ? "on" : ""}">${t}</a>`).join("");
+  if (!ADMIN) $$("#nav a[href^='/admin']").forEach((a) => a.onclick = () => {   // coming back signed in: ask again
+    try { sessionStorage.removeItem(EDITOR_KEY); } catch { /* ignore */ }
+  });
   const slot = $("#ask-slot");
-  if (slot) slot.innerHTML = ADMIN && S.features && S.features.ask
-    ? `<a id="ask-top" href="#/ask" class="${route === "ask" ? "on" : ""}" title="Ask about your cookbooks">${CHAT_ICON}Ask</a>` : "";
+  const ask = ADMIN ? S.features && S.features.ask : S.askPublic;
+  if (slot) slot.innerHTML = ask   // on the public view this is a plain link into the editor, where Ask lives
+    ? `<a id="ask-top" href="${ADMIN ? "#/ask" : "/admin#/ask"}" class="${ADMIN && route === "ask" ? "on" : ""}" title="Ask about your cookbooks">${CHAT_ICON}Ask</a>` : "";
 }
 const CHAT_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M5 4.5h14A1.5 1.5 0 0 1 20.5 6v9a1.5 1.5 0 0 1-1.5 1.5h-8.5L6 20v-3.5H5A1.5 1.5 0 0 1 3.5 15V6A1.5 1.5 0 0 1 5 4.5z"/></svg>`;
 async function route() {
@@ -1462,7 +1500,9 @@ if (ADMIN) {
 }
 (async () => {
   if (!ADMIN) {
-    try { S.editor = (await api("/api/me")).editor; } catch { /* ignore */ }
+    const hit = cachedEditor();
+    if (hit) applyEditor(hit);
+    else probeEditor().then((p) => { applyEditor(p); renderNav(currentRoute()); });   // after first paint: nobody waits on it
   } else {
     try { S.features = await api("features"); } catch { S.features = {}; }
     try { await api("me"); } catch (e) {

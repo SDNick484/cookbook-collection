@@ -306,6 +306,6 @@ def test_cover_url_rejects_bad_scheme_and_disallowed_redirect():
 def test_static_assets_version_and_anonymized_meta(c):
     html = c.get("/").data.decode()
     assert 'content="A family cookbook collection"' in html
-    assert "/static/style.css?v=25" in html and "/static/app.js?v=25" in html
+    assert "/static/style.css?v=26" in html and "/static/app.js?v=26" in html
 
 

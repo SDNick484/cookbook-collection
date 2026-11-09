@@ -1245,9 +1245,16 @@ EXPORT_VERSION = 1
 def export_json():
     rows = db().execute("SELECT * FROM books ORDER BY id").fetchall()
     books = book_dicts(rows, True)
+    tags = {}  # recipe id -> its ingredient tag names; [] in the file means untagged, a missing key an older export
+    for rid, name in db().execute("SELECT ri.recipe_id, i.name FROM recipe_ingredients ri "
+                                  "JOIN ingredients i ON i.id=ri.ingredient_id ORDER BY i.name"):
+        tags.setdefault(rid, []).append(name)
+    hints = [r[0] for r in db().execute("SELECT name FROM ingredients WHERE hint=1 ORDER BY name")]
     for b in books:
         b["recipes"] = [dict(r) for r in db().execute("SELECT * FROM recipes WHERE book_id=? ORDER BY page_sort",
                                                       (b["id"],))]
+        for r in b["recipes"]:
+            r["ingredients"] = tags.get(r["id"], [])
         photos = {}  # file names in DATA_DIR/photos
         for p in db().execute("SELECT p.recipe_id, p.file, p.taken_on, p.caption FROM recipe_photos p "
                               "JOIN recipes r ON r.id=p.recipe_id WHERE r.book_id=?", (b["id"],)):
@@ -1257,6 +1264,7 @@ def export_json():
                 r["photos"] = photos[r["id"]]
     body = json.dumps({"version": EXPORT_VERSION, "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                        "exported": time.strftime("%Y-%m-%dT%H:%M:%S"),  # local time; kept for older readers
+                       "ingredient_hints": hints,  # tags that are search hints (no chip on the catalog page)
                        "books": books}, ensure_ascii=False, indent=1)
     return Response(body, mimetype="application/json",
                     headers={"Content-Disposition": "attachment; filename=cookbooks.json"})

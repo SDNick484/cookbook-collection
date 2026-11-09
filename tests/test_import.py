@@ -14,9 +14,36 @@ def client():
     return A.app.test_client()
 
 
+def _tag_a_recipe(name="Smoky tomato soup", ingredients=("Tomatoes", "Smoked paprika"), hints=("Paprika",)):
+    """One extra recipe carrying ingredient tags, and some tags that are only search hints."""
+    con = A.connect()
+    bid = con.execute("SELECT id FROM books ORDER BY id LIMIT 1").fetchone()[0]
+    rid = con.execute("INSERT INTO recipes(book_id, name, page, page_sort) VALUES (?,?,?,?)",
+                      (bid, name, "12", 12)).lastrowid
+    for n in ingredients:
+        iid = A.name_id(con, "ingredients", n)
+        con.execute("INSERT OR IGNORE INTO recipe_ingredients VALUES (?,?)", (rid, iid))
+    for n in hints:
+        iid = A.name_id(con, "ingredients", n)
+        con.execute("UPDATE ingredients SET hint=1 WHERE id=?", (iid,))
+    con.commit()
+    con.close()
+    return rid
+
+
 # ------------------------------------------------------------------ export format
 def test_export_has_version_and_timestamp(client):
     j = client.get("/admin/api/export.json").json
     assert j["version"] == A.EXPORT_VERSION == 1
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", j["exported_at"])
     assert "exported" in j  # the older key stays, so nothing that reads it breaks
+
+
+def test_export_carries_ingredient_tags(client):
+    _tag_a_recipe()
+    j = client.get("/admin/api/export.json").json
+    recipes = [r for b in j["books"] for r in b["recipes"]]
+    soup = next(r for r in recipes if r["name"] == "Smoky tomato soup")
+    assert soup["ingredients"] == ["Smoked paprika", "Tomatoes"]
+    assert all(isinstance(r["ingredients"], list) for r in recipes)  # [] = untagged, not "old export"
+    assert "Paprika" in j["ingredient_hints"]

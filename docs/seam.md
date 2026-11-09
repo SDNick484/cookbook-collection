@@ -44,7 +44,8 @@ catalog still agrees with the meal's title and page/name.
 | Cookbook Collection | `GET {DINNERLOG_API_URL}/api/history` | `Authorization: Bearer <token>`; Dinner Log's `HISTORY_TOKEN` = Cookbook Collection's `DINNERLOG_TOKEN` | cooking history; `ETag` / `If-None-Match`, so an unchanged history is a 304 |
 | Dinner Log | `GET {COOKBOOK_API_URL}/api/books` and `/api/books/<id>` | none (public) | the form's recipe picker: titles, then a book's recipes with `id` and `uid` |
 | Dinner Log | `GET {COOKBOOK_API_URL}/admin/api/pick` | `Authorization: Bearer <READ_TOKEN>` (Dinner Log's `COOKBOOK_TOKEN`) | "Pick for tonight"; each recipe has `id`, `uid`, `book_id`, `book_uid` |
-| browser | Cookbook Collection's 🍽 link → `{DINNERLOG_URL}/new?…` | Dinner Log's own login | prefilled form; carries `cookbook_book_id`, `cookbook_recipe_id`, `cookbook_book_uid`, `cookbook_recipe_uid` |
+| browser | Cookbook Collection's 🍽 link → `{DINNERLOG_URL}/new?…` | whatever login sits in front of Dinner Log (it has none of its own) | prefilled form; carries `cookbook_book_id`, `cookbook_recipe_id`, `cookbook_book_uid`, `cookbook_recipe_uid` |
+| browser | Dinner Log's links → `{COOKBOOK_URL}/#/uid/<book uid>[/<recipe uid>]` | none for the public catalog; `/admin#/uid/…` for recipe websites (`kind='online'`), behind the editor login | opens the book (and highlights the recipe) without knowing the integer id; the page resolves the uid through `/api/books/by-uid/<uid>` and replaces itself with `#/book/<id>` |
 
 Both tokens are bearer secrets. Point `DINNERLOG_API_URL` and `COOKBOOK_API_URL` at private addresses
 (e.g. `http://127.0.0.1:8000` and `http://127.0.0.1:8767` on one host), or use https. Neither side follows

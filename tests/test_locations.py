@@ -453,3 +453,26 @@ def test_public_location_names_are_not_matched_loosely_to_other_rooms(c):
     book("in-den", loc=sb)
     got = {x["title"][3:] for x in c.get(f"/api/books?location_id={sa}").json["books"] if x["title"].startswith("LT ")}
     assert got == {"in-kitchen"}
+
+
+def test_recipe_search_follows_the_location_filter(c):
+    """With a shelf picked in the catalog, the recipe list can't show recipes from books that are somewhere else."""
+    con = A.connect()
+    bid = con.execute("SELECT b.id FROM books b JOIN recipes r ON r.book_id=b.id WHERE b.kind IS NULL "
+                      "GROUP BY b.id HAVING count(*) > 3 LIMIT 1").fetchone()[0]
+    con.close()
+    name = c.get(f"/api/books/{bid}").json["recipes"][0]["name"]
+    room, den = mk(c, "Room"), mk(c, "Den")
+    shelf = mk(c, "Shelf", room)
+    con = A.connect()
+    con.execute("UPDATE books SET location_id=? WHERE id=?", (shelf, bid))
+    con.commit()
+    con.close()
+    everywhere = c.get("/api/recipes", query_string={"q": name}).json
+    here = c.get("/api/recipes", query_string={"q": name, "location_id": room}).json
+    assert here["count"] >= 1 and {r["book_id"] for r in here["recipes"]} == {bid}
+    assert here["count"] <= everywhere["count"]
+    assert c.get("/api/recipes", query_string={"q": name, "location_id": den}).json["count"] == 0
+    books = c.get("/api/recipes/books", query_string={"q": name, "location_id": room}).json["books"]
+    assert [b["id"] for b in books] == [bid]
+    assert c.get("/api/recipes", query_string={"q": name, "location_id": "abc"}).status_code == 400

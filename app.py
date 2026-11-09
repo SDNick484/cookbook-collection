@@ -838,6 +838,11 @@ def recipe_filter(params, private):
     if params.get("publisher"):
         where.append("fold(b.publisher) = fold(?)")
         args.append(params["publisher"])
+    shelf = location_arg(params.get("location_id"))  # the books on that shelf, or anywhere below it
+    if shelf is not None:
+        ids = sorted(descendant_location_ids(db(), shelf))
+        where.append(f"b.location_id IN ({','.join('?' * len(ids))})")
+        args += ids
     if private and params.get("want"):
         where.append("r.want_to_try=1")
     if private and params.get("made"):

@@ -117,3 +117,24 @@ def test_pick_terms():
     assert X.pick_terms(" Chicken, leeks ,,chicken, LEEKS ") == ["Chicken", "leeks"]
     assert len(X.pick_terms(",".join(f"i{n}" for n in range(9)))) == X.PICK_MAX_TERMS
     assert X.pick_terms(None) == []
+
+
+def test_pick_and_cook_send_uids(c):
+    """Dinner Log stores these with the ints: a pick logged tonight resolves by uid from then on."""
+    con = A.connect()
+    uids = {r[0]: (r[1], r[2]) for r in con.execute(
+        "SELECT r.id, r.uid, b.uid FROM recipes r JOIN books b ON b.id=r.book_id")}
+    con.close()
+    for url in ("/admin/api/pick?mode=any&n=5&seed=3", "/admin/api/cook?mode=any&limit=5&seed=3"):
+        recipes = c.get(url).json["recipes"]
+        assert recipes
+        for r in recipes:
+            assert (r["uid"], r["book_uid"]) == uids[r["id"]]
+            assert len(r["uid"]) == len(r["book_uid"]) == 32
+
+
+def test_log_this_dinner_link_carries_uids():
+    js = (ROOT / "static" / "app.js").read_text()
+    assert "${uidParams(r)}&name=" in js
+    assert '["cookbook_book_uid", r.book_uid || S.bookUid], ["cookbook_recipe_uid", r.uid]' in js
+    assert "S.bookUid = b.uid" in js

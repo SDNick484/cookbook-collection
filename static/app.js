@@ -290,6 +290,9 @@ function rateWidget(el, value, save) {
 // Where to find a recipe: the page in the book, or a link for one saved from a website.
 const whereHTML = (r) => r.url ? `<a class="pg web" href="${esc(r.url)}" target="_blank" rel="noopener" title="Open the recipe on ${esc(r.book_title || S.bookTitle || "the site")}">Open ↗</a>`
   : `<span class="pg">${r.page ? "p. " + esc(r.page) : ""}</span>`;
+// Stable uids for Dinner Log to store beside the ids (ids are reused after a delete; uids never are).
+const uidParams = (r) => [["cookbook_book_uid", r.book_uid || S.bookUid], ["cookbook_recipe_uid", r.uid]]
+  .filter(([, v]) => v).map(([k, v]) => `&${k}=${encodeURIComponent(v)}`).join("");
 function recipeRow(r) {
   const extra = [];
   if (r.cooked_count) extra.push(`<span class="cooked">Cooked ${r.cooked_count}×${r.cooked_avg != null ? ` · <span class="rating">${num(r.cooked_avg)}/10</span>` : ""} · ${fmtDay(r.cooked_last)}</span>`);
@@ -301,14 +304,14 @@ function recipeRow(r) {
     ${ADMIN && extra.length ? `<div class="extra">${extra.join(" · ")}</div>` : ""}</div>
     ${whereHTML(r)}
     ${ADMIN ? `<span class="acts">${S.features && S.features.dinnerlog_url && S.bookTitle ? `<a class="log" title="Log this dinner in Dinner Log" target="_blank" rel="noopener"
-        href="${esc(S.features.dinnerlog_url)}/new?source_type=cookbook&source_title=${encodeURIComponent(S.bookTitle)}&source_detail=${encodeURIComponent(r.page || r.url || "")}&cookbook_book_id=${r.book_id}&cookbook_recipe_id=${r.id}&name=${encodeURIComponent(r.heading && r.name[0] === r.name[0].toLowerCase() ? r.heading + ", " + r.name : r.name)}">🍽</a>` : ""}
+        href="${esc(S.features.dinnerlog_url)}/new?source_type=cookbook&source_title=${encodeURIComponent(S.bookTitle)}&source_detail=${encodeURIComponent(r.page || r.url || "")}&cookbook_book_id=${r.book_id}&cookbook_recipe_id=${r.id}${uidParams(r)}&name=${encodeURIComponent(r.heading && r.name[0] === r.name[0].toLowerCase() ? r.heading + ", " + r.name : r.name)}">🍽</a>` : ""}
       <button title="${nph ? `${nph} photo${nph > 1 ? "s" : ""}` : "Add photos"}" class="pho ${nph ? "on" : ""}">📷${nph ? `<span class="n">${nph}</span>` : ""}</button>
       <button title="Want to try" class="want ${r.want_to_try ? "on" : ""}">${r.want_to_try ? "★" : "☆"}</button>
       <button title="Edit" class="edit">✎</button></span>` : ""}</li>`;
 }
 async function bookView(id, focus) {
   const b = await api("books/" + id);
-  S.bookTitle = b.title;
+  S.bookTitle = b.title; S.bookUid = b.uid;
   S.bookPhotos = b.photos || [];
   const rows = [];
   if (b.subtitle) rows.push(["Subtitle", esc(b.subtitle)]);
@@ -397,7 +400,7 @@ function askItemsHTML(items) {
   const recipes = items.filter((i) => i.kind === "recipe"), books = items.filter((i) => i.kind === "book");
   let last = null;
   const rows = recipes.map((r) => {
-    S.bookTitle = r.book_title; S.bookPhotos = [];  // recipeRow reads these for the Dinner Log link
+    S.bookTitle = r.book_title; S.bookUid = r.book_uid; S.bookPhotos = [];  // recipeRow reads these for the Dinner Log link
     const head = r.book_id !== last ? `<li class="grp"><a href="#/book/${r.book_id}">${esc(r.book_title)}</a></li>` : "";
     last = r.book_id;
     return head + recipeRow(r);

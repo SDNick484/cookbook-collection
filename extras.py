@@ -679,8 +679,8 @@ def cook_rank(mode="any", include=(), exclude=(), cuisine=None, tag=None, rest_d
     terms = ingredients.search_terms("", " ".join(include))
     scored = {x["id"]: x for x in ingredients.ranked(con, base, args, terms)} if terms else {}
     rows = [dict(r) for r in con.execute(
-        "SELECT r.id, r.name, r.heading, r.page, r.url, r.want_to_try, r.rating, r.notes, r.last_made, "
-        "b.id AS book_id, b.title AS book_title, b.kind, b.cuisine, b.status, "
+        "SELECT r.id, r.uid, r.name, r.heading, r.page, r.url, r.want_to_try, r.rating, r.notes, r.last_made, "
+        "b.id AS book_id, b.uid AS book_uid, b.title AS book_title, b.kind, b.cuisine, b.status, "
         f"{PICK_BEST} AS best, {PICK_LAST} AS last_cooked, coalesce(h.times, 0) AS times_cooked, "
         "h.avg AS cooked_avg, h.last AS dl_last" + base, args)]
 
@@ -780,8 +780,9 @@ def cook_route():
     except ValueError as e:
         return make_err(400, str(e))
     thumbs = thumbs_for([r["id"] for r in res["recipes"]])
-    recipes = [{"id": r["id"], "name": r["name"], "heading": r["heading"], "page": r["page"], "url": r["url"],
-                "book_id": r["book_id"], "book_title": r["book_title"], "book_status": r["status"],
+    recipes = [{"id": r["id"], "uid": r["uid"], "name": r["name"], "heading": r["heading"], "page": r["page"],
+                "url": r["url"], "book_id": r["book_id"], "book_uid": r["book_uid"], "book_title": r["book_title"],
+                "book_status": r["status"],
                 "online": r["kind"] == "online", "starred": bool(r["want_to_try"]),
                 "times_made": r["times_cooked"], "last_made": r["last_cooked"], "best_rating": r["best"] or None,
                 "match": r["match"], "photo": thumbs.get(r["id"])} for r in res["recipes"]]
@@ -802,8 +803,9 @@ def pick(mode="any", include=(), exclude=(), n=10, rest_days=21, seed=None, toda
         raise ValueError("mode must be one of " + ", ".join(PICK_MODES))
     res = cook_rank({"any": "rested", "fav": "fav", "new": "new"}[mode], include, exclude, rest_days=rest_days,
                     seed=seed, today=today, n=n, star_boost=3)
-    out = [{"id": r["id"], "name": r["name"], "page": r["page"], "url": r["url"],
-            "book_id": r["book_id"], "book_title": r["book_title"], "online": r["kind"] == "online",
+    out = [{"id": r["id"], "uid": r["uid"], "name": r["name"], "page": r["page"], "url": r["url"],
+            "book_id": r["book_id"], "book_uid": r["book_uid"], "book_title": r["book_title"],
+            "online": r["kind"] == "online",
             "starred": bool(r["want_to_try"]), "best_rating": r["best"] or None,
             "last_cooked": r["last_cooked"], "times_cooked": r["times_cooked"], "match": r["match"]}
            for r in res["recipes"]]

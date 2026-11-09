@@ -352,3 +352,26 @@ table.zip .ztag { width: 100%; min-width: 9em; font: inherit; padding: 3px 6px; 
 .cook .star { color: var(--warn); font-weight: 600; }
 .cooklist .empty { padding: 28px 0; }
 .rlist li.hl { background: color-mix(in srgb, var(--accent) 14%, transparent); border-radius: 6px; }
+
+/* shelf locations: edit-form picker and the manager dialog */
+.fld { display: flex; flex-direction: column; gap: 4px; font-size: .88rem; color: var(--muted); min-width: 0; }  /* grid item: a long path mustn't widen the form */
+.locpick { display: flex; gap: 8px; }
+.locpick select { flex: 1; min-width: 0; min-height: 40px; font-size: 1rem; }
+.locpick button { flex: none; min-height: 40px; }
+dialog.locmgr { width: min(560px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); overflow-y: auto; }
+.lm-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.lm-head button { min-height: 40px; }
+.lm-list { list-style: none; margin: 8px 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.lm-list li { min-width: 0; margin-left: calc(min(var(--d, 0), 5) * 14px); border: 1px solid var(--line); border-radius: 8px; }
+.lm-list li.on { border-color: var(--accent); }
+.lm-list li.empty { margin-left: 0; border: 0; padding: 20px 0; }
+.lm-name { display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; min-height: 44px; border: 0; background: none; text-align: left; }
+.lm-name span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.lm-name span:last-child { flex: none; white-space: nowrap; }
+.lm-act { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 8px 8px; }
+.lm-act button, .lm-add button { min-height: 40px; min-width: 40px; justify-content: center; }
+.lm-act input, .lm-act select { flex: 1 1 160px; width: auto; min-height: 40px; }
+.lm-add { display: flex; gap: 8px; }
+.lm-add input { flex: 1; width: auto; min-height: 40px; }
+.lm-err { color: var(--accent); margin: 6px 0; }
+.lm-note { color: var(--muted); margin: 6px 0; }

@@ -617,6 +617,127 @@ function recipeDialog(r, bookId, done) {
   d.showModal();
 }
 
+/* ---------- shelf locations (editor) ---------- */
+// <option>s for a location <select>: the full path is the label ("Kitchen › Pantry › Shelf 2"); `skip` is a Set of ids to leave out.
+function locationOptions(list, selected, { none = "(none)", skip = null } = {}) {
+  const cur = String(selected ?? "");
+  return `<option value="">${esc(none)}</option>` + list.filter((l) => !skip || !skip.has(l.id)).map((l) =>
+    `<option value="${l.id}" ${String(l.id) === cur ? "selected" : ""}>${esc(l.path)}</option>`).join("");
+}
+// The picker's "Manage" button: edit the tree in a dialog, then rebuild the <select> (a deleted shelf falls back to "(none)").
+function wireLocationPicker(form) {
+  const btn = $("#loc-manage", form);
+  if (!btn) return;
+  btn.onclick = () => locationsManager(async () => {
+    const sel = $("#loc-pick", form);
+    if (!sel) return;
+    try { sel.innerHTML = locationOptions((await api("locations")).locations, sel.value); } catch (e) { toast(e.message); }
+  });
+}
+// Add, rename, move, reorder and delete locations. Tap a location to see its actions. Feedback is drawn inside the
+// dialog: the page's toast sits behind a modal. `changed()` runs once on close if anything was edited.
+function locationsManager(changed = () => {}) {
+  const d = document.createElement("dialog");
+  d.className = "locmgr";
+  let locs = [], sel = null, mode = null, err = "", note = "", dirty = false;
+  const kids = (parent) => locs.filter((l) => l.parent_id === parent);          // tree order, so siblings are in sort order
+  const below = (id) => { const s = new Set([id]); for (const l of locs) if (s.has(l.parent_id)) s.add(l.id); return s; };   // id and its descendants
+  const books = (n) => `${n} book${n === 1 ? "" : "s"}`;
+  const panel = (l) => {
+    const sibs = kids(l.parent_id), i = sibs.findIndex((s) => s.id === l.id);
+    if (mode === "rename") return `<div class="lm-act"><input id="lm-in" value="${esc(l.name)}" maxlength="80" aria-label="Name">
+      <button type="button" class="primary" data-do="rename">Save</button><button type="button" data-do="cancel">Cancel</button></div>`;
+    if (mode === "add") return `<div class="lm-act"><input id="lm-in" placeholder="New location inside ${esc(l.name)}" maxlength="80" aria-label="New location name">
+      <button type="button" class="primary" data-do="add">Add</button><button type="button" data-do="cancel">Cancel</button></div>`;
+    if (mode === "move") return `<div class="lm-act"><select id="lm-in" aria-label="Move to">${locationOptions(locs, l.parent_id, { none: "(top level)", skip: below(l.id) })}</select>
+      <button type="button" class="primary" data-do="move">Move</button><button type="button" data-do="cancel">Cancel</button></div>`;
+    return `<div class="lm-act">
+      <button type="button" data-do="up" aria-label="Move up" ${i === 0 ? "disabled" : ""}>↑</button>
+      <button type="button" data-do="down" aria-label="Move down" ${i === sibs.length - 1 ? "disabled" : ""}>↓</button>
+      <button type="button" data-do="addform">Add inside</button><button type="button" data-do="renameform">Rename</button>
+      <button type="button" data-do="moveform">Move</button><button type="button" class="danger" data-do="delete">Delete</button></div>`;
+  };
+  const row = (l) => `<li class="${l.id === sel ? "on" : ""}" style="--d:${+l.depth}">
+    <button type="button" class="lm-name" data-sel="${l.id}" aria-expanded="${l.id === sel}"><span>${esc(l.name)}</span><span class="muted small">${books(l.n)}</span></button>
+    ${l.id === sel ? panel(l) : ""}</li>`;
+  const render = () => {
+    d.innerHTML = `<div class="lm-head"><h2>Shelf locations</h2><button type="button" data-do="close">Done</button></div>
+      <p class="small muted">Rooms, shelves, anything nested. A book is in one location. Tap a location to change it. Locations that hold a book show on the public catalog.</p>
+      ${err ? `<p class="lm-err" role="alert">${esc(err)}</p>` : note ? `<p class="lm-note" role="status">${esc(note)}</p>` : ""}
+      <ul class="lm-list">${locs.length ? locs.map(row).join("") : `<li class="empty">No locations yet. Add a room below.</li>`}</ul>
+      <div class="lm-add"><input id="lm-top" placeholder="New top-level location" maxlength="80" aria-label="New top-level location">
+        <button type="button" class="primary" data-do="addtop">Add</button></div>`;
+    const f = $("#lm-in", d);
+    if (f) { f.focus(); if (f.select) f.select(); }
+    const on = $("li.on", d);
+    if (on) on.scrollIntoView({ block: "nearest" });     // the action bar can sit below the fold of a long list
+  };
+  const reload = async () => { locs = (await api("locations")).locations; };
+  const run = async (btn, fn) => {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    try { await fn(); dirty = true; err = ""; }
+    catch (e) { err = e.message; note = ""; }
+    render();
+  };
+  d.addEventListener("click", (e) => {
+    const t = e.target.closest("button");
+    if (!t) return;
+    if (t.dataset.sel) { const id = +t.dataset.sel; sel = sel === id ? null : id; mode = null; err = note = ""; return render(); }
+    const l = locs.find((x) => x.id === sel), v = ($("#lm-in", d) || {}).value, act = t.dataset.do;
+    if (act === "close") return d.close();
+    if (act === "cancel") { mode = null; err = ""; return render(); }
+    if (act === "addform" || act === "renameform" || act === "moveform") { mode = act.replace("form", ""); err = note = ""; return render(); }
+    if (act === "addtop") return run(t, async () => {
+      const name = $("#lm-top", d).value;
+      const r = await api("locations", { method: "POST", body: { name, parent_id: null } });
+      await reload(); note = `Added “${r.location.name}”.`;
+    });
+    if (!l) return;
+    if (act === "add") return run(t, async () => {
+      const r = await api("locations", { method: "POST", body: { name: v, parent_id: l.id } });
+      await reload(); mode = null; note = `Added “${r.location.name}” inside “${l.name}”.`;
+    });
+    if (act === "rename") return run(t, async () => {
+      await api("locations/" + l.id, { method: "PUT", body: { name: v } });
+      await reload(); mode = null; note = "Renamed.";
+    });
+    if (act === "move") return run(t, async () => {
+      await api("locations/" + l.id, { method: "PUT", body: { parent_id: v === "" ? null : +v } });
+      await reload(); mode = null; note = `Moved “${l.name}”.`;
+    });
+    if (act === "up" || act === "down") return run(t, async () => {
+      const ids = kids(l.parent_id).map((s) => s.id), i = ids.indexOf(l.id), j = i + (act === "up" ? -1 : 1);
+      if (j < 0 || j >= ids.length) return;
+      [ids[i], ids[j]] = [ids[j], ids[i]];
+      locs = (await api("locations/reorder", { method: "POST", body: { parent_id: l.parent_id, ids } })).locations; note = "";
+    });
+    if (act === "delete") {
+      const subs = below(l.id).size - 1;
+      const msg = `Delete “${l.path}”?` + (subs ? ` Its ${subs} sub-location${subs === 1 ? "" : "s"} will be deleted too.` : "")
+        + (l.n ? ` ${books(l.n)} will become unshelved.` : " No books are shelved there.");
+      if (!confirm(msg)) return;
+      return run(t, async () => {
+        const r = await api("locations/" + l.id, { method: "DELETE" });
+        await reload(); sel = null; mode = null;
+        note = `Deleted “${l.name}”${r.books_unshelved ? `: ${books(r.books_unshelved)} unshelved` : ""}.`;
+      });
+    }
+  });
+  d.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.target.tagName !== "INPUT") return;
+    e.preventDefault();
+    const go = e.target.id === "lm-top" ? $("[data-do=addtop]", d) : $("button.primary", e.target.parentElement);
+    if (go) go.click();
+  });
+  d.addEventListener("cancel", (e) => { if (mode) { e.preventDefault(); mode = null; render(); } });   // Esc backs out of an open form first
+  d.addEventListener("close", () => { d.remove(); if (dirty) changed(); });
+  document.body.append(d);
+  d.showModal();
+  d.innerHTML = `<p class="muted">Loading…</p>`;
+  reload().then(render).catch((e) => { err = e.message; render(); });
+}
+
 /* ---------- edit / add ---------- */
 function bookForm(b = {}) {
   const f = S.facets || { cuisines: [], tags: [], publishers: [] };
@@ -636,6 +757,9 @@ function bookForm(b = {}) {
     <label class="f">Loaned to<input name="loaned_to" value="${esc(b.loaned_to)}"></label>
     <label class="f">Rating<select name="rating"><option value="">Not rated</option>${[0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5].map((v) =>
       `<option value="${v}" ${b.rating === v ? "selected" : ""}>${starLabel(v)}</option>`).join("")}</select></label>
+    ${b.kind === "online" ? "" : `<div class="fld full"><label for="loc-pick">Location <span class="small">(shown on the public catalog)</span></label>
+      <div class="locpick"><select id="loc-pick" name="location_id">${locationOptions(f.locations || [], b.location_id)}</select>
+        <button type="button" id="loc-manage">Manage</button></div></div>`}
     <label class="chk" style="align-self:end"><input type="checkbox" name="signed" ${b.signed ? "checked" : ""}> Signed copy</label>
     <label class="f full">Private notes <span class="small">(only visible when signed in)</span><textarea name="private_notes">${esc(b.private_notes)}</textarea></label>
     ${b.needs_review ? `<label class="chk full review"><input type="checkbox" name="clear_review"> Mark reviewed (${esc(b.needs_review)})</label>` : ""}
@@ -680,6 +804,7 @@ async function editView(id) {
     <div class="actions"><button class="primary" id="save">Save</button><a class="btn" href="#/book/${id}">Cancel</a>
       <span style="flex:1"></span><button class="danger" id="delete">Delete book</button></div>`;
   const form = $("#bf");
+  wireLocationPicker(form);
   $("#cf").onchange = async (e) => {
     const fd = new FormData(); fd.append("file", e.target.files[0]);
     try { await api(`books/${id}/cover`, { method: "POST", body: fd }); toast("Cover updated"); editView(id); } catch (err) { toast(err.message); }
@@ -730,6 +855,7 @@ async function addView() {
     <div class="actions"><button class="primary" id="save">Save book</button><button id="ol">Find matches by title</button></div>
     <div id="cands" class="cands panel hidden"></div>`;
   const form = $("#bf");
+  wireLocationPicker(form);
   const look = async (raw) => {
     const out = $("#lookres"); out.textContent = "Looking up…";
     try {
@@ -986,6 +1112,9 @@ async function moreView() {
     <div class="panel"><h3>Recipes from websites</h3>
       <p class="small muted" style="margin-top:0">Save recipes from NYT Cooking and other sites by their links: your whole Recipe Box at once, or one at a time from your phone's share sheet.</p>
       <a class="btn primary" href="#/links">Add from links</a></div>
+    <div class="panel"><h3>Shelf locations</h3>
+      <p class="small muted" style="margin-top:0">Rooms, shelves, anything nested: add, rename, move, reorder or delete. Each book's location shows on the public catalog.</p>
+      <button class="primary" id="loc-more">Manage locations</button></div>
     <div class="panel"><h3>Lists</h3><div class="actions" style="margin:0">
       <a class="btn" href="#/try">Want to try</a><a class="btn" href="#/review">Needs review</a>
       <a class="btn" href="#/stats">Dinner Log matching</a></div></div>
@@ -995,8 +1124,9 @@ async function moreView() {
         : `Set <code>MCP_TOKEN</code> in <code>/etc/conf.d/cookbooks</code> to unlock private tools (suggestions, stats, starring).`}</p></div>
     <div class="panel"><h3>Export</h3><p class="small muted">Full backup including recipes, ratings and private notes.</p>
       <div class="actions"><a class="btn" href="/admin/api/export.json">Download JSON</a><a class="btn" href="/admin/api/export.csv">Books as CSV</a></div></div>
-    <div class="panel"><h3>Public view</h3><p class="small muted">See what visitors see (no ratings, notes, shelf or loan details).</p>
+    <div class="panel"><h3>Public view</h3><p class="small muted">See what visitors see (no ratings, notes or loan details; shelf locations are shown).</p>
       <a class="btn" href="/">Open public catalog</a></div>`;
+  $("#loc-more").onclick = () => locationsManager(() => { S.facets = null; });
 }
 
 /* ---------- Dinner Log on a book page ---------- */

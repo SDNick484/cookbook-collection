@@ -100,8 +100,10 @@ async function route() {
   const [path, qs] = hash.split("?");
   renderNav(path);
   const m = path.match(/^book\/(\d+)(?:\/(edit|index))?$/);
+  const u = path.match(/^uid\/([0-9a-f]{32})(?:\/([0-9a-f]{32}))?$/);
   window.scrollTo(0, 0);
   try {
+    if (u) return await uidView(u[1], u[2]);
     if (m && m[2] === "edit" && ADMIN) return await editView(+m[1]);
     if (m && m[2] === "index" && ADMIN) return await indexView(+m[1]);
     if (m) return await bookView(+m[1], new URLSearchParams(qs || "").get("recipe"));
@@ -123,6 +125,21 @@ async function route() {
   }
 }
 window.addEventListener("hashchange", route);
+
+/* Deep link by stable uid: #/uid/<book uid>[/<recipe uid>] (what Dinner Log stores). Resolves through the
+   by-uid API and replaces itself with #/book/<id>[?recipe=<id>], so Back skips it and bookView does the
+   scrolling and highlighting. A recipe uid the book doesn't have just opens the book. */
+async function uidView(bookUid, recipeUid) {
+  let b;
+  try { b = await api("books/by-uid/" + bookUid); }
+  catch (e) {
+    if (e.status !== 404) throw e;
+    throw new Error(ADMIN ? "That book isn't in this catalog."
+      : "That book isn't in the public catalog. Recipe websites are editor-only: try the same link under /admin.");
+  }
+  const r = recipeUid && (b.recipes || []).find((x) => x.uid === recipeUid);
+  location.replace(`#/book/${b.id}${r ? `?recipe=${r.id}` : ""}`);
+}
 
 /* ---------- home ---------- */
 async function homeView() {

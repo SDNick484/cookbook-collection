@@ -13,6 +13,7 @@ and an MCP server at `/mcp`. README.md is the user-facing guide; this file is ho
 | `eyb.py` | Eat Your Books import, merging garbled duplicate recipes |
 | `photos.py` | Photos of cooked dishes |
 | `online.py` | Recipes from websites (NYT Cooking): `books.kind='online'`, editor-only |
+| `importer.py` | Loads the JSON export back in (`python3 -m importer`, also `import_data(con, data, ...)`): reconcile by uid, then ISBN, then title + first author; `--replace`, `--dry-run`, `--photos`. One transaction; needs `app.connect()` for `fold()`. `SKIP_SEED=1` stops `init_db` seeding an empty DB. No routes. Export carries `version` (`EXPORT_VERSION`, bump only for breaking shape changes) |
 | `static/` | Single-page app (`app.js`, `style.css`, `index.html`) |
 | `installer/` | `build.sh` -> `dist/setup-cookbooks.sh` (Alpine/OpenRC installer: `setup-head.sh` + base64 tarball) |
 | `ops/` | Backup and health-check scripts the installer sets up; `migrate-ops` moves files from older container-named paths |

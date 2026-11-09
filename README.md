@@ -185,12 +185,46 @@ Older versions named these files after the container (`/etc/conf.d/ctNNN-ops`, `
 ## Backup / restore by hand
 Copy `/var/lib/cookbooks/` (`cookbooks.db` + `covers/`), or use **More → Download JSON**.
 
-To restore a snapshot, stop the service and decompress the snapshot over the database:
+### Restore from a SQLite snapshot
+Stop the service, replace the database, remove the old WAL side files (a stale `-wal` file from the
+previous database would be replayed onto the restored one), fix ownership, start:
 ```sh
 rc-service cookbooks stop
 gunzip -c /var/backups/apps/<date>/cookbooks-cookbooks.db.gz > /var/lib/cookbooks/cookbooks.db
+rm -f /var/lib/cookbooks/cookbooks.db-wal /var/lib/cookbooks/cookbooks.db-shm
+chown cookbooks:cookbooks /var/lib/cookbooks/cookbooks.db
 rc-service cookbooks start
 ```
+
+### Restore from a JSON export
+The JSON from **More → Download JSON** (or `GET /admin/api/export.json`) can be loaded back with the
+importer. It needs no extra packages. Stop the service first so nothing writes while it runs:
+```sh
+rc-service cookbooks stop
+cd /opt/cookbooks
+# Look first: prints what would be inserted, updated, skipped or deleted, and changes nothing.
+DATA_DIR=/var/lib/cookbooks python3 -m importer /path/to/export.json --dry-run
+# Then do it. --photos is optional: a folder holding covers/ and photos/ subfolders (or the files directly).
+# A BACKUP_TARGET copy works as is: <BACKUP_TARGET>/files/cookbooks
+DATA_DIR=/var/lib/cookbooks python3 -m importer /path/to/export.json --photos /path/to/backup/files/cookbooks
+rm -f /var/lib/cookbooks/cookbooks.db-wal /var/lib/cookbooks/cookbooks.db-shm
+chown -R cookbooks:cookbooks /var/lib/cookbooks
+rc-service cookbooks start
+```
+- Books and recipes are matched by `uid`: a known uid is updated, an unknown one is inserted with that
+  uid. Exports without uids (older versions) match by ISBN, then by title plus first author.
+- The default is a **merge**: nothing is deleted. `--replace` also deletes books (and the recipes and
+  photo rows of matched books) that are not in the file, after printing what it will remove. Use
+  `--dry-run --replace` to preview. Only database rows are deleted, never files.
+- The import is one transaction. A file with a newer `version` than the importer knows is refused.
+- Exit codes: `0` done, `1` refused or nothing changed, `2` bad usage, `3` done but some rows were left
+  out (listed in the output).
+- Files are copied from `--photos` only if they are missing from `covers/` or `photos/` (nothing is
+  overwritten, symlinks are ignored, only JPEG/PNG/WebP/HEIC with plain file names). Missing source files
+  are reported, not fatal.
+- Running as root is fine on Alpine (`python3` is the system interpreter); the `chown` puts ownership back.
+- The export holds the catalog only: Dinner Log history is pulled again from Dinner Log, and
+  ratings/cooked history that live elsewhere are not part of it.
 
 ## Development
 ```sh

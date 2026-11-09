@@ -62,9 +62,15 @@ def migrate(con):
     con.executescript(MIGRATIONS)
     con.execute(WISH_SCHEMA)
     con.execute(PHOTO_SCHEMA)
+    # Whole-index scans (one parent row, one child row per page). Single-page jobs leave all three NULL.
+    photo_cols = [r[1] for r in con.execute("PRAGMA table_info(photo_jobs)")]
+    for col, typ in (("parent_id", "TEXT"), ("page_no", "INTEGER"), ("started", "REAL")):
+        if col not in photo_cols:
+            con.execute(f"ALTER TABLE photo_jobs ADD COLUMN {col} {typ}")
+    con.execute("CREATE INDEX IF NOT EXISTS photo_jobs_parent ON photo_jobs(parent_id)")
     con.execute("UPDATE photo_jobs SET status='error', "
                 "error='Reading that photo stopped partway (the server restarted). Try it again.' "
-                "WHERE status='running'")
+                "WHERE status IN ('running', 'queued')")  # their threads died with the process
     con.execute("DELETE FROM meta WHERE key='dl_sig'")  # from reading Dinner Log's file directly
     if "meal_key" not in [r[1] for r in con.execute("PRAGMA table_info(dl_link)")]:
         con.execute("ALTER TABLE dl_link ADD COLUMN meal_key TEXT")
@@ -832,10 +838,14 @@ Chicken | braised with figs | 350
  | Ceviche, classic | 42"""
 
 PHOTO_SCHEMA = """CREATE TABLE IF NOT EXISTS photo_jobs (
-  id TEXT PRIMARY KEY, book_id INTEGER, status TEXT,  -- running | done | error
-  rows TEXT, warning TEXT, error TEXT, created REAL)"""
+  id TEXT PRIMARY KEY, book_id INTEGER, status TEXT,  -- running | done | error; scans add queued and scan (parent)
+  rows TEXT, warning TEXT, error TEXT, created REAL,
+  parent_id TEXT, page_no INTEGER, started REAL)""" # pages of a scan; NULL on single-page jobs (migrate() adds them)
 PHOTO_JOB_LIMIT = 600  # seconds; a job still "running" after this died with its worker
+PHOTO_QUEUE_LIMIT = 7200  # seconds a scan page may wait for a slot before it's presumed dead
 PHOTO_JOBS_MAX = 3     # reading photos at once across the server; more get 429 and the browser retries
+PHOTO_JOB_KEEP = 86400  # seconds before finished jobs are deleted; must cover "since local midnight" (pages_today)
+PHOTO_DAILY_LIMIT = core.env_int("PHOTO_DAILY_LIMIT", 100)  # pages per day, all editors together; each is one model call
 
 
 class ClaudeAPIError(Exception):
@@ -879,12 +889,24 @@ def call_claude(image_jpeg, media_type="image/jpeg", effort=None):
     return text, data.get("stop_reason")
 
 
+_ODD_PAGE_RE = re.compile(rf"^{core.ODD_PAGE}$")
+
+
 def _photo_row(heading, name, page):
     name, page = clean(str(name or "")), clean(str(page or ""))
-    if not name or not page or not re.search(r"\d", page):
+    if not name or not page:
         return None
-    page = re.sub(r"\s*[-—]\s*", "–", re.sub(r"\s*,\s*", ", ", page))
-    return {"heading": clean(str(heading or "")) or None, "name": name, "page": page}
+    page = re.sub(rf"^{core.PAGE_PREFIX}", "", page)  # "p. 42" -> "42"
+    row = {"heading": clean(str(heading or "")) or None, "name": name, "page": page}
+    if not re.search(r"\d", page):
+        if not _ODD_PAGE_RE.match(page):
+            return None
+        row["warn"] = "page"  # a roman numeral: kept for the review, flagged
+        return row
+    row["page"] = re.sub(r"\s*[-—]\s*", "–", re.sub(r"\s*,\s*", ", ", page))
+    if _ODD_PAGE_RE.match(page):
+        row["warn"] = "page"  # "12a"
+    return row
 
 
 def parse_claude_rows(text, truncated=False):
@@ -920,6 +942,40 @@ def parse_claude_rows(text, truncated=False):
     return rows
 
 
+OVERLAP_WINDOW = 60  # rows at the end of a page that the next photo can show again
+
+
+def merge_pages(pages):
+    """Rows of a whole-index scan, page by page in order (pages[i] is page i+1; an empty list is a page that
+    failed or hasn't been read). Returns one list with page_no on every row, after:
+    - carrying the last heading of a page into the headless rows at the top of the next page (a section
+      continues across a page or column break, and the model can't see the previous page), marked carried;
+    - dropping the leading run of rows on a page that repeat (folded name + page) rows near the end of
+      the previous page: the photos overlapped. Same-name recipes elsewhere are kept."""
+    out, prev = [], None  # prev: the previous page's rows, or None after a gap
+    for i, rows in enumerate(pages):
+        if not rows:
+            prev = None
+            continue
+        carry = prev[-1]["heading"] if prev else None
+        tail = {(fold(r["name"]), r["page"] or "") for r in prev[-OVERLAP_WINDOW:]} if prev else set()
+        kept, overlapping = [], True
+        for r in rows:
+            r = {**r, "page_no": i + 1}
+            overlapping = overlapping and (fold(r["name"]), r["page"] or "") in tail
+            if overlapping:
+                continue  # the leading run of repeats; a repeat further down is for mark_duplicates to flag
+            if carry is not None:
+                if r.get("heading") is None:
+                    r["heading"], r["carried"] = carry, True
+                else:
+                    carry = None  # the leading headless run is over
+            kept.append(r)
+        out.extend(kept)
+        prev = rows
+    return out
+
+
 def prepare_photo(raw):
     from PIL import ImageOps
     img = ImageOps.exif_transpose(core.open_image(raw)).convert("L")  # grayscale: text only, smaller
@@ -942,6 +998,13 @@ def run_photo_job(job_id, jpeg):
     res_rows, warning, err_msg = None, None, None
     try:
         with _photo_sem:
+            con = core.connect()  # a scan page waited for this slot: now it's running, and the clock starts
+            try:
+                con.execute("UPDATE photo_jobs SET status='running', started=? WHERE id=? AND status='queued'",
+                            (time.time(), job_id))
+                con.commit()
+            finally:
+                con.close()
             text, stop = call_claude(jpeg)
         cut = stop == "max_tokens"
         rows = parse_claude_rows(text, truncated=cut)
@@ -984,6 +1047,10 @@ def index_photo(book_id):
     job_id = secrets.token_urlsafe(12)
     con.commit()
     con.execute("BEGIN IMMEDIATE")  # one writer at a time, so the count and the insert agree across workers
+    capped = daily_limit_reached(con, 1)
+    if capped:
+        con.rollback()
+        return capped
     active = con.execute("SELECT count(*) FROM photo_jobs WHERE status='running' AND created > ?",
                          (time.time() - PHOTO_JOB_LIMIT,)).fetchone()[0]
     if active >= PHOTO_JOBS_MAX:
@@ -991,7 +1058,7 @@ def index_photo(book_id):
         resp = make_err(429, "Too many photos are being read right now. Trying again shortly.")
         resp.headers["Retry-After"] = "5"
         return resp
-    con.execute("DELETE FROM photo_jobs WHERE created < ?", (time.time() - 86400,))
+    con.execute("DELETE FROM photo_jobs WHERE created < ?", (time.time() - PHOTO_JOB_KEEP,))
     con.execute("INSERT INTO photo_jobs (id, book_id, status, created) VALUES (?,?,'running',?)",
                 (job_id, book_id, time.time()))
     con.commit()
@@ -1003,7 +1070,7 @@ def index_photo(book_id):
 @editor_required
 def index_photo_job(job_id):
     j = db().execute("SELECT * FROM photo_jobs WHERE id=?", (job_id,)).fetchone()
-    if not j:
+    if not j or j["status"] == "scan":  # a whole-index scan is polled at /index/scan/<id>
         abort(404)
     elapsed = int(time.time() - j["created"])
     if j["status"] == "running":
@@ -1016,6 +1083,159 @@ def index_photo_job(job_id):
     if j["status"] == "error":
         return jsonify(status="error", error=j["error"])
     return jsonify(status="done", warning=j["warning"], rows=core.mark_duplicates(j["book_id"], json.loads(j["rows"])))
+
+
+# ---- whole-index scans: one parent job, one child job per page, merged for a single review
+# The parent row (status 'scan') only ties the pages together; its state is derived from its children on every
+# poll, so it's the same from either gunicorn worker. Pages wait for a _photo_sem slot in their own thread
+# ('queued'), then run through the single-photo path above.
+def pages_today(con):
+    """Pages (single photos and scan pages) accepted since local midnight. Counted from photo_jobs itself,
+    which the cleanup keeps for PHOTO_JOB_KEEP >= a day."""
+    return con.execute("SELECT count(*) FROM photo_jobs WHERE status != 'scan' AND created >= ?",
+                       (core.local_midnight(),)).fetchone()[0]
+
+
+def daily_limit_reached(con, n):
+    """A 429 response if accepting n more pages would pass PHOTO_DAILY_LIMIT, else None. No Retry-After:
+    unlike the concurrency 429, waiting a few seconds won't help."""
+    used = pages_today(con)
+    if used + n <= PHOTO_DAILY_LIMIT:
+        return None
+    return make_err(429, f"Today's limit of {PHOTO_DAILY_LIMIT} pages is used up ({used} read so far"
+                    f"{f', {n} more asked for' if n > 1 else ''}). It resets at midnight; PHOTO_DAILY_LIMIT in "
+                    "/etc/conf.d/cookbooks raises it.", daily_limit=True)
+
+
+def _scan_row(con, scan_id):
+    j = con.execute("SELECT * FROM photo_jobs WHERE id=? AND status='scan'", (scan_id,)).fetchone()
+    if not j:
+        abort(404)
+    return j
+
+
+def _queue_pages(con, parent, files, page_nos):
+    """Insert a child row per file (queued, or error if the image can't be read) and return the threads to
+    start once the rows are committed: a worker finishing before its row exists would update nothing."""
+    threads = []
+    for f, page_no in zip(files, page_nos):
+        job_id = secrets.token_urlsafe(12)
+        try:
+            jpeg = prepare_photo(f.read())
+        except Exception as e:  # noqa: BLE001
+            con.execute("INSERT INTO photo_jobs (id, book_id, status, error, created, parent_id, page_no) "
+                        "VALUES (?,?,'error',?,?,?,?)",
+                        (job_id, parent["book_id"], f"Couldn't read that image: {e}", time.time(), parent["id"], page_no))
+            continue
+        con.execute("INSERT INTO photo_jobs (id, book_id, status, created, parent_id, page_no) VALUES (?,?,'queued',?,?,?)",
+                    (job_id, parent["book_id"], time.time(), parent["id"], page_no))
+        threads.append(threading.Thread(target=run_photo_job, args=(job_id, jpeg), daemon=True))
+    return threads
+
+
+@app.post("/admin/api/books/<int:book_id>/index/scan")
+@editor_required
+def index_scan_start(book_id):
+    con = db()
+    if not con.execute("SELECT 1 FROM books WHERE id=?", (book_id,)).fetchone():
+        abort(404)
+    if not ANTHROPIC_API_KEY:
+        return make_err(503, "Photo import needs ANTHROPIC_API_KEY in /etc/conf.d/cookbooks")
+    scan_id = secrets.token_urlsafe(12)
+    con.execute("DELETE FROM photo_jobs WHERE created < ?", (time.time() - PHOTO_JOB_KEEP,))
+    con.execute("INSERT INTO photo_jobs (id, book_id, status, created) VALUES (?,?,'scan',?)", (scan_id, book_id, time.time()))
+    con.commit()
+    return jsonify(scan=scan_id), 202
+
+
+@app.post("/admin/api/index/scan/<scan_id>/pages")
+@editor_required
+def index_scan_pages(scan_id):
+    con = db()
+    parent = _scan_row(con, scan_id)
+    files = request.files.getlist("file")
+    if not files:
+        return make_err(400, "No photos")
+    con.commit()
+    con.execute("BEGIN IMMEDIATE")  # the daily count and the inserts agree across workers
+    capped = daily_limit_reached(con, len(files))
+    if capped:
+        con.rollback()
+        return capped
+    first = (con.execute("SELECT coalesce(max(page_no), 0) FROM photo_jobs WHERE parent_id=?", (scan_id,)).fetchone()[0] or 0) + 1
+    page_nos = list(range(first, first + len(files)))
+    threads = _queue_pages(con, parent, files, page_nos)
+    con.commit()
+    for t in threads:
+        t.start()
+    return jsonify(pages=page_nos), 202
+
+
+@app.put("/admin/api/index/scan/<scan_id>/pages/<int:page_no>")
+@editor_required
+def index_scan_retry(scan_id, page_no):
+    """Read one page again from a new upload (the browser still has the photo). Replaces that page's row."""
+    con = db()
+    parent = _scan_row(con, scan_id)
+    old = con.execute("SELECT * FROM photo_jobs WHERE parent_id=? AND page_no=?", (scan_id, page_no)).fetchone()
+    if not old:
+        abort(404)
+    if old["status"] in ("queued", "running"):
+        return make_err(409, "That page is still being read.")
+    f = request.files.get("file")
+    if not f:
+        return make_err(400, "No photo")
+    con.commit()
+    con.execute("BEGIN IMMEDIATE")
+    con.execute("DELETE FROM photo_jobs WHERE id=?", (old["id"],))  # a retry replaces the page, so it isn't counted twice
+    capped = daily_limit_reached(con, 1)
+    if capped:
+        con.rollback()
+        return capped
+    threads = _queue_pages(con, parent, [f], [page_no])
+    con.commit()
+    for t in threads:
+        t.start()
+    return jsonify(pages=[page_no]), 202
+
+
+def scan_state(con, parent):
+    """The parent's status, derived from its pages, with the merged rows of the pages read so far."""
+    now = time.time()
+    kids = con.execute("SELECT * FROM photo_jobs WHERE parent_id=? ORDER BY page_no", (parent["id"],)).fetchall()
+    stale = [k["id"] for k in kids if (k["status"] == "running" and (k["started"] or k["created"]) < now - PHOTO_JOB_LIMIT)
+             or (k["status"] == "queued" and k["created"] < now - PHOTO_QUEUE_LIMIT)]
+    if stale:
+        msg = "Reading that page stopped partway (the server may have restarted). Retry the page."
+        con.executemany("UPDATE photo_jobs SET status='error', error=? WHERE id=? AND status IN ('running', 'queued')",
+                        [(msg, i) for i in stale])
+        con.commit()
+        kids = con.execute("SELECT * FROM photo_jobs WHERE parent_id=? ORDER BY page_no", (parent["id"],)).fetchall()
+    pages, by_no = [], {}
+    for k in kids:
+        rows = json.loads(k["rows"]) if k["status"] == "done" and k["rows"] else None
+        by_no[k["page_no"]] = rows or []
+        pages.append({"page_no": k["page_no"], "status": k["status"], "rows": len(rows) if rows is not None else None,
+                      "error": k["error"], "warning": k["warning"],
+                      "elapsed": int(now - (k["started"] or k["created"])) if k["status"] in ("queued", "running") else None})
+    if not kids:
+        status = "empty"
+    elif any(k["status"] in ("queued", "running") for k in kids):
+        status = "running"
+    else:
+        status = "done"
+    merged = merge_pages([by_no.get(n, []) for n in range(1, max(by_no, default=0) + 1)])
+    merged = core.mark_duplicates(parent["book_id"], merged)
+    present = sum(1 for r in merged if r["duplicate"])
+    return {"status": status, "book_id": parent["book_id"], "pages": pages, "rows": merged,
+            "added": len(merged) - present, "present": present}
+
+
+@app.get("/admin/api/index/scan/<scan_id>")
+@editor_required
+def index_scan_status(scan_id):
+    con = db()
+    return jsonify(scan_state(con, _scan_row(con, scan_id)))
 
 
 @app.get("/admin/api/features")

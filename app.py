@@ -221,6 +221,20 @@ def load_seed(con, data):
 
 
 # ------------------------------------------------------------------- helpers
+def env_int(name, default):
+    try:
+        return int(os.environ.get(name) or default)
+    except ValueError:
+        app.logger.warning("%s is not a whole number; using %s", name, default)
+        return default
+
+
+def local_midnight():
+    """Unix time of the most recent local midnight: daily limits reset then."""
+    t = time.localtime()
+    return time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 0, 0, 0, 0, 0, -1))
+
+
 def page_sort(page):
     m = re.search(r"\d+", page or "")
     return int(m.group()) if m else None
@@ -1031,7 +1045,12 @@ def delete_recipe(rid):
 
 # ---- index import
 PAGES = r"\d+(?:\s*[-–—]\s*\d+)?(?:\s*,\s*\d+(?:\s*[-–—]\s*\d+)?)*"
-ENTRY_RE = re.compile(rf"^(?P<name>.*?\S)[\s,.;:]+(?P<pages>{PAGES})\.?$")
+PAGE_PREFIX = r"(?:\b(?i:pag|pp?)\.?\s*)?"  # Italian and other indexes write "p. 42", "pag. 42", "pp. 42-44"
+# Front-matter and plate pages: roman numerals up to xlix (so an ordinary word made of roman letters, like
+# "mix", can't pass) and a letter suffix ("12a"). They're kept but flagged, since page_sort() can't order them.
+ODD_PAGE = r"(?i:(?=[ivxl])(?:xl|x{0,3})(?:ix|iv|v?i{0,3})|\d+[a-z])"
+ENTRY_RE = re.compile(rf"^(?P<name>.*?\S)[\s,.;:]+{PAGE_PREFIX}(?P<pages>{PAGES})\.?$")
+ODD_ENTRY_RE = re.compile(rf"^(?P<name>.*?\S)[,.;:]\s*{PAGE_PREFIX}(?P<pages>{ODD_PAGE})\.?$")  # needs punctuation
 BULLETS = "•·▪–—-*"
 
 
@@ -1057,7 +1076,9 @@ def parse_index(text):
         s = re.sub(r"[.;,]?\s*see also .*$", "", s, flags=re.I).strip()
         if not s or re.match(r"(?i)^see\b", s) or re.fullmatch(r"[A-Za-z]", s) or fold(s) in ("index",):
             continue
-        m = ENTRY_RE.match(s)
+        m, warn = ENTRY_RE.match(s), None
+        if not m:
+            m, warn = ODD_ENTRY_RE.match(s), "page"
         if not m:
             heading = s.rstrip(":").strip()
             continue
@@ -1066,10 +1087,11 @@ def parse_index(text):
         if fold(name) == "index":
             continue
         is_sub = heading is not None and (indented or name[:1].islower())
-        if is_sub:
-            rows.append({"heading": heading, "name": name, "page": pages})
-        else:
-            rows.append({"heading": None, "name": name, "page": pages})
+        row = {"heading": heading if is_sub else None, "name": name, "page": pages}
+        if warn:
+            row["warn"] = warn  # an unusual page form: shown in the review for a second look
+        rows.append(row)
+        if not is_sub:
             heading = name
     return rows
 

@@ -153,7 +153,7 @@ def test_isbn_lookup_and_create(c, monkeypatch):
     assert res["subtitle"] == "A Subtitle"  # gap filled from Google
     body = {"title": res["title"], "authors": res["authors"], "isbn": isbn, "year": res["year"],
             "cuisine": "Middle Eastern", "tags": ["Vegetarian", "New Tag"], "cover_url": res["cover_url"],
-            "private_notes": "gift from mom", "location": "Kitchen shelf 2"}
+            "private_notes": "gift from mom"}
     made = c.post("/admin/api/books", json=body)
     assert made.status_code == 201, made.json
     b = made.json

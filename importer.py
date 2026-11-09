@@ -10,6 +10,12 @@ schema later travels without a change here. Everything goes through the app's ow
 `set_people`, `name_id`, `reindex_book`) on `app.connect()`, because the search triggers call the `fold()` SQL
 function that only connect() registers.
 
+A book's shelf travels as the path in its `location` ("Kitchen › Pantry › Shelf 2"): each level is found under its
+parent (case, accents and spacing don't count) or created, so the tree is rebuilt. An older export's flat text
+("Kitchen shelf") becomes one root location. The text is only ever split on "›", never on commas or slashes.
+`location_id` is skipped: it is a row id from the database that wrote the file. Empty locations and their order are
+not in the export, so they are not restored; --replace leaves locations nobody is shelved in alone.
+
 All writes happen in one transaction: a failure, or --dry-run, rolls the whole import back.
 """
 import json
@@ -43,7 +49,7 @@ class Report:
 
     def __init__(self):
         self.counts = {t: {"insert": 0, "update": 0, "skip": 0, "delete": 0} for t in TABLES}
-        self.new_names = {"authors": 0, "tags": 0, "ingredients": 0}
+        self.new_names = {"authors": 0, "tags": 0, "ingredients": 0, "locations": 0}
         self.hints_set = 0
         self.deleted_books = []  # (uid, title) of the books --replace removes (or, in a dry run, would)
         self.dry_run = False
@@ -140,7 +146,7 @@ def _names(ctx, v):
 
 def _book_vals(src, cols, label, rep):
     A = _app()
-    vals = _typed(cols, src, skip={"id", "uid", "created_at", "updated_at", "cover"})
+    vals = _typed(cols, src, skip={"id", "uid", "created_at", "updated_at", "cover", "location", "location_id"})
     if "isbn" in vals:
         raw = vals["isbn"]
         vals["isbn"] = A.normalize_isbn(raw) if raw else None
@@ -318,11 +324,29 @@ def _find_book(ctx, src, uid, vals):
     return None
 
 
+def _shelf(ctx, raw):
+    """The location id for a shelf path, creating the levels that are missing; None for no shelf."""
+    A, con = ctx.A, ctx.con
+    parent = None
+    for name in filter(None, (A.loc_name(part) for part in raw.split("›"))):
+        found = A.location_clash(con, parent, name)  # a sibling of that name, by folded text
+        if found is None:
+            found = con.execute("INSERT INTO locations(parent_id, name, sort_order) VALUES (?,?,?)",
+                                (parent, name, A.next_sort_order(con, parent))).lastrowid
+        parent = found
+    return parent
+
+
 def _book(ctx, src, label, rep):
     """Insert or update one book. Returns its id, or None if it was left out."""
     A, con = ctx.A, ctx.con
     uid = _uid(src, label, rep)
     vals = _book_vals(src, ctx.cols["books"], label, rep)
+    if "location" in src and not src.get("kind"):  # a missing key leaves the shelf alone; null takes the book off it
+        if src["location"] is None or isinstance(src["location"], str):
+            vals["location_id"] = _shelf(ctx, src["location"]) if src["location"] else None
+        else:
+            rep.warnings.append(f"{label}: location {src['location']!r} is not text, left alone")
     if vals.get("cover"):
         ctx.book_files.add(("cover", vals["cover"]))
     bid = _find_book(ctx, src, uid, vals)
@@ -696,7 +720,8 @@ def format_report(rep):
         line = f"{title:<8}{c['insert']} inserted, {c['update']} updated, {c['skip']} skipped"
         out.append(line + (f", {c['delete']} deleted" if c["delete"] else ""))
     n = rep.new_names
-    out.append(f"New:    {n['authors']} authors, {n['tags']} tags, {n['ingredients']} ingredient tags"
+    out.append(f"New:    {n['authors']} authors, {n['tags']} tags, {n['ingredients']} ingredient tags, "
+               f"{n['locations']} shelf locations"
                + (f" ({rep.hints_set} marked as search hints)" if rep.hints_set else ""))
     f = rep.files
     if f["present"] or f["copied"] or f["missing"] or f["unusable"]:

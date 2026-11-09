@@ -112,6 +112,68 @@ def migrate_uids(con):
             con.execute(f"ALTER TABLE {table} ADD COLUMN uid TEXT")
         con.execute(f"UPDATE {table} SET uid=lower(hex(randomblob(16))) WHERE uid IS NULL")
     con.executescript(UIDS)
+
+
+# Shelf locations: a tree (room > area > shelf, any depth). A book is in at most one (`books.location_id`; the
+# location SET NULLs when deleted, and a location's children go with it). `books.location` is the free text this
+# replaced: it stays, frozen, so the previous release still runs if you roll back, and nothing reads or writes it.
+LOCATIONS = """
+CREATE TABLE IF NOT EXISTS locations (
+  id INTEGER PRIMARY KEY,
+  parent_id INTEGER REFERENCES locations(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, sort_order INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS locations_parent ON locations(parent_id);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+"""
+LOCATION_SEP = " › "  # the breadcrumb separator, "Kitchen › Pantry › Shelf 2"; exports use it and imports split on it
+PATHY = ",;/>›|-"  # characters that hint a flat name is really a path. The migration reports these; it never splits on them
+
+
+def loc_name(v):
+    """A location name as stored: composed accents, runs of whitespace collapsed to one space, trimmed. None if empty."""
+    if v is None:
+        return None
+    return " ".join((clean(v if isinstance(v, str) else str(v)) or "").split()) or None
+
+
+def migrate_locations(con):
+    """Add the locations table and `books.location_id`, and (once) turn the old free-text `location` into root
+    locations: one per distinct text, where text that differs only in case, accents or spacing counts as the same,
+    named with its commonest spelling (a tie goes to the lowest book id). Text is never split on commas, slashes or
+    arrows ("Office, top shelf" is one location); the names that look like paths are recorded for review instead.
+    The `locations_migrated` marker in `meta` makes this run once: without it, a book whose shelf was cleared in the
+    editor would be put back from the frozen text on the next start."""
+    con.executescript(LOCATIONS)
+    cols = [r[1] for r in con.execute("PRAGMA table_info(books)")]
+    if "location_id" not in cols:
+        con.execute("ALTER TABLE books ADD COLUMN location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL")
+    con.execute("CREATE INDEX IF NOT EXISTS books_location ON books(location_id)")
+    if con.execute("SELECT 1 FROM meta WHERE key='locations_migrated'").fetchone():
+        return
+    groups = {}  # folded name -> {spelling: how many books}, in book id order
+    members = {}  # folded name -> book ids
+    if "location" in cols:
+        for bid, raw in con.execute("SELECT id, location FROM books WHERE location IS NOT NULL AND location_id IS NULL "
+                                    "ORDER BY id").fetchall():
+            name = loc_name(raw)
+            if name:
+                spell = groups.setdefault(fold(name), {})
+                spell[name] = spell.get(name, 0) + 1
+                members.setdefault(fold(name), []).append(bid)
+    names = {}
+    for order, key in enumerate(sorted(groups)):
+        name = max(groups[key], key=groups[key].get)  # max keeps the first of equals: the lowest book id's spelling
+        lid = con.execute("INSERT INTO locations(parent_id, name, sort_order) VALUES (NULL, ?, ?)", (name, order)).lastrowid
+        con.executemany("UPDATE books SET location_id=? WHERE id=?", [(lid, b) for b in members[key]])
+        names[lid] = name
+    info = {"at": time.strftime("%Y-%m-%d %H:%M"), "locations": len(names), "books": sum(map(len, members.values())),
+            "delimited": sorted(n for n in names.values() if any(ch in n for ch in PATHY))}
+    con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('locations_migrated', ?)", (json.dumps(info),))
+    if names:
+        app.logger.info("shelf locations: %d locations from the old text for %d books; %d look like paths (%s)",
+                        info["locations"], info["books"], len(info["delimited"]), "; ".join(info["delimited"]) or "none")
+
+
 # Both indexes hold fold()ed text, so "oeufs" finds "Œufs" and "strasse" finds "Straße". The triggers call the
 # fold() SQL function that connect() registers, so recipes should only be written through this app.
 FTS = """
@@ -178,6 +240,7 @@ def _init_db_locked():
     photos.migrate(con)
     ask.migrate(con)
     migrate_uids(con)
+    migrate_locations(con)
     old = con.execute("SELECT sql FROM sqlite_master WHERE name='recipes_fts'").fetchone()
     if old and "content=" in old[0]:  # the old index read unfolded text straight from recipes; replace it
         con.executescript("DROP TRIGGER IF EXISTS recipes_ai; DROP TRIGGER IF EXISTS recipes_ad; "
@@ -351,9 +414,14 @@ def book_dicts(rows, private):
     for r in db().execute(f"SELECT book_id, count(*), sum(want_to_try) FROM recipes WHERE book_id IN ({qs}) "
                           f"GROUP BY book_id", ids):
         counts[r[0]] = (r[1], r[2] or 0)
+    paths = location_paths(db())
     out = []
     for r in rows:
         d = dict(r) if private else {k: r[k] for k in PUBLIC_BOOK}
+        lid = r["location_id"] if "location_id" in r.keys() else None
+        d["location_id"], d["location_path"] = lid, paths.get(lid)  # the shelf is public on purpose (see get_locations)
+        if private:  # `location` used to be free text; it is now the same path, so exports and the MCP keep their key
+            d["location"] = d["location_path"]
         d["authors"] = authors.get(r["id"], [])
         d["tags"] = tags.get(r["id"], [])
         d["recipe_count"] = counts.get(r["id"], (0, 0))[0]
@@ -560,6 +628,83 @@ def cuisine_condition(name):
             "WHERE fold(t.name)=fold(?)))", [name, name])
 
 
+# ------------------------------------------------------------- locations
+def location_tree(con):
+    """Every location, depth first (siblings by sort_order, then folded name), as
+    {id, parent_id, name, sort_order, path, depth}. A location whose parent is missing, or that sits in a loop
+    (only possible by editing the database by hand), is listed as a root rather than lost."""
+    rows = con.execute("SELECT id, parent_id, name, sort_order FROM locations").fetchall()
+    kids = {}
+    for id_, pid, name, order in rows:
+        kids.setdefault(pid, []).append((order, fold(name), id_, name))
+    out, seen = [], set()
+
+    def walk(pid, prefix, depth):
+        for order, _, id_, name in sorted(kids.get(pid, [])):
+            if id_ in seen:
+                continue
+            seen.add(id_)
+            out.append({"id": id_, "parent_id": pid, "name": name, "sort_order": order, "path": prefix + name,
+                        "depth": depth})
+            walk(id_, prefix + name + LOCATION_SEP, depth + 1)
+    walk(None, "", 0)
+    for id_, pid, name, order in sorted(rows, key=lambda r: (r[3], fold(r[2]), r[0])):
+        if id_ not in seen:
+            seen.add(id_)
+            out.append({"id": id_, "parent_id": pid, "name": name, "sort_order": order, "path": name, "depth": 0})
+            walk(id_, name + LOCATION_SEP, 1)
+    return out
+
+
+def get_locations(con, public=False):
+    """The location tree with book counts: `direct` (books shelved right here) and `n` (here or anywhere below, which
+    is what filtering by it returns). public=True counts only cookbooks and lists only the locations that hold at
+    least one, themselves or below, so no empty rooms and nothing from editor-only recipe websites is exposed."""
+    tree = location_tree(con)
+    direct = dict(con.execute("SELECT b.location_id, count(*) FROM books b WHERE b.location_id IS NOT NULL"
+                              + (f" AND {PUBLIC_BOOKS}" if public else "") + " GROUP BY b.location_id").fetchall())
+    n = {l["id"]: direct.get(l["id"], 0) for l in tree}
+    for l in reversed(tree):  # a child comes after its parent, so this adds each subtree into its parent once
+        if l["parent_id"] in n and l["parent_id"] != l["id"]:
+            n[l["parent_id"]] += n[l["id"]]
+    out = [{**l, "n": n[l["id"]], "direct": direct.get(l["id"], 0)} for l in tree]
+    return [l for l in out if l["n"] > 0] if public else out
+
+
+def location_paths(con):
+    """{location id: "Kitchen › Pantry › Shelf 2"}"""
+    return {l["id"]: l["path"] for l in location_tree(con)}
+
+
+def descendant_location_ids(con, location_id):
+    """`location_id` and every location below it."""
+    kids = {}
+    for id_, pid in con.execute("SELECT id, parent_id FROM locations").fetchall():
+        kids.setdefault(pid, []).append(id_)
+    found, todo = set(), [location_id]
+    while todo:
+        cur = todo.pop()
+        if cur not in found:
+            found.add(cur)
+            todo += kids.get(cur, [])
+    return found
+
+
+def location_arg(raw, what="location_id"):
+    """An id from a request: None for nothing (null or ""), an int for a whole number, otherwise a 400."""
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str) and re.fullmatch(r"\s*\d+\s*", raw):
+        return int(raw)
+    abort(make_err(400, f"{what} must be a whole number"))
+
+
+def locations_list(private):
+    return jsonify(locations=get_locations(db(), public=not private))
+
+
 # ------------------------------------------------------------- read API
 def list_books(private):
     q = request.args.get("q", "").strip()
@@ -590,6 +735,11 @@ def list_books(private):
     if request.args.get("publisher"):
         sql += " AND fold(b.publisher) = fold(?)"
         args.append(request.args["publisher"])
+    shelf = location_arg(request.args.get("location_id"))  # a location includes everything shelved below it
+    if shelf is not None:
+        ids = sorted(descendant_location_ids(db(), shelf))
+        sql += f" AND b.location_id IN ({','.join('?' * len(ids))})"
+        args += ids
     if request.args.get("ingredient"):
         import ingredients
         cond, a = ingredients.ingredient_condition(db(), request.args["ingredient"])
@@ -753,6 +903,7 @@ def facets(private):
             "JOIN books b ON b.id=ba.book_id" + pub + " GROUP BY a.id")),
         publishers=sorted((r[0] for r in d.execute(
             "SELECT DISTINCT publisher FROM books WHERE publisher IS NOT NULL")), key=fold) if private else [],
+        locations=get_locations(d, public=not private),  # editors get empty ones too, for the picker
         stats={"books": d.execute(f"SELECT count(*) FROM books b WHERE {PUBLIC_BOOKS}").fetchone()[0],  # cookbooks
                "recipes": d.execute("SELECT count(*) FROM recipes r JOIN books b ON b.id=r.book_id"
                                     + pub).fetchone()[0]},
@@ -769,6 +920,7 @@ for prefix, private in (("/api", False), ("/admin/api", True)):
     app.add_url_rule(f"{prefix}/recipes", f"recipes_{private}", _wrap(search_recipes))
     app.add_url_rule(f"{prefix}/recipes/books", f"recipe_books_{private}", _wrap(recipe_books))
     app.add_url_rule(f"{prefix}/facets", f"facets_{private}", _wrap(facets))
+    app.add_url_rule(f"{prefix}/locations", f"locations_{private}", _wrap(locations_list))
 
 
 @app.get("/api/me")
@@ -783,8 +935,8 @@ def me():
 
 
 # ------------------------------------------------------------- write API
-BOOK_FIELDS = ("title", "subtitle", "isbn", "publisher", "year", "cuisine", "format", "description", "location",
-               "status", "loaned_to", "signed", "private_notes", "needs_review", "rating")
+BOOK_FIELDS = ("title", "subtitle", "isbn", "publisher", "year", "cuisine", "format", "description", "location_id",
+               "status", "loaned_to", "signed", "private_notes", "needs_review", "rating")  # not `location`: see migrate_locations
 
 
 def book_values(data):
@@ -801,6 +953,10 @@ def book_values(data):
             v = normalize_isbn(v) if v else None
             if data[k] and not v:
                 abort(make_err(400, "That doesn't look like a valid ISBN"))
+        elif k == "location_id":
+            v = location_arg(v)
+            if v is not None and not db().execute("SELECT 1 FROM locations WHERE id=?", (v,)).fetchone():
+                abort(make_err(400, "That shelf location doesn't exist"))
         elif k == "status":
             v = v if v in ("owned", "out", "loaned", "gone", "wanted") else "owned"
         elif k == "rating":  # overall book rating: 0–5 stars in half stars, None = unrated
@@ -859,10 +1015,13 @@ def create_book():
 @editor_required
 def update_book(book_id):
     con = db()
-    if not con.execute("SELECT 1 FROM books WHERE id=?", (book_id,)).fetchone():
+    row = con.execute("SELECT kind FROM books WHERE id=?", (book_id,)).fetchone()
+    if not row:
         abort(404)
     data = request.get_json(force=True)
     vals = book_values(data)
+    if vals.get("location_id") is not None and row["kind"]:
+        return make_err(400, "A recipe website isn't on a shelf")
     dup = isbn_conflict(vals.get("isbn"), exclude=book_id)
     if dup:
         return make_err(409, f"Another book already has that ISBN: {dup['title']}", book_id=dup["id"])
@@ -905,6 +1064,116 @@ def delete_book(book_id):
         (COVER_DIR / row["cover"]).unlink(missing_ok=True)
     photos.unlink(photo_files)
     return jsonify(ok=True)
+
+
+# ---- shelf locations (editors only; the public read side is /api/locations and the catalog filter)
+def location_clash(con, parent_id, name, exclude=None):
+    """The sibling already called `name` (case, accents and spacing don't count), or None. Two shelves of one name
+    in one place would make a path ("Kitchen › Shelf 2") ambiguous, and an import couldn't tell them apart."""
+    key = fold(name)
+    for id_, other in con.execute("SELECT id, name FROM locations WHERE parent_id IS ? AND id IS NOT ?",
+                                  (parent_id, exclude)).fetchall():
+        if fold(other) == key:
+            return id_
+    return None
+
+
+def next_sort_order(con, parent_id):
+    return con.execute("SELECT coalesce(max(sort_order) + 1, 0) FROM locations WHERE parent_id IS ?", (parent_id,)).fetchone()[0]
+
+
+def one_location(con, loc_id):
+    return next(l for l in get_locations(con) if l["id"] == loc_id)
+
+
+@app.post("/admin/api/locations")
+@editor_required
+def add_location():
+    data = request.get_json(silent=True) or {}
+    name = loc_name(data.get("name"))
+    if not name:
+        return make_err(400, "A location needs a name")
+    con = db()
+    parent = location_arg(data.get("parent_id"), "parent_id")
+    if parent is not None and not con.execute("SELECT 1 FROM locations WHERE id=?", (parent,)).fetchone():
+        return make_err(400, "That parent location doesn't exist")
+    if location_clash(con, parent, name):
+        return make_err(409, f"There is already a “{name}” there")
+    order = location_arg(data.get("sort_order"), "sort_order")
+    if order is None:
+        order = next_sort_order(con, parent)
+    lid = con.execute("INSERT INTO locations(parent_id, name, sort_order) VALUES (?,?,?)", (parent, name, order)).lastrowid
+    con.commit()
+    return jsonify(ok=True, location=one_location(con, lid)), 201
+
+
+@app.put("/admin/api/locations/<int:loc_id>")
+@editor_required
+def edit_location(loc_id):
+    """Rename, move (parent_id; null = a root) and/or set sort_order. A move goes last among its new siblings
+    unless sort_order says otherwise. A location can't go under itself or anything below it."""
+    con = db()
+    cur = con.execute("SELECT parent_id, name, sort_order FROM locations WHERE id=?", (loc_id,)).fetchone()
+    if not cur:
+        return make_err(404, "No such location")
+    data = request.get_json(silent=True) or {}
+    name = loc_name(data["name"]) if "name" in data else cur["name"]
+    if not name:
+        return make_err(400, "A location needs a name")
+    parent, order = cur["parent_id"], cur["sort_order"]
+    if "parent_id" in data:
+        parent = location_arg(data["parent_id"], "parent_id")
+        if parent is not None:
+            if parent in descendant_location_ids(con, loc_id):  # includes itself
+                return make_err(400, "A location can't go inside itself or anything below it")
+            if not con.execute("SELECT 1 FROM locations WHERE id=?", (parent,)).fetchone():
+                return make_err(400, "That parent location doesn't exist")
+        if parent != cur["parent_id"]:
+            order = next_sort_order(con, parent)
+    given = location_arg(data.get("sort_order"), "sort_order")
+    if given is not None:
+        order = given
+    if location_clash(con, parent, name, exclude=loc_id):
+        return make_err(409, f"There is already a “{name}” there")
+    con.execute("UPDATE locations SET name=?, parent_id=?, sort_order=? WHERE id=?", (name, parent, order, loc_id))
+    con.commit()
+    return jsonify(ok=True, location=one_location(con, loc_id))
+
+
+@app.delete("/admin/api/locations/<int:loc_id>")
+@editor_required
+def delete_location(loc_id):
+    """Deletes the location and everything below it; the books that were on any of them become unshelved."""
+    con = db()
+    if not con.execute("SELECT 1 FROM locations WHERE id=?", (loc_id,)).fetchone():
+        return make_err(404, "No such location")
+    ids = sorted(descendant_location_ids(con, loc_id))
+    qs = ",".join("?" * len(ids))
+    unshelved = con.execute(f"SELECT count(*) FROM books WHERE location_id IN ({qs})", ids).fetchone()[0]
+    con.execute("DELETE FROM locations WHERE id=?", (loc_id,))  # the children cascade, the books' ids go NULL
+    con.commit()
+    return jsonify(ok=True, deleted_id=loc_id, locations_deleted=len(ids), books_unshelved=unshelved)
+
+
+@app.post("/admin/api/locations/reorder")
+@editor_required
+def reorder_locations():
+    """{parent_id, ids}: the order the children of that parent (null = the roots) should be in. `ids` must be
+    exactly those children, so a stale screen can't drop or duplicate one."""
+    data = request.get_json(silent=True) or {}
+    con = db()
+    parent = location_arg(data.get("parent_id"), "parent_id")
+    if parent is not None and not con.execute("SELECT 1 FROM locations WHERE id=?", (parent,)).fetchone():
+        return make_err(400, "That parent location doesn't exist")
+    ids = data.get("ids")
+    if not isinstance(ids, list) or any(isinstance(i, bool) or not isinstance(i, int) for i in ids):
+        return make_err(400, "ids must be a list of location ids")
+    have = {r[0] for r in con.execute("SELECT id FROM locations WHERE parent_id IS ?", (parent,))}
+    if len(ids) != len(set(ids)) or set(ids) != have:
+        return make_err(400, "ids must be exactly the locations under that parent")
+    con.executemany("UPDATE locations SET sort_order=? WHERE id=?", [(i, lid) for i, lid in enumerate(ids)])
+    con.commit()
+    return jsonify(ok=True, locations=get_locations(con))
 
 
 # ---- covers
@@ -1269,6 +1538,9 @@ EXPORT_VERSION = 1
 def export_json():
     rows = db().execute("SELECT * FROM books ORDER BY id").fetchall()
     books = book_dicts(rows, True)
+    for b in books:  # the shelf travels as the `location` path; ids belong to this database only (see importer._shelf)
+        b.pop("location_id", None)
+        b.pop("location_path", None)
     tags = {}  # recipe id -> its ingredient tag names; [] in the file means untagged, a missing key an older export
     for rid, name in db().execute("SELECT ri.recipe_id, i.name FROM recipe_ingredients ri "
                                   "JOIN ingredients i ON i.id=ri.ingredient_id ORDER BY i.name"):

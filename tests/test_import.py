@@ -91,8 +91,10 @@ def catalog(con):
     """Everything the export carries, keyed by uid with the row ids left out, so two databases compare equal
     when they hold the same catalog."""
     out = {}
+    shelves = A.location_paths(con)
     for b in con.execute("SELECT * FROM books ORDER BY uid"):
-        d = {k: b[k] for k in b.keys() if k != "id"}
+        d = {k: b[k] for k in b.keys() if k not in ("id", "location_id", "location")}
+        d["shelf"] = shelves.get(b["location_id"])
         d["authors"] = [r[0] for r in con.execute(
             "SELECT a.name FROM authors a JOIN book_authors ba ON ba.author_id=a.id WHERE ba.book_id=? ORDER BY ba.pos",
             (b["id"],))]
@@ -126,8 +128,13 @@ def decorate_catalog():
     _tag_a_recipe()
     con = A.connect()
     b1, b2 = [r[0] for r in con.execute("SELECT id FROM books ORDER BY id LIMIT 2")]
-    con.execute("UPDATE books SET rating=4.5, signed=1, status='loaned', loaned_to='A neighbour', location='Kitchen shelf', "
-                "year=2011, private_notes='Spine is cracked' WHERE id=?", (b1,))
+    row = con.execute("SELECT id FROM locations WHERE name='Kitchen' AND parent_id IS NULL").fetchone()  # called twice per module
+    kitchen = row[0] if row else con.execute("INSERT INTO locations(name, sort_order) VALUES ('Kitchen', 0)").lastrowid
+    row = con.execute("SELECT id FROM locations WHERE name='Pantry' AND parent_id=?", (kitchen,)).fetchone()
+    pantry = row[0] if row else con.execute("INSERT INTO locations(parent_id, name, sort_order) VALUES (?, 'Pantry', 0)",
+                                            (kitchen,)).lastrowid
+    con.execute("UPDATE books SET rating=4.5, signed=1, status='loaned', loaned_to='A neighbour', location_id=?, "
+                "year=2011, private_notes='Spine is cracked' WHERE id=?", (pantry, b1))
     A.set_people(con, b1, ["José Andrés", "Second Author"], ["Tapas", "Spanish"])
     rid = con.execute("INSERT INTO recipes(book_id, name, page, page_sort, want_to_try, rating, notes, last_made, source) "
                       "VALUES (?,?,?,?,?,?,?,?, 'manual')",
@@ -729,3 +736,124 @@ def test_cli_help_does_not_touch_the_database(tmp_path):
     r = _cli(["--help"], tmp_path / "data")
     assert r.returncode == 0 and "--dry-run" in r.stdout and "--replace" in r.stdout and "--photos" in r.stdout
     assert not (tmp_path / "data").exists()
+
+
+# ------------------------------------------------------------------ shelf locations
+SEP = " › "
+
+
+def _no_shelves():
+    con = A.connect()
+    con.execute("UPDATE books SET location_id=NULL")
+    con.execute("DELETE FROM locations")
+    con.commit()
+    con.close()
+
+
+def _shelf_of(con, title):
+    return A.location_paths(con).get(con.execute("SELECT location_id FROM books WHERE title=?", (title,)).fetchone()[0])
+
+
+def _tree(con):
+    return [(l["path"], l["depth"]) for l in A.location_tree(con)]
+
+
+def test_export_carries_the_shelf_as_a_path_and_no_row_ids(client):
+    _no_shelves()
+    con = A.connect()
+    kitchen = con.execute("INSERT INTO locations(name) VALUES ('Kitchen')").lastrowid
+    pantry = con.execute("INSERT INTO locations(parent_id, name) VALUES (?, 'Pantry')", (kitchen,)).lastrowid
+    bid, uid = con.execute("SELECT id, uid FROM books ORDER BY id LIMIT 1").fetchone()
+    con.execute("UPDATE books SET location_id=?, location='stale text' WHERE id=?", (pantry, bid))
+    con.commit()
+    con.close()
+    books = export(client)["books"]
+    mine = next(b for b in books if b["uid"] == uid)
+    assert mine["location"] == f"Kitchen{SEP}Pantry"  # the path, not the frozen text
+    assert all("location_id" not in b and "location_path" not in b for b in books)
+    assert all(b["location"] is None for b in books if b["uid"] != uid)
+    rows = client.get("/admin/api/export.csv").get_data(as_text=True).lstrip("\ufeff").splitlines()
+    col = rows[0].split(",").index("location")
+    import csv, io
+    got = {r[1]: r[col] for r in csv.reader(io.StringIO("\n".join(rows)))}
+    assert got[uid] == f"Kitchen{SEP}Pantry"
+    _no_shelves()
+
+
+def test_import_rebuilds_the_tree_from_paths_and_shares_the_levels():
+    import importer
+    _no_shelves()
+    con = A.connect()
+    data = {"version": 1, "books": [
+        {"title": "Shelf A", "location": f"Kitchen{SEP}Pantry{SEP}Shelf 2"},
+        {"title": "Shelf B", "location": f"kitchen {SEP} PANTRY"},          # the same levels, spelled differently
+        {"title": "Shelf C", "location": f"Kitchen{SEP}Fridge"},
+        {"title": "Shelf D", "location": "Office, top shelf"},             # an older export's flat text: one root, unsplit
+        {"title": "Shelf E", "location": None},
+        {"title": "Shelf F", "location": "  "},
+    ]}
+    rep = importer.import_data(con, data)
+    assert rep.new_names["locations"] == 5
+    assert _tree(con) == [("Kitchen", 0), (f"Kitchen{SEP}Pantry", 1), (f"Kitchen{SEP}Pantry{SEP}Shelf 2", 2),
+                          (f"Kitchen{SEP}Fridge", 1), ("Office, top shelf", 0)]
+    assert [_shelf_of(con, f"Shelf {x}") for x in "ABCDEF"] == [
+        f"Kitchen{SEP}Pantry{SEP}Shelf 2", f"Kitchen{SEP}Pantry", f"Kitchen{SEP}Fridge", "Office, top shelf", None, None]
+    con.close()
+    _no_shelves()
+
+
+def test_import_never_trusts_a_location_id_from_another_database():
+    """A row id means nothing here: copied by name it would be a dangling reference or, worse, another shelf."""
+    import importer
+    _no_shelves()
+    con = A.connect()
+    other = con.execute("INSERT INTO locations(name) VALUES ('Somebody else''s room')").lastrowid
+    con.commit()
+    data = {"version": 1, "books": [{"title": "Id one", "location_id": other}, {"title": "Id gone", "location_id": 99999}]}
+    rep = importer.import_data(con, data)
+    assert (rep.counts["books"]["insert"], rep.conflicts) == (2, [])
+    assert _shelf_of(con, "Id one") is None and _shelf_of(con, "Id gone") is None
+    con.close()
+    _no_shelves()
+
+
+def test_import_moves_clears_or_keeps_a_shelf_by_what_the_file_says():
+    import importer
+    _no_shelves()
+    con = A.connect()
+    uids = {}
+    for t in ("Keep me", "Move me", "Clear me"):
+        con.execute("INSERT INTO books(title) VALUES (?)", (f"Shelf {t}",))
+        uids[t] = con.execute("SELECT uid FROM books WHERE title=?", (f"Shelf {t}",)).fetchone()[0]
+    con.commit()  # import_data wants a connection with no open transaction
+    importer.import_data(con, {"version": 1, "books": [{"uid": u, "title": f"Shelf {t}", "location": "Den"} for t, u in uids.items()]})
+    assert {_shelf_of(con, f"Shelf {t}") for t in uids} == {"Den"}
+    rep = importer.import_data(con, {"version": 1, "books": [
+        {"uid": uids["Keep me"], "title": "Shelf Keep me"},                              # no key: left where it is
+        {"uid": uids["Move me"], "title": "Shelf Move me", "location": f"Den{SEP}Left"},  # new path under an old level
+        {"uid": uids["Clear me"], "title": "Shelf Clear me", "location": None}]})        # null: off the shelf
+    assert [_shelf_of(con, f"Shelf {t}") for t in ("Keep me", "Move me", "Clear me")] == ["Den", f"Den{SEP}Left", None]
+    assert rep.new_names["locations"] == 1 and _tree(con) == [("Den", 0), (f"Den{SEP}Left", 1)]
+    con.close()
+    _no_shelves()
+
+
+def test_import_does_not_shelve_a_recipe_website():
+    import importer
+    _no_shelves()
+    con = A.connect()
+    importer.import_data(con, {"version": 1, "books": [{"title": "Shelf site", "kind": "online", "site": "example.com",
+                                                          "location": "Den"}]})
+    assert _shelf_of(con, "Shelf site") is None and _tree(con) == []
+    con.close()
+
+
+def test_a_dry_run_counts_the_new_locations_and_leaves_none():
+    import importer
+    _no_shelves()
+    con = A.connect()
+    rep = importer.import_data(con, {"version": 1, "books": [{"title": "Shelf dry", "location": f"A{SEP}B{SEP}C"}]}, dry_run=True)
+    assert rep.new_names["locations"] == 3 and "3 shelf locations" in importer.format_report(rep)
+    assert con.execute("SELECT count(*) FROM locations").fetchone()[0] == 0
+    assert con.execute("SELECT count(*) FROM books WHERE title='Shelf dry'").fetchone()[0] == 0
+    con.close()

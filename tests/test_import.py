@@ -221,3 +221,135 @@ def test_an_export_without_a_version_is_accepted(client):
     con = A.connect()
     assert importer.import_data(con, data).counts["books"]["insert"] == 0
     con.close()
+
+
+# ------------------------------------------------------------------ files without uids (older exports)
+HEX32 = re.compile(r"^[0-9a-f]{32}$")
+
+
+def strip_uids(data):
+    for b in data["books"]:
+        b.pop("uid", None)
+        for r in b["recipes"]:
+            r.pop("uid", None)
+    return data
+
+
+def _isbn(n):
+    """A valid ISBN-13 that differs for every n, so tests in this module can't collide on the unique ISBN index."""
+    core = f"978{n:09d}"
+    return core + str((10 - sum(int(c) * (1 if i % 2 == 0 else 3) for i, c in enumerate(core)) % 10) % 10)
+
+
+def _local_book(con, title, authors, isbn=None, recipes=()):
+    bid = con.execute("INSERT INTO books(title, isbn) VALUES (?,?)", (title, isbn)).lastrowid
+    A.set_people(con, bid, authors, [])
+    for name, page, *ext in recipes:
+        con.execute("INSERT INTO recipes(book_id, name, page, page_sort, ext_id) VALUES (?,?,?,?,?)",
+                    (bid, name, page, A.page_sort(page), ext[0] if ext else None))
+    A.reindex_book(con, bid)
+    con.commit()
+    return bid
+
+
+def test_without_uids_every_book_and_recipe_finds_itself(client):
+    import importer
+    decorate_catalog()
+    data = strip_uids(export(client))
+    con = A.connect()
+    before = catalog(con)
+    rep = importer.import_data(con, data)
+    for table in ("books", "recipes"):
+        assert rep.counts[table]["insert"] == 0 and rep.counts[table]["update"] == 0, (table, rep.conflicts)
+    assert catalog(con) == before
+    con.close()
+
+
+def test_without_a_uid_a_book_matches_by_isbn_then_by_folded_title_and_first_author():
+    import importer
+    con = A.connect()
+    x = _local_book(con, "Marmalade Notes", ["Pat Quince"], isbn=_isbn(1))
+    y = _local_book(con, "Jam Book", ["Sam Berry"])
+    uids = dict(con.execute("SELECT id, uid FROM books WHERE id IN (?,?)", (x, y)).fetchall())
+    n = con.execute("SELECT count(*) FROM books").fetchone()[0]
+    data = {"version": 1, "books": [
+        {"title": "Marmalade Notes, 2nd ed.", "isbn": _isbn(1)[:3] + "-" + _isbn(1)[3:], "authors": ["Someone Else"]},  # ISBN wins
+        {"title": "jam BOOK", "authors": ["Sám Berry"], "publisher": "Preserve Press"},                    # folded match
+        {"title": "Jam Book", "authors": ["Someone Else"]},     # same title, other first author: a different book
+        {"title": "Brand New", "authors": []},
+    ]}
+    rep = importer.import_data(con, data)
+    assert (rep.counts["books"]["insert"], rep.counts["books"]["update"]) == (2, 2)
+    assert con.execute("SELECT count(*) FROM books").fetchone()[0] == n + 2
+    assert con.execute("SELECT title, uid FROM books WHERE id=?", (x,)).fetchone()[:] == ("Marmalade Notes, 2nd ed.", uids[x])
+    assert con.execute("SELECT publisher, uid FROM books WHERE id=?", (y,)).fetchone()[:] == ("Preserve Press", uids[y])
+    new = con.execute("SELECT uid FROM books WHERE title IN ('Brand New') OR (title='Jam Book' AND id<>?)", (y,)).fetchall()
+    assert len(new) == 2 and all(HEX32.match(r[0]) for r in new)
+    con.close()
+
+
+def test_two_file_entries_never_claim_the_same_local_book():
+    import importer
+    con = A.connect()
+    _local_book(con, "Twin Title", ["Same Author"])
+    n = con.execute("SELECT count(*) FROM books WHERE title='Twin Title'").fetchone()[0]
+    data = {"books": [{"title": "Twin Title", "authors": ["Same Author"], "cuisine": "First"},
+                      {"title": "Twin Title", "authors": ["Same Author"], "cuisine": "Second"}]}
+    rep = importer.import_data(con, data)
+    assert (rep.counts["books"]["update"], rep.counts["books"]["insert"]) == (1, 1)
+    assert con.execute("SELECT count(*) FROM books WHERE title='Twin Title'").fetchone()[0] == n + 1
+    assert sorted(r[0] for r in con.execute("SELECT cuisine FROM books WHERE title='Twin Title' AND cuisine IN ('First','Second')")) \
+        == ["First", "Second"]
+    con.close()
+
+
+def test_without_a_uid_a_recipe_matches_by_web_id_then_by_name_and_page():
+    import importer
+    con = A.connect()
+    bid = _local_book(con, "Recipe Matching", ["Rita Match"], recipes=[
+        ("Seville marmalade", "10"), ("Seville marmalade", "50"), ("Plain toast", "3"), ("Old name", None, "web-1")])
+    n = con.execute("SELECT count(*) FROM recipes WHERE book_id=?", (bid,)).fetchone()[0]
+    data = {"books": [{"title": "Recipe Matching", "authors": ["Rita Match"], "recipes": [
+        {"name": "seville MARMALADE", "page": "50", "rating": 9},     # name + page: the page-50 one, not page 10
+        {"name": "Lemon curd", "page": "12"},                          # new
+        {"name": "Plain toast", "page": "3", "notes": "first"},        # matches the local one
+        {"name": "Plain toast", "page": "3", "notes": "second"},       # the local one is taken: a new recipe
+        {"name": "New name", "ext_id": "web-1"},                       # by web id, whatever its name says
+    ]}]}
+    rep = importer.import_data(con, data)
+    assert rep.counts["books"]["insert"] == 0
+    assert (rep.counts["recipes"]["insert"], rep.counts["recipes"]["update"]) == (2, 3)
+    assert con.execute("SELECT count(*) FROM recipes WHERE book_id=?", (bid,)).fetchone()[0] == n + 2
+    got = {(r["name"].lower(), r["page"]): r for r in con.execute("SELECT * FROM recipes WHERE book_id=?", (bid,))}
+    assert got[("seville marmalade", "50")]["rating"] == 9 and got[("seville marmalade", "10")]["rating"] is None
+    assert con.execute("SELECT name FROM recipes WHERE book_id=? AND ext_id='web-1'", (bid,)).fetchone()[0] == "New name"
+    assert sorted(r[0] for r in con.execute("SELECT notes FROM recipes WHERE book_id=? AND name='Plain toast'", (bid,))) \
+        == ["first", "second"]
+    con.close()
+
+
+def test_an_unknown_uid_with_an_isbn_already_here_is_reported_and_left_out():
+    import importer
+    con = A.connect()
+    isbn = _isbn(2)
+    _local_book(con, "Held Book", ["Hal Held"], isbn=isbn)
+    n = con.execute("SELECT count(*) FROM books").fetchone()[0]
+    data = {"books": [{"uid": "a" * 32, "title": "Same ISBN, other copy", "isbn": isbn, "recipes": [{"name": "Lost soup"}]}]}
+    rep = importer.import_data(con, data)
+    assert rep.counts["books"]["insert"] == 0 and len(rep.conflicts) == 1 and "ISBN" in rep.conflicts[0][2]
+    assert con.execute("SELECT count(*) FROM books").fetchone()[0] == n
+    assert con.execute("SELECT count(*) FROM recipes WHERE name='Lost soup'").fetchone()[0] == 0
+    con.close()
+
+
+def test_two_entries_with_the_same_isbn_do_not_overwrite_one_book():
+    import importer
+    con = A.connect()
+    isbn = _isbn(3)
+    bid = _local_book(con, "Isbn Twin", ["Ina Twin"], isbn=isbn)
+    data = {"books": [{"title": "Isbn Twin", "isbn": isbn, "cuisine": "First"},
+                      {"title": "A different book", "isbn": isbn, "cuisine": "Second"}]}
+    rep = importer.import_data(con, data)
+    assert rep.counts["books"]["update"] == 1 and rep.counts["books"]["insert"] == 0 and len(rep.conflicts) == 1
+    assert con.execute("SELECT cuisine FROM books WHERE id=?", (bid,)).fetchone()[0] == "First"
+    con.close()

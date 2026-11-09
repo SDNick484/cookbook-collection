@@ -184,10 +184,34 @@ def _set_people(con, bid, src):
     return not same
 
 
-def _find_book(ctx, uid):
+FIRST_AUTHOR = ("coalesce((SELECT fold(a.name) FROM book_authors ba JOIN authors a ON a.id=ba.author_id "
+                "WHERE ba.book_id=b.id ORDER BY ba.pos LIMIT 1), '')")
+
+
+def _find_book(ctx, src, uid, vals):
+    """The local book this entry is: by uid when it has one (a uid that isn't here means a new book). Without a
+    uid (older exports) by ISBN, then by folded title plus first author. A local book answers to one entry only,
+    so two look-alike entries become two books."""
+    con, A = ctx.con, ctx.A
     if uid:
-        row = ctx.con.execute("SELECT id FROM books WHERE uid=?", (uid,)).fetchone()
-        return row[0] if row else None
+        row = con.execute("SELECT id FROM books WHERE uid=?", (uid,)).fetchone()
+        if row:
+            ctx.claimed_books.add(row[0])
+            return row[0]
+        return None
+    if vals.get("isbn"):
+        row = con.execute("SELECT id FROM books WHERE isbn=?", (vals["isbn"],)).fetchone()
+        if row and row[0] not in ctx.claimed_books:
+            ctx.claimed_books.add(row[0])
+            return row[0]
+    if vals.get("title"):
+        authors = _names(A, src.get("authors")) or []
+        first = A.fold(authors[0]) if authors else ""
+        for (bid,) in con.execute(f"SELECT b.id FROM books b WHERE fold(b.title)=fold(?) AND {FIRST_AUTHOR}=? "
+                                  "ORDER BY b.id", (vals["title"], first)).fetchall():
+            if bid not in ctx.claimed_books:
+                ctx.claimed_books.add(bid)
+                return bid
     return None
 
 
@@ -196,7 +220,7 @@ def _book(ctx, src, label, rep):
     A, con = ctx.A, ctx.con
     uid = _uid(src, label, rep)
     vals = _book_vals(src, ctx.cols["books"], label, rep)
-    bid = _find_book(ctx, uid)
+    bid = _find_book(ctx, src, uid, vals)
     if bid is None:
         if not vals.get("title"):
             rep.warnings.append(f"{label}: no title, left out")
@@ -221,6 +245,7 @@ def _book(ctx, src, label, rep):
         A.reindex_book(con, bid)
         rep.counts["books"]["insert"] += 1
         ctx.keep.add(bid)
+        ctx.claimed_books.add(bid)
         return bid
     ctx.keep.add(bid)
     cur = con.execute("SELECT * FROM books WHERE id=?", (bid,)).fetchone()
@@ -242,9 +267,26 @@ def _book(ctx, src, label, rep):
 
 
 # ------------------------------------------------------------------ recipes
-def _find_recipe(ctx, bid, uid):
+def _find_recipe(ctx, bid, uid, vals):
+    """The local recipe this entry is: by uid (anywhere, so a recipe moved to another book follows it). Without
+    one, inside the book: by the web id of a recipe from a website, then by folded name and page. A local recipe
+    answers to one entry only."""
+    con = ctx.con
     if uid:
-        return ctx.con.execute("SELECT * FROM recipes WHERE uid=?", (uid,)).fetchone()
+        row = con.execute("SELECT * FROM recipes WHERE uid=?", (uid,)).fetchone()
+        if row:
+            ctx.claimed_recipes.add(row["id"])
+        return row
+    rows = []
+    if vals.get("ext_id"):
+        rows += con.execute("SELECT * FROM recipes WHERE book_id=? AND ext_id=?", (bid, vals["ext_id"])).fetchall()
+    if vals.get("name"):
+        rows += con.execute("SELECT * FROM recipes WHERE book_id=? AND fold(name)=fold(?) AND coalesce(page,'')=? "
+                            "ORDER BY id", (bid, vals["name"], vals.get("page") or "")).fetchall()
+    for row in rows:
+        if row["id"] not in ctx.claimed_recipes:
+            ctx.claimed_recipes.add(row["id"])
+            return row
     return None
 
 
@@ -303,7 +345,7 @@ def _recipe(ctx, bid, src, label, rep):
     A, con = ctx.A, ctx.con
     uid = _uid(src, label, rep)
     vals = _recipe_vals(src, ctx.cols["recipes"], label, rep)
-    cur = _find_recipe(ctx, bid, uid)
+    cur = _find_recipe(ctx, bid, uid, vals)
     if cur is None and not vals.get("name"):
         rep.warnings.append(f"{label}: no name, left out")
         rep.counts["recipes"]["skip"] += 1
@@ -327,6 +369,7 @@ def _recipe(ctx, bid, src, label, rep):
         if names:
             _set_ingredients(ctx, rid, names)
         rep.counts["recipes"]["insert"] += 1
+        ctx.claimed_recipes.add(rid)
     else:
         rid = cur["id"]
         changes = {k: v for k, v in vals.items() if cur[k] != v}
@@ -346,6 +389,7 @@ class _Ctx:
         self.A, self.ing, self.con = _app(), ingredients, con
         self.cols = {t: _columns(con, t) for t in ("books", "recipes")}
         self.keep = set()  # ids of the books the file accounts for (found, inserted, or held by a clash)
+        self.claimed_books, self.claimed_recipes = set(), set()  # local rows an entry has already matched
 
 
 def check_version(data):

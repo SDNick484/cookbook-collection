@@ -5,7 +5,7 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const view = $("#view");
-const S = { facets: null, q: "", cuisine: "", tag: "", author: "", publisher: "", ingredient: "", sort: "author", editor: ADMIN, ingredients: null, askThread: [], askDraft: "", askLeft: 5 };
+const S = { facets: null, q: "", cuisine: "", tag: "", author: "", publisher: "", ingredient: "", location_id: "", sort: "author", editor: ADMIN, ingredients: null, askThread: [], askDraft: "", askLeft: 5 };
 
 async function api(path, opts = {}) {
   const o = { headers: {}, ...opts };
@@ -93,6 +93,7 @@ function renderNav(route) {
   if (slot) slot.innerHTML = ask   // on the public view this is a plain link into the editor, where Ask lives
     ? `<a id="ask-top" href="${ADMIN ? "#/ask" : "/admin#/ask"}" class="${ADMIN && route === "ask" ? "on" : ""}" title="Ask about your cookbooks">${CHAT_ICON}Ask</a>` : "";
 }
+const PIN_ICON = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-6.5-5.7-6.5-11a6.5 6.5 0 0 1 13 0c0 5.3-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></svg>`;
 const CHAT_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M5 4.5h14A1.5 1.5 0 0 1 20.5 6v9a1.5 1.5 0 0 1-1.5 1.5h-8.5L6 20v-3.5H5A1.5 1.5 0 0 1 3.5 15V6A1.5 1.5 0 0 1 5 4.5z"/></svg>`;
 async function route() {
   const hash = location.hash.replace(/^#\/?/, "");
@@ -114,7 +115,7 @@ async function route() {
     if (path === "stats" && ADMIN) return await statsView();
     if (path === "eyb" && ADMIN) return await eybView();
     if (path === "links" && ADMIN) return await linksView();
-    if (qs) { const p = new URLSearchParams(qs); for (const k of ["q", "cuisine", "tag", "author", "publisher", "ingredient"]) S[k] = p.get(k) || ""; if (p.get("sort")) S.sort = p.get("sort"); }
+    if (qs) { const p = new URLSearchParams(qs); for (const k of ["q", "cuisine", "tag", "author", "publisher", "ingredient", "location_id"]) S[k] = p.get(k) || ""; if (p.get("sort")) S.sort = p.get("sort"); }
     else { S.author = S.publisher = ""; }
     return await homeView();
   } catch (e) {
@@ -128,13 +129,18 @@ async function homeView() {
   if (!S.facets) S.facets = await api("facets");
   if (!S.ingredients) { try { S.ingredients = (await api("ingredients")).ingredients.filter((i) => i.n && !i.hint); } catch { S.ingredients = []; } }
   const f = S.facets;
+  // Only shelves that hold books: the editor's list also has empty ones (for the picker), and a filter for those is a dead end.
+  const shelves = (f.locations || []).filter((l) => l.n > 0);
+  if (S.location_id && !shelves.some((l) => String(l.id) === String(S.location_id))) S.location_id = "";   // a stale link or bookmark
   const opt = (arr, cur, label) => `<option value="">${label}</option>` +
     arr.map((x) => `<option value="${esc(x.name)}" ${x.name === cur ? "selected" : ""}>${esc(x.name)} (${x.n})</option>`).join("");
   view.innerHTML = `
-    <div class="controls">
+    <div class="controls${shelves.length ? " four" : ""}">
       <label class="search"><input id="q" type="search" placeholder="Search books, authors, recipes…" value="${esc(S.q)}" autocomplete="off" aria-label="Search"></label>
       <select id="cuisine" aria-label="Cuisine">${opt(f.cuisines, S.cuisine, "Cuisine")}</select>
       <select id="tag" aria-label="Tag">${opt(f.tags, S.tag, "Tag")}</select>
+      ${shelves.length ? `<select id="location_id" aria-label="Location"><option value="">Location</option>${shelves.map((l) =>
+        `<option value="${l.id}" ${String(l.id) === String(S.location_id) ? "selected" : ""}>${"\u00a0\u00a0".repeat(l.depth)}${esc(l.name)} (${l.n})</option>`).join("")}</select>` : ""}
       <select id="sort" aria-label="Sort">
         <option value="author">By author</option><option value="title">By title</option><option value="added">Recently added</option>
         ${ADMIN ? `<option value="cooked">Most cooked</option><option value="rating">Top rated</option>` : ""}
@@ -151,10 +157,10 @@ async function homeView() {
   const load = async () => {
     const seq = ++loadSeq;
     const p = new URLSearchParams();
-    for (const k of ["q", "cuisine", "tag", "author", "publisher", "sort"]) if (S[k]) p.set(k, S[k]);
+    for (const k of ["q", "cuisine", "tag", "author", "publisher", "location_id", "sort"]) if (S[k]) p.set(k, S[k]);
     if (S.ingredient) p.set("ingredient", S.ingredient);
     const rp = new URLSearchParams({ limit: 60 });
-    for (const k of ["q", "cuisine", "tag", "publisher", "ingredient"]) if (S[k]) rp.set(k, S[k]);
+    for (const k of ["q", "cuisine", "tag", "publisher", "location_id", "ingredient"]) if (S[k]) rp.set(k, S[k]);
     const wantRecipes = S.q.trim().length >= 2 || S.ingredient;
     // With an ingredient picked, start from the books that have it and how many recipes each; open one to list them.
     const byBook = !!S.ingredient;
@@ -168,6 +174,8 @@ async function homeView() {
     if (S.publisher) chips.push(`<button class="chip x" data-clear="publisher">${esc(S.publisher)}</button>`);
     if (S.cuisine) chips.push(`<button class="chip x" data-clear="cuisine">${esc(S.cuisine)}</button>`);
     if (S.tag) chips.push(`<button class="chip x" data-clear="tag">${esc(S.tag)}</button>`);
+    const shelf = S.location_id && shelves.find((l) => String(l.id) === String(S.location_id));
+    if (shelf) chips.push(`<button class="chip x" data-clear="location_id">${esc(shelf.path)}</button>`);
     if (S.ingredient) chips.push(`<button class="chip x" data-clear="ingredient">Uses ${esc(S.ingredient.toLowerCase())}</button>`);
     const nb = bk.books.length === bk.total ? `${bk.total} books` : bk.books.length ? `${bk.books.length} of ${bk.total} books` : "No matching books";
     $("#summary").innerHTML = `<span>${rc.count ? `${rc.count.toLocaleString()} recipe${rc.count > 1 ? "s" : ""} · ` : ""}${nb}</span>${chips.join("")}`;
@@ -222,6 +230,7 @@ async function homeView() {
     $("#grid").innerHTML = bk.books.length ? bk.books.map((b) => `
       <a class="card" href="#/book/${b.id}">${coverHTML(b)}
         <div class="meta"><div class="ttl">${esc(b.title)}</div><div class="by">${esc(byline(b))}</div>
+        ${b.location_path ? `<div class="loc" title="${esc(b.location_path)}">${PIN_ICON}<span>${esc(b.location_path)}</span></div>` : ""}
         ${ADMIN && b.rating != null ? starsHTML(b.rating) : ""}</div></a>`).join("")
       : (rc.count ? "" : `<div class="empty">Nothing matches.${ADMIN && S.features && S.features.ask && S.q ? ` <a id="ask-instead" href="#/ask">Ask instead →</a>` : ""}</div>`);
     // A keyword search is a new topic: start a fresh thread, unless a question is still being answered.
@@ -231,7 +240,7 @@ async function homeView() {
     };
   };
   $("#q").addEventListener("input", debounce((e) => { S.q = e.target.value; load(); }, 220));
-  for (const k of ["cuisine", "tag", "sort"]) $("#" + k).onchange = (e) => { S[k] = e.target.value; load(); };
+  for (const k of ["cuisine", "tag", "sort", "location_id"]) if ($("#" + k)) $("#" + k).onchange = (e) => { S[k] = e.target.value; load(); };
   $$(".ing").forEach((b) => b.onclick = () => {
     S.ingredient = S.ingredient === b.dataset.ing ? "" : b.dataset.ing;
     $$(".ing").forEach((x) => { x.classList.toggle("on", x.dataset.ing === S.ingredient); x.setAttribute("aria-pressed", x.dataset.ing === S.ingredient); });
@@ -308,13 +317,13 @@ async function bookView(id, focus) {
   if (b.cuisine) rows.push(["Cuisine", `<a href="#/?cuisine=${encodeURIComponent(b.cuisine)}">${esc(b.cuisine)}</a>`]);
   if (b.isbn) rows.push(["ISBN", esc(b.isbn)]);
   if (b.format) rows.push(["Format", esc(b.format)]);
+  if (b.location_path) rows.push(["Location", `<a class="loclink" href="#/?location_id=${encodeURIComponent(b.location_id)}">${PIN_ICON}${esc(b.location_path)}</a>`]);
   if (b.signed) rows.push(["", "Signed copy"]);
   if (b.kind === "online") rows.push(["Website", `<a href="https://${esc(b.site)}" target="_blank" rel="noopener">${esc(b.site)} ↗</a>`]);
   const priv = ADMIN ? [
     b.status && b.status !== "owned" ? `<div><strong>${STATUS[b.status]}</strong>${b.status === "out" && b.out_since ? " since " + fmtDay(b.out_since) : ""}${b.loaned_to ? " to " + esc(b.loaned_to) : ""}</div>` : "",
     b.cooked_count ? `<div>Cooked from ${b.cooked_count}× (Dinner Log), last ${fmtDay(b.cooked_last)}</div>` : "",
     (b.wishes || []).length ? `<div>On ${b.wishes.map((w) => esc(w.person_name) + "'s").join(", ")} wish list</div>` : "",
-    b.location ? `<div>Shelf: ${esc(b.location)}</div>` : "",
     b.private_notes ? `<div>${esc(b.private_notes)}</div>` : "",
     b.eyb_status ? `<div>Eat Your Books: ${esc(b.eyb_status.toLowerCase())}${b.recipe_count ? "" : " (export its recipes from EYB to fill the index)"}</div>` : "",
     b.needs_review ? `<div class="review">Needs review: ${esc(b.needs_review)}</div>` : "",
@@ -625,7 +634,6 @@ function bookForm(b = {}) {
     <label class="f full">Description <span class="small">(public)</span><textarea name="description">${esc(b.description)}</textarea></label>
     <label class="f">Status<select name="status">${Object.entries(STATUS).map(([k, t]) => `<option value="${k}" ${(b.status || "owned") === k ? "selected" : ""}>${t}</option>`).join("")}</select></label>
     <label class="f">Loaned to<input name="loaned_to" value="${esc(b.loaned_to)}"></label>
-    <label class="f">Shelf / location<input name="location" value="${esc(b.location)}"></label>
     <label class="f">Rating<select name="rating"><option value="">Not rated</option>${[0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5].map((v) =>
       `<option value="${v}" ${b.rating === v ? "selected" : ""}>${starLabel(v)}</option>`).join("")}</select></label>
     <label class="chk" style="align-self:end"><input type="checkbox" name="signed" ${b.signed ? "checked" : ""}> Signed copy</label>

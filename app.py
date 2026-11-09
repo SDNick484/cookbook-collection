@@ -892,9 +892,27 @@ def delete_book(book_id):
 
 
 # ---- covers
+# The only image formats uploads may be in. Phones and cover services produce these; Pillow's other decoders
+# (PSD, TIFF, BMP, FITS, EPS…) have had memory-safety bugs and nothing here needs them. HEIF is only
+# available when pillow-heif is installed (photos.py registers it), so the list is checked against Pillow's
+# registry at call time.
+IMAGE_FORMATS = ("JPEG", "PNG", "WEBP", "HEIF")
+
+
+def open_image(raw):
+    """Decode an upload in one of IMAGE_FORMATS; anything else is a ValueError the routes turn into a 400."""
+    from PIL import Image, UnidentifiedImageError
+    Image.init()
+    formats = [f for f in IMAGE_FORMATS if f in Image.OPEN]
+    try:
+        return Image.open(io.BytesIO(raw), formats=formats)
+    except UnidentifiedImageError:
+        raise ValueError("not a JPEG, PNG, WebP or HEIC image") from None
+
+
 def store_cover(book_id, raw):
-    from PIL import Image, ImageOps
-    img = Image.open(io.BytesIO(raw))
+    from PIL import ImageOps
+    img = open_image(raw)
     img = ImageOps.exif_transpose(img).convert("RGB")
     if img.width < 40 or img.height < 40:
         raise ValueError("image too small (probably a placeholder)")

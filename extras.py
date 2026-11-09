@@ -921,8 +921,8 @@ def parse_claude_rows(text, truncated=False):
 
 
 def prepare_photo(raw):
-    from PIL import Image, ImageOps
-    img = ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert("L")  # grayscale: text only, smaller
+    from PIL import ImageOps
+    img = ImageOps.exif_transpose(core.open_image(raw)).convert("L")  # grayscale: text only, smaller
     # Current models read images up to 2576px on the long side; a dense three-column index needs all of it
     # (older models scale it down themselves).
     img.thumbnail((2576, 2576))

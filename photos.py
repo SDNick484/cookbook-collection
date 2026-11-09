@@ -7,12 +7,12 @@ deleting are editor-only under /admin. Each upload is re-encoded to JPEG (which 
 included) as a large copy and a thumbnail in DATA_DIR/photos, which the nightly backup already copies to
 BACKUP_TARGET. File names are random (uuid4), so a photo of an editor-only recipe can't be guessed.
 """
-import io, uuid
+import uuid
 from datetime import date, datetime
 
 from flask import abort, jsonify, request, send_from_directory
 
-from app import DATA_DIR, PUBLIC_BOOKS, app, clean, db, editor_required, make_err
+from app import DATA_DIR, PUBLIC_BOOKS, app, clean, db, editor_required, make_err, open_image
 
 PHOTO_DIR = DATA_DIR / "photos"
 FULL, THUMB = 2048, 480
@@ -62,8 +62,8 @@ def exif_day(img):
 
 def store(raw):
     """Save an uploaded image as <id>.jpg and <id>-t.jpg. Returns (file, width, height, day taken or None)."""
-    from PIL import Image, ImageOps
-    img = Image.open(io.BytesIO(raw))
+    from PIL import ImageOps
+    img = open_image(raw)
     day = exif_day(img)
     img = ImageOps.exif_transpose(img).convert("RGB")
     img.thumbnail((FULL, FULL))

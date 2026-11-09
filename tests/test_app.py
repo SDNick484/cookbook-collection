@@ -153,7 +153,7 @@ def test_isbn_lookup_and_create(c, monkeypatch):
     assert res["subtitle"] == "A Subtitle"  # gap filled from Google
     body = {"title": res["title"], "authors": res["authors"], "isbn": isbn, "year": res["year"],
             "cuisine": "Middle Eastern", "tags": ["Vegetarian", "New Tag"], "cover_url": res["cover_url"],
-            "private_notes": "gift from mom", "location": "Kitchen shelf 2"}
+            "private_notes": "gift from mom"}
     made = c.post("/admin/api/books", json=body)
     assert made.status_code == 201, made.json
     b = made.json
@@ -306,6 +306,6 @@ def test_cover_url_rejects_bad_scheme_and_disallowed_redirect():
 def test_static_assets_version_and_anonymized_meta(c):
     html = c.get("/").data.decode()
     assert 'content="A family cookbook collection"' in html
-    assert "/static/style.css?v=27" in html and "/static/app.js?v=27" in html
+    assert "/static/style.css?v=29" in html and "/static/app.js?v=29" in html
 
 

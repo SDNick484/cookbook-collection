@@ -3,8 +3,8 @@
 A family cookbook catalog: Flask + SQLite, running as one small service.
 On the server it's called `cookbooks`: the service, `/opt/cookbooks`, `/var/lib/cookbooks`, `/etc/conf.d/cookbooks`, and port 8767.
 
-- **Public** `https://cookbooks.example.com/` lets visitors browse and search books and recipe names.
-- **Editors** `https://cookbooks.example.com/admin` sit behind Cloudflare Access. From there you can add books by barcode, edit them, import indexes, and see ratings, notes, shelf location and the want-to-try list.
+- **Public** `https://cookbooks.example.com/` lets visitors browse and search books and recipe names, and see which shelf each book is on.
+- **Editors** `https://cookbooks.example.com/admin` sit behind Cloudflare Access. From there you can add books by barcode, edit them, import indexes, manage shelf locations, and see ratings, notes and the want-to-try list.
 
 ![Cookbook Collection catalog](screenshot.jpg)
 
@@ -155,6 +155,14 @@ Editors can attach photos of a dish to the recipe it came from.
 - Deleting a photo, recipe or book deletes its files. The nightly backup copies `photos/` to `BACKUP_TARGET`, and **Download JSON** lists each recipe's photo files.
 - Uploads (covers, dish photos, index photos) are accepted as JPEG, PNG or WebP; other formats are refused rather than decoded. iPhone HEIC photos work if the `pillow-heif` Python package is installed. Without it, Safari normally converts them to JPEG when uploading.
 
+## Shelf locations
+Where each book lives is a tree of locations of any depth: room › area › shelf, say `Kitchen › Pantry › Shelf 2`. A book is in at most one.
+- **Manage** them under **More → Shelf locations**, or with **Manage** beside the Location picker on a book's edit form (editors only). Tap a location to add one inside it, rename it, move it, reorder it among its siblings, or delete it. A location can't go inside itself or anything below it, and two siblings can't share a name (compared ignoring case and accents). Deleting asks first and says how many books become unshelved and how many sub-locations go with it; the books themselves stay.
+- **Public view:** books show their location on the card and on the book page, where it links to the catalog filtered to that location. Filtering by a room includes every shelf below it (`?location_id=`). The Location filter appears only once a book has a location, and lists only locations that hold a public book, directly or below. There is no "(none)" bucket. **Locations are public on purpose**: anyone who can browse the catalog can see the room and shelf names that hold your books. Don't name a location anything you wouldn't put on the public page. Online recipe sources (`kind='online'`) are editor-only, can't be shelved, and never contribute to the public list.
+- **API:** `GET /api/locations` (public: only locations with public books) and `GET /admin/api/locations` (all of them). Each has `id`, `parent_id`, `name`, `path`, `depth`, `sort_order`, `n` (books on it or below it) and `direct` (books on it itself); the public counts include only public books. Books carry `location_id` and `location_path`; `/api/books` and `/api/recipes` accept `location_id`. Editors use `POST /admin/api/locations`, `PUT` and `DELETE /admin/api/locations/<id>` and `POST /admin/api/locations/reorder` (`{parent_id, ids}`); a book's `PUT` takes `location_id` (`null` unshelves it).
+- **Upgrading:** the first start after this version turns the old free-text location into locations, once. Spellings that differ only by case, accents or stray spaces become one root location named with the commonest spelling, and every book with one is shelved there. Text is never split: `Office, top shelf` becomes one location with exactly that name, and you can then move and rename things into a tree in the manager. The old `books.location` column is kept but no longer read or written, so rolling back to the previous version works; shelf edits made after upgrading aren't visible to it. The numbers (locations created, books shelved, names that look like paths) are recorded in the `meta` table under `locations_migrated`.
+- **Export / import:** the JSON and CSV exports give each book's path in `location` (`Kitchen › Pantry › Shelf 2`), and importing rebuilds the tree from it, creating missing levels and reusing existing ones. Only the `›` separator is read as a path. Empty locations and sibling order aren't in the export, and the export format `version` is unchanged.
+
 ## What should we cook? / Stats / shelf
 - **Cook** (`/admin#/cook`, editors only) suggests what to make. Enter one or two ingredients (matched like the ingredient chips: tagged with it, or in the title), pick **Never made**, **Not lately** (made before, but not in the last 90 days), **Want to try** (starred, not yet made) or **Any**, and optionally a cuisine. Each result shows the book, page, when you last made it and how often, a ★ if it's on the want-to-try list and the newest photo if there is one; tapping it opens the book scrolled to that recipe. **Shuffle** reorders the same set. Behind it is `GET /admin/api/cook` (`mode`, repeatable `with`, `cuisine`, `limit` up to 50, `offset`, `seed`), which uses the same ranking as `/admin/api/suggest`, the MCP `suggest_recipes` tool and `/admin/api/pick`.
 - **Pulled out / Put back** on a book's page tracks books that are off the shelf.
@@ -225,6 +233,8 @@ rm -f /var/lib/cookbooks/cookbooks.db-wal /var/lib/cookbooks/cookbooks.db-shm
 chown -R cookbooks:cookbooks /var/lib/cookbooks
 rc-service cookbooks start
 ```
+- Shelf locations: a book's `location` path is rebuilt as locations (see Shelf locations). A book with no
+  `location` key keeps its shelf, `null` unshelves it, and online books are never shelved.
 - Books and recipes are matched by `uid`: a known uid is updated, an unknown one is inserted with that
   uid. Exports without uids (older versions) match by ISBN, then by title plus first author.
 - The default is a **merge**: nothing is deleted. `--replace` also deletes books (and the recipes and

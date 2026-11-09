@@ -221,6 +221,20 @@ def load_seed(con, data):
 
 
 # ------------------------------------------------------------------- helpers
+def env_int(name, default):
+    try:
+        return int(os.environ.get(name) or default)
+    except ValueError:
+        app.logger.warning("%s is not a whole number; using %s", name, default)
+        return default
+
+
+def local_midnight():
+    """Unix time of the most recent local midnight: daily limits reset then."""
+    t = time.localtime()
+    return time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 0, 0, 0, 0, 0, -1))
+
+
 def page_sort(page):
     m = re.search(r"\d+", page or "")
     return int(m.group()) if m else None

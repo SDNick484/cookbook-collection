@@ -10,15 +10,7 @@ import copy, http.client, json, os, re, time, urllib.error
 from flask import g, jsonify, request
 
 import extras
-from app import app, db, editor_required, make_err, clean, recipes_by_id, recipe_dict, book_dicts
-
-
-def env_int(name, default):
-    try:
-        return int(os.environ.get(name) or default)
-    except ValueError:
-        app.logger.warning("%s is not a whole number; using %s", name, default)
-        return default
+from app import app, db, editor_required, make_err, clean, recipes_by_id, recipe_dict, book_dicts, env_int, local_midnight
 
 
 SEARCH_KEY = os.environ.get("ANTHROPIC_SEARCH_KEY", "").strip()
@@ -116,9 +108,7 @@ def validate_thread(thread):
 
 def asked_today(con):
     """Questions that reached the model since local midnight (capped requests don't count)."""
-    t = time.localtime()
-    start = time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 0, 0, 0, 0, 0, -1))
-    return con.execute("SELECT COUNT(*) FROM ask_log WHERE status != 'capped' AND ts >= ?", (start,)).fetchone()[0]
+    return con.execute("SELECT COUNT(*) FROM ask_log WHERE status != 'capped' AND ts >= ?", (local_midnight(),)).fetchone()[0]
 
 
 def log(editor, rounds, in_tok, out_tok, status):

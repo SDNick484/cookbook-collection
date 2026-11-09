@@ -37,6 +37,8 @@ Chromium for Playwright checks: `/opt/pw-browsers/chromium-*/chrome-linux/chrome
 - Recipe text goes through `clean()`; comparisons go through `fold()`. Write recipes only through the app,
   since the FTS triggers call `fold()`.
 - `kind='online'` books are editor-only; public queries filter with `PUBLIC_BOOKS`.
+- `books.uid` / `recipes.uid` are the stable public ids (triggers fill them on insert; `id` is a reusable rowid).
+  Anything stored outside this database, or sent to Dinner Log, should carry the uid.
 - MCP tools: add to `TOOLS` in extras.py as (name, private_only, fn, description, schema); writes go in
   `WRITE_TOOLS` and are private-only. Keep tool output compact: it stays in the assistant's context.
 - Ask (`ask.py`) reuses `run_tool()`; it must never be offered `WRITE_TOOLS`.

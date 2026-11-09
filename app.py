@@ -64,7 +64,8 @@ CREATE TABLE IF NOT EXISTS books (
   location TEXT, status TEXT NOT NULL DEFAULT 'owned', loaned_to TEXT,
   signed INTEGER NOT NULL DEFAULT 0, private_notes TEXT, needs_review TEXT,
   cover TEXT, legacy_category TEXT, source TEXT,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  uid TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS books_isbn ON books(isbn) WHERE isbn IS NOT NULL AND isbn <> '';
 CREATE TABLE IF NOT EXISTS authors (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE);
@@ -81,10 +82,36 @@ CREATE TABLE IF NOT EXISTS recipes (
   book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
   name TEXT NOT NULL, heading TEXT, page TEXT, page_sort INTEGER,
   want_to_try INTEGER NOT NULL DEFAULT 0, rating REAL, notes TEXT, last_made TEXT,
-  source TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  source TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  uid TEXT
 );
 CREATE INDEX IF NOT EXISTS recipes_book ON recipes(book_id, page_sort);
 """
+# Stable public ids. `id` is a SQLite rowid: deleting the newest book and adding another gives the new book the
+# old number, so anything outside this database that remembers a book (Dinner Log's cookbook_book_id) can end up
+# pointing at the wrong one. `uid` is 32 hex characters, set once and never reused. The triggers fill it on every
+# insert path (editor, imports, seed, sqlite3 CLI) so no caller has to remember to; migrate_uids() backfills
+# rows from before the column existed.
+UIDS = """
+CREATE UNIQUE INDEX IF NOT EXISTS books_uid ON books(uid) WHERE uid IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS recipes_uid ON recipes(uid) WHERE uid IS NOT NULL;
+CREATE TRIGGER IF NOT EXISTS books_uid_ai AFTER INSERT ON books WHEN new.uid IS NULL BEGIN
+  UPDATE books SET uid=lower(hex(randomblob(16))) WHERE id=new.id;
+END;
+CREATE TRIGGER IF NOT EXISTS recipes_uid_ai AFTER INSERT ON recipes WHEN new.uid IS NULL BEGIN
+  UPDATE recipes SET uid=lower(hex(randomblob(16))) WHERE id=new.id;
+END;
+"""
+UID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def migrate_uids(con):
+    """Add `uid` to books and recipes on databases from before it existed, and give every row one."""
+    for table in ("books", "recipes"):
+        if "uid" not in [r[1] for r in con.execute(f"PRAGMA table_info({table})")]:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN uid TEXT")
+        con.execute(f"UPDATE {table} SET uid=lower(hex(randomblob(16))) WHERE uid IS NULL")
+    con.executescript(UIDS)
 # Both indexes hold fold()ed text, so "oeufs" finds "Œufs" and "strasse" finds "Straße". The triggers call the
 # fold() SQL function that connect() registers, so recipes should only be written through this app.
 FTS = """
@@ -150,6 +177,7 @@ def _init_db_locked():
     ingredients.migrate(con)
     photos.migrate(con)
     ask.migrate(con)
+    migrate_uids(con)
     old = con.execute("SELECT sql FROM sqlite_master WHERE name='recipes_fts'").fetchone()
     if old and "content=" in old[0]:  # the old index read unfolded text straight from recipes; replace it
         con.executescript("DROP TRIGGER IF EXISTS recipes_ai; DROP TRIGGER IF EXISTS recipes_ad; "
@@ -286,8 +314,9 @@ def search_words(q):
     return words, runs
 
 
-PUBLIC_BOOK = ("id", "title", "subtitle", "isbn", "publisher", "year", "cuisine", "description", "cover", "signed", "format")
-PUBLIC_RECIPE = ("id", "book_id", "name", "heading", "page")
+PUBLIC_BOOK = ("id", "uid", "title", "subtitle", "isbn", "publisher", "year", "cuisine", "description", "cover", "signed",
+               "format")
+PUBLIC_RECIPE = ("id", "uid", "book_id", "name", "heading", "page")
 PUBLIC_BOOKS = "b.kind IS NULL"  # cookbooks; recipe websites (kind 'online') are for editors only
 
 
@@ -605,6 +634,16 @@ def get_book(book_id, private):
     return jsonify(book)
 
 
+def get_book_by_uid(uid, private):
+    """The same as get_book, found by the stable uid (what Dinner Log should store and send back)."""
+    if not UID_RE.fullmatch(uid or ""):
+        abort(404)
+    row = db().execute("SELECT id FROM books WHERE uid=?", (uid,)).fetchone()
+    if not row:
+        abort(404)
+    return get_book(row["id"], private)
+
+
 def recipe_filter(params, private):
     """WHERE clause + args for recipe search. Each word of q must match the recipe's name/index heading or
     one of its ingredient tags; ingredient= limits to recipes that use it (see ingredients.ingredient_condition)."""
@@ -710,6 +749,7 @@ for prefix, private in (("/api", False), ("/admin/api", True)):
         return editor_required(f) if private else f
     app.add_url_rule(f"{prefix}/books", f"books_{private}", _wrap(list_books))
     app.add_url_rule(f"{prefix}/books/<int:book_id>", f"book_{private}", _wrap(get_book))
+    app.add_url_rule(f"{prefix}/books/by-uid/<uid>", f"book_uid_{private}", _wrap(get_book_by_uid))
     app.add_url_rule(f"{prefix}/recipes", f"recipes_{private}", _wrap(search_recipes))
     app.add_url_rule(f"{prefix}/recipes/books", f"recipe_books_{private}", _wrap(recipe_books))
     app.add_url_rule(f"{prefix}/facets", f"facets_{private}", _wrap(facets))
@@ -1203,7 +1243,7 @@ def export_csv():
     rows = book_dicts(db().execute("SELECT * FROM books ORDER BY id").fetchall(), True)
     buf = io.StringIO()
     w = csv.writer(buf)
-    cols = ["id", "title", "subtitle", "authors", "publisher", "year", "isbn", "cuisine", "tags", "status",
+    cols = ["id", "uid", "title", "subtitle", "authors", "publisher", "year", "isbn", "cuisine", "tags", "status",
             "location", "signed", "rating", "recipe_count"]
     w.writerow(cols)
     for b in rows:

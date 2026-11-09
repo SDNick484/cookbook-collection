@@ -65,7 +65,7 @@ async function route() {
   try {
     if (m && m[2] === "edit" && ADMIN) return await editView(+m[1]);
     if (m && m[2] === "index" && ADMIN) return await indexView(+m[1]);
-    if (m) return await bookView(+m[1]);
+    if (m) return await bookView(+m[1], new URLSearchParams(qs || "").get("recipe"));
     if (path === "photos") return await photosView();
     if (path === "add" && ADMIN) return await addView();
     if (path === "try" && ADMIN) return await tryView();
@@ -259,7 +259,7 @@ function recipeRow(r) {
       <button title="Want to try" class="want ${r.want_to_try ? "on" : ""}">${r.want_to_try ? "★" : "☆"}</button>
       <button title="Edit" class="edit">✎</button></span>` : ""}</li>`;
 }
-async function bookView(id) {
+async function bookView(id, focus) {
   const b = await api("books/" + id);
   S.bookTitle = b.title;
   S.bookPhotos = b.photos || [];
@@ -318,6 +318,8 @@ async function bookView(id) {
     const q = fold(rf.value.trim());
     $$("#rl li").forEach((li) => li.classList.toggle("hidden", !!q && !fold(li.textContent).includes(q)));
   };
+  const hit = focus && $(`#rl li[data-id="${+focus}"]`);  // arrived from the Cook page: show which recipe
+  if (hit) { hit.classList.add("hl"); hit.scrollIntoView({ block: "center" }); }
   if (!ADMIN) return;
   $$(".photos .ph").forEach((el) => el.onclick = () => lightbox(S.bookPhotos, +el.dataset.i));
   if ($("#rate")) rateWidget($("#rate"), b.rating, (v) => api("books/" + id, { method: "PUT", body: { rating: v } }));
@@ -1241,34 +1243,73 @@ async function eybView() {
 }
 
 /* ---------- what should we cook ---------- */
-const MODES = [["want", "Starred, not yet made"], ["untried", "Never made"], ["neglected", "Forgotten books"], ["favorites", "Old favorites"]];
-S.cook = { mode: "want", cuisine: "", tag: "" };
+const COOK_MODES = [["new", "Never made"], ["stale", "Not lately"], ["want", "Want to try"], ["any", "Any"]];
+const COOK_EMPTY = {
+  new: "Everything that fits has been made.", stale: "Nothing you've made is overdue. Try Any or Never made.",
+  want: "Nothing starred and unmade fits. Star recipes (☆) on a book's page to fill this list.", any: "Nothing fits.",
+};
+const newSeed = () => Math.random().toString(36).slice(2, 10);
+S.cook = { mode: "any", cuisine: "", ing: ["", ""], seed: newSeed() };
 async function cookView() {
   if (!S.facets) S.facets = await api("facets");
-  const f = S.facets, c = S.cook;
-  const opt = (arr, cur, label) => `<option value="">${label}</option>` + arr.map((x) => `<option ${x.name === cur ? "selected" : ""}>${esc(x.name)}</option>`).join("");
+  if (!S.ingredients) { try { S.ingredients = (await api("ingredients")).ingredients.filter((i) => i.n && !i.hint); } catch { S.ingredients = []; } }
+  const c = S.cook, f = S.facets;
   view.innerHTML = `<h1 style="margin-top:18px">What should we cook?</h1>
-    <div class="seg" role="tablist">${MODES.map(([k, t]) => `<button role="tab" data-m="${k}" class="${c.mode === k ? "on" : ""}">${t}</button>`).join("")}</div>
-    <div class="controls" style="margin-top:10px"><select id="cc">${opt(f.cuisines, c.cuisine, "Cuisine")}</select>
-      <select id="ct">${opt(f.tags, c.tag, "Tag")}</select><button class="primary" id="again">↻ More ideas</button></div>
-    <p class="small muted" id="pool"></p><div id="ideas" class="ideas"></div>
-    <p class="small"><a href="#/try">See the full want-to-try list</a></p>`;
-  const load = async () => {
-    const p = new URLSearchParams({ mode: c.mode, n: 5 }); if (c.cuisine) p.set("cuisine", c.cuisine); if (c.tag) p.set("tag", c.tag);
-    const r = await api("suggest?" + p);
-    $("#pool").textContent = r.pool ? `${r.label}: ${r.pool.toLocaleString()} recipes to choose from` : "";
-    $("#ideas").innerHTML = r.recipes.length ? r.recipes.map((x) => `<a class="idea" ${x.url ? `href="${esc(x.url)}" target="_blank" rel="noopener"` : `href="#/book/${x.book_id}"`}>
-        <div class="ib">${esc(x.book_title)}${x.page ? ` · p. ${esc(x.page)}` : x.url ? " ↗" : ""}</div>
+    <form class="cookbar" id="cook-form" autocomplete="off">
+      <div class="cook-ings">
+        <input id="ci0" type="search" list="dl-cook-ing" placeholder="An ingredient" aria-label="Ingredient" enterkeyhint="search" value="${esc(c.ing[0])}">
+        <input id="ci1" type="search" list="dl-cook-ing" placeholder="…and another (optional)" aria-label="Second ingredient" enterkeyhint="search" value="${esc(c.ing[1])}">
+      </div>
+      <datalist id="dl-cook-ing">${S.ingredients.map((i) => `<option value="${esc(i.name)}">`).join("")}</datalist>
+      <div class="seg" role="group" aria-label="Which recipes">${COOK_MODES.map(([k, t]) =>
+        `<button type="button" data-m="${k}" aria-pressed="${c.mode === k}" class="${c.mode === k ? "on" : ""}">${t}</button>`).join("")}</div>
+      <div class="cook-row">
+        <select id="cc" aria-label="Cuisine"><option value="">Any cuisine</option>${f.cuisines.map((x) =>
+          `<option value="${esc(x.name)}" ${x.name === c.cuisine ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select>
+        <button type="button" class="primary" id="shuffle">↻ Shuffle</button>
+      </div>
+    </form>
+    <p class="small muted" id="cook-note"></p>
+    <ul class="cooklist" id="cook-list"></ul>
+    <div class="actions hidden" id="cook-more"><button type="button" id="cook-more-btn">Show more</button></div>`;
+  const card = (x) => `<li><a class="idea cook" href="#/book/${x.book_id}?recipe=${x.id}">
+      ${x.photo ? `<img class="cthumb" loading="lazy" src="${esc(x.photo)}" alt="">` : ""}
+      <div class="cbody">
+        <div class="ib">${esc(x.book_title)}${x.page ? ` · p. ${esc(x.page)}` : x.url ? " · website" : ""}</div>
         <div class="in">${x.heading ? `<span class="rh">${esc(x.heading)} · </span>` : ""}${esc(x.name)}</div>
-        <div class="extra">${[x.cooked_count ? `cooked ${x.cooked_count}×, last ${fmtDay(x.cooked_last)}` : "",
-          x.cooked_avg != null ? `<span class="rating">${num(x.cooked_avg)}/10</span>` : x.rating != null ? `<span class="rating">${num(x.rating)}/10</span>` : "",
-          x.status === "out" ? "book is off the shelf" : "", x.notes ? esc(x.notes) : ""].filter(Boolean).join(" · ")}</div></a>`).join("")
-      : `<div class="empty">Nothing fits.${c.mode === "want" ? " Star recipes (☆) on a book's page to fill this list." : c.mode === "favorites" ? " Ratings come from Dinner Log and the old recipe journal." : " Index more books to get ideas here."}</div>`;
+        <div class="extra">${[x.starred ? `<span class="star">★ want to try</span>` : "",
+          x.times_made ? `made ${x.times_made}×, last ${fmtDay(x.last_made)}` : x.last_made ? `made ${fmtDay(x.last_made)}` : "never made",
+          x.best_rating != null ? `<span class="rating">${num(x.best_rating)}/10</span>` : "",
+          x.book_status === "out" || x.book_status === "loaned" ? "book is off the shelf" : ""].filter(Boolean).join(" · ")}</div>
+      </div></a></li>`;
+  let seq = 0, next = null;
+  const load = async (more = false) => {
+    const mine = ++seq;
+    const p = new URLSearchParams({ mode: c.mode, limit: 20, offset: more ? next : 0, seed: c.seed });
+    for (const x of c.ing) if (x.trim()) p.append("with", x.trim());
+    if (c.cuisine) p.set("cuisine", c.cuisine);
+    let r;
+    try { r = await api("cook?" + p); } catch (e) { if (mine === seq && $("#cook-note")) $("#cook-note").textContent = e.message; return; }
+    if (mine !== seq || !$("#cook-list")) return;  // a newer request, or the page changed
+    next = r.next_offset;
+    const list = $("#cook-list");
+    if (!more) list.innerHTML = "";
+    list.insertAdjacentHTML("beforeend", r.recipes.map(card).join(""));
+    if (!more && !r.recipes.length) list.innerHTML = `<li class="empty">${COOK_EMPTY[c.mode]}${c.ing.some((x) => x.trim()) || c.cuisine ? " Try fewer ingredients or another cuisine." : ""}</li>`;
+    $("#cook-more").classList.toggle("hidden", next == null);
+    $("#cook-note").textContent = (r.pool ? `${r.pool.toLocaleString()} recipe${r.pool === 1 ? "" : "s"} fit` : "")
+      + (r.title_only.length ? `${r.pool ? ". " : ""}No ingredient tag for ${r.title_only.join(", ")}: matched on recipe titles only.` : "");
   };
-  $$(".seg button").forEach((b) => b.onclick = () => { c.mode = b.dataset.m; $$(".seg button").forEach((x) => x.classList.toggle("on", x === b)); load(); });
+  $("#cook-form").onsubmit = (e) => { e.preventDefault(); load(); };
+  $$("#cook-form .seg button").forEach((b) => b.onclick = () => {
+    c.mode = b.dataset.m;
+    $$("#cook-form .seg button").forEach((x) => { x.classList.toggle("on", x === b); x.setAttribute("aria-pressed", x === b); });
+    load();
+  });
+  [0, 1].forEach((i) => $("#ci" + i).addEventListener("input", debounce((e) => { c.ing[i] = e.target.value; load(); }, 300)));
   $("#cc").onchange = (e) => { c.cuisine = e.target.value; load(); };
-  $("#ct").onchange = (e) => { c.tag = e.target.value; load(); };
-  $("#again").onclick = load;
+  $("#shuffle").onclick = () => { c.seed = newSeed(); load(); };
+  $("#cook-more-btn").onclick = () => load(true);
   await load();
 }
 

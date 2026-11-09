@@ -516,19 +516,75 @@ def shelf(book_id):
     return core.get_book(book_id, private=True)
 
 
-# ======================================================== suggestions
+# ======================================================== what to cook: one ranking
+# cook_rank() is the only query and ordering for "what should we cook?". Four callers shape its rows:
+# the Cook page (/admin/api/cook), /admin/api/suggest and the MCP suggest_recipes (suggest()), and Dinner Log's
+# "Pick for tonight" (/admin/api/pick, pick()).
 SUGGEST_MODES = {
     "want": "Starred but never cooked",
     "untried": "Never cooked",
     "neglected": "From a book we haven't cooked from in a year",
     "favorites": "Old favorites (rated 8+, not in 3 months)",
 }
+COOK_MODES = {
+    "any": "Anything",
+    "new": "Never made",
+    "stale": "Made before, but not lately",
+    "rested": "Not made lately (never made counts)",
+    "want": "Starred, not yet made",
+    "neglected": SUGGEST_MODES["neglected"],
+    "fav": "Old favorites (rated 8+, not made lately)",
+}
+COOK_REST_DAYS = 90   # "lately" on the Cook page and for old favorites; Dinner Log's picker rests a dish for 21
+COOK_MAX_LIMIT = 50
+PICK_MODES = ("any", "fav", "new")
+PICK_FAV_MIN = 8      # the line Dinner Log draws for a favorite (its ratings are 1–10)
+PICK_MAX_TERMS = 5    # ingredients per list
+# Each recipe's cooking history: Dinner Log dinners matched to it, plus what an editor typed on the recipe.
+PICK_HIST = ("LEFT JOIN (SELECT recipe_id, max(rating) AS best, max(day) AS last, count(*) AS times, "
+             "round(avg(rating), 1) AS avg FROM cooked WHERE recipe_id IS NOT NULL GROUP BY recipe_id) h "
+             "ON h.recipe_id=r.id")
+PICK_BEST = "max(coalesce(h.best, 0), coalesce(r.rating, 0))"
+PICK_LAST = "nullif(max(coalesce(h.last, ''), coalesce(r.last_made, '')), '')"
+NEVER_MADE = "h.recipe_id IS NULL AND r.last_made IS NULL"
 
 
-def suggest(mode="want", cuisine=None, tag=None, n=5, seed=None):
+def pick_terms(raw):
+    """'chicken, leeks' -> ['chicken', 'leeks']: trimmed, de-duplicated by fold(), at most PICK_MAX_TERMS."""
+    out, seen = [], set()
+    for s in str(raw or "").split(","):
+        s = (clean(s) or "")[:40]
+        if s and fold(s) not in seen:
+            seen.add(fold(s))
+            out.append(s)
+    return out[:PICK_MAX_TERMS]
+
+
+def cook_rank(mode="any", include=(), exclude=(), cuisine=None, tag=None, rest_days=COOK_REST_DAYS, seed=None,
+              today=None, offset=0, n=20, star_boost=1):
+    """Recipes worth cooking, in the order to show them: {mode, pool, offset, next_offset, title_only, recipes}.
+
+    mode  any: every recipe  new: never made  want: starred and never made
+          stale: made before, but not within rest_days  rested: not made within rest_days (never made counts)
+          fav: rated >= PICK_FAV_MIN (Dinner Log or the recipe's own), not made within rest_days
+          neglected: from a book we haven't cooked from in a year
+    "Made" is a Dinner Log dinner matched to the recipe, or the date an editor typed on it.
+    include  every one must be used: tagged with it or in the title, exactly like the ingredient chips.
+    exclude  drop recipes that use any of them. Tags cover only some recipes and few ingredients, so this is best
+             effort; `title_only` lists the ones with no tag at all.
+    Order: a weighted random draw, best candidates first, reproducible for a seed (so paging through it is stable).
+    Weight: the ingredient match score (title beats tag, see ingredients.ranked), x star_boost for starred recipes
+    outside fav, and in fav 1 + how far the rating clears the bar. A book's first recipe comes before any book's
+    second, so a heavily indexed book doesn't dominate."""
+    if mode not in COOK_MODES:
+        raise ValueError("mode must be one of " + ", ".join(COOK_MODES))
+    import ingredients
     ensure_synced()
     con = db()
-    where, args = [], []
+    today = today or date.today()
+    rest = (today - timedelta(days=max(0, rest_days))).isoformat()
+    year_ago = (today - timedelta(days=365)).isoformat()
+    where, args = ["b.status NOT IN ('gone','wanted')"], []
     if cuisine:
         cond, a = core.cuisine_condition(cuisine)
         where.append(cond)
@@ -536,51 +592,84 @@ def suggest(mode="want", cuisine=None, tag=None, n=5, seed=None):
     if tag:
         where.append("b.id IN (SELECT bt.book_id FROM book_tags bt JOIN tags t ON t.id=bt.tag_id WHERE t.name=?)")
         args.append(tag)
-    never = ("r.id NOT IN (SELECT recipe_id FROM cooked WHERE recipe_id IS NOT NULL) "
-             "AND r.last_made IS NULL")
-    year_ago = (date.today() - timedelta(days=365)).isoformat()
-    months3 = (date.today() - timedelta(days=90)).isoformat()
-    if mode == "want":
-        where += ["r.want_to_try=1", never]
-    elif mode == "untried":
-        where.append(never)
+    for name in include:
+        cond, a = ingredients.ingredient_condition(con, name)
+        where.append(cond)
+        args += a
+    for name in exclude:
+        cond, a = ingredients.ingredient_condition(con, name)
+        where.append(f"NOT {cond}")
+        args += a
+    if mode == "new":
+        where.append(NEVER_MADE)
+    elif mode == "want":
+        where += ["r.want_to_try=1", NEVER_MADE]
+    elif mode == "stale":
+        where += [f"{PICK_LAST} IS NOT NULL", f"{PICK_LAST} < ?"]
+        args.append(rest)
+    elif mode == "rested":
+        where.append(f"coalesce({PICK_LAST}, '') < ?")
+        args.append(rest)
+    elif mode == "fav":
+        where += [f"{PICK_BEST} >= ?", f"coalesce({PICK_LAST}, '') < ?"]
+        args += [PICK_FAV_MIN, rest]
     elif mode == "neglected":
-        where.append("b.id NOT IN (SELECT book_id FROM cooked WHERE book_id IS NOT NULL AND day >= ?)")
-        args.append(year_ago)
-        where.append("b.id NOT IN (SELECT book_id FROM recipes WHERE last_made >= ?)")
-        args.append(year_ago)
-    elif mode == "favorites":
-        where.append("""r.id IN (
-            SELECT r2.id FROM recipes r2 LEFT JOIN cooked c ON c.recipe_id=r2.id
-            GROUP BY r2.id
-            HAVING max(coalesce(max(c.rating), 0), coalesce(r2.rating, 0)) >= 8
-               AND max(coalesce(max(c.day), ''), coalesce(r2.last_made, '')) < ?)""")
-        args.append(months3)
-    else:
-        raise ValueError("unknown mode")
-    sql = ("SELECT r.id, r.name, r.heading, r.page, r.url, r.want_to_try, r.rating, r.notes, r.last_made, "
-           "b.id AS book_id, b.title AS book_title, b.cuisine, b.status FROM recipes r JOIN books b ON b.id=r.book_id "
-           "WHERE b.status NOT IN ('gone','wanted') " + "".join(" AND " + w for w in where))
-    rows = [dict(r) for r in con.execute(sql, args)]
+        where += ["b.id NOT IN (SELECT book_id FROM cooked WHERE book_id IS NOT NULL AND day >= ?)",
+                  "b.id NOT IN (SELECT book_id FROM recipes WHERE last_made >= ?)"]
+        args += [year_ago, year_ago]
+    base = f" FROM recipes r JOIN books b ON b.id=r.book_id {PICK_HIST} WHERE " + " AND ".join(where)
+
+    terms = ingredients.search_terms("", " ".join(include))
+    scored = {x["id"]: x for x in ingredients.ranked(con, base, args, terms)} if terms else {}
+    rows = [dict(r) for r in con.execute(
+        "SELECT r.id, r.name, r.heading, r.page, r.url, r.want_to_try, r.rating, r.notes, r.last_made, "
+        "b.id AS book_id, b.title AS book_title, b.kind, b.cuisine, b.status, "
+        f"{PICK_BEST} AS best, {PICK_LAST} AS last_cooked, coalesce(h.times, 0) AS times_cooked, "
+        "h.avg AS cooked_avg, h.last AS dl_last" + base, args)]
+
     rng = random.Random(seed)
-    # one per book first so a heavily indexed book doesn't dominate, then fill
-    rng.shuffle(rows)
-    picked, seen = [], set()
+    keyed = []
     for r in rows:
-        if r["book_id"] not in seen:
-            picked.append(r)
-            seen.add(r["book_id"])
-        if len(picked) >= n:
-            break
-    for r in rows:
-        if len(picked) >= n:
-            break
-        if r not in picked:
-            picked.append(r)
-    stats = cooked_stats_for([r["id"] for r in picked])
-    for r in picked:
-        r.update(stats.get(r["id"], {}))
-    return {"mode": mode, "label": SUGGEST_MODES[mode], "pool": len(rows), "recipes": picked}
+        w = max(scored[r["id"]]["score"], 0.25) if r["id"] in scored else 1.0
+        if mode == "fav":
+            w *= 1 + (r["best"] - PICK_FAV_MIN)
+        elif r["want_to_try"]:
+            w *= star_boost
+        r["match"] = scored[r["id"]]["match"] if r["id"] in scored else None
+        keyed.append((rng.random() ** (1.0 / w), r))  # Efraimidis–Spirakis: weighted order in one sort
+    keyed.sort(key=lambda kr: -kr[0])
+    first, later, books = [], [], set()
+    for _, r in keyed:  # each book's best-drawn recipe first, then everything else in draw order
+        if r["book_id"] in books:
+            later.append(r)
+        else:
+            books.add(r["book_id"])
+            first.append(r)
+    ordered = first + later
+    offset, n = max(0, int(offset)), max(1, int(n))
+    page = ordered[offset:offset + n]
+    title_only = [s for s in [*include, *exclude] if not ingredients.resolve(con, s)]
+    return {"mode": mode, "pool": len(rows), "offset": offset, "title_only": title_only, "recipes": page,
+            "next_offset": offset + len(page) if offset + len(page) < len(ordered) else None}
+
+
+SUGGEST_TO_COOK = {"want": "want", "untried": "new", "neglected": "neglected", "favorites": "fav"}
+
+
+def suggest(mode="want", cuisine=None, tag=None, n=5, seed=None):
+    """Random dinner ideas (MCP suggest_recipes, /admin/api/suggest)."""
+    if mode not in SUGGEST_MODES:
+        raise ValueError("unknown mode")
+    res = cook_rank(SUGGEST_TO_COOK[mode], cuisine=cuisine, tag=tag, seed=seed, n=n)
+    keys = ("id", "name", "heading", "page", "url", "want_to_try", "rating", "notes", "last_made",
+            "book_id", "book_title", "cuisine", "status")
+    recipes = []
+    for r in res["recipes"]:
+        d = {k: r[k] for k in keys}
+        if r["times_cooked"]:
+            d.update(cooked_count=r["times_cooked"], cooked_avg=r["cooked_avg"], cooked_last=r["dl_last"])
+        recipes.append(d)
+    return {"mode": mode, "label": SUGGEST_MODES[mode], "pool": res["pool"], "recipes": recipes}
 
 
 def cooked_stats_for(ids):
@@ -602,104 +691,71 @@ def suggest_route():
         return make_err(400, str(e))
 
 
+def thumbs_for(ids):
+    """{recipe id: URL of the thumbnail of its newest photo} for the recipes that have one."""
+    if not ids:
+        return {}
+    from photos import thumb_name
+    out = {}
+    for rid, file in db().execute(
+            f"SELECT recipe_id, file FROM recipe_photos WHERE recipe_id IN ({','.join('?' * len(ids))}) "
+            "ORDER BY coalesce(taken_on, substr(created_at, 1, 10)) DESC, id DESC", list(ids)):
+        out.setdefault(rid, f"/photos/{thumb_name(file)}")
+    return out
+
+
+@app.get("/admin/api/cook")
+@editor_required
+def cook_route():
+    """The Cook page. GET ?mode=any|new|stale|want|rested|neglected|fav &with=chicken&with=leeks &cuisine=French
+    &limit=20 (at most 50) &offset=0 &seed=7 &rest=90. A seed keeps the order the same from one page to the next;
+    next_offset is null on the last page."""
+    p = request.args
+    try:
+        limit, offset, rest = int(p.get("limit", 20)), int(p.get("offset", 0)), int(p.get("rest", COOK_REST_DAYS))
+    except ValueError:
+        return make_err(400, "limit, offset and rest must be whole numbers")
+    limit, offset, rest = max(1, min(limit, COOK_MAX_LIMIT)), max(0, offset), max(0, min(rest, 3650))
+    include = pick_terms(",".join(p.getlist("with")))
+    try:
+        res = cook_rank(p.get("mode") or "any", include, cuisine=p.get("cuisine") or None, rest_days=rest,
+                        seed=(p.get("seed") or "")[:40] or None, offset=offset, n=limit)
+    except ValueError as e:
+        return make_err(400, str(e))
+    thumbs = thumbs_for([r["id"] for r in res["recipes"]])
+    recipes = [{"id": r["id"], "name": r["name"], "heading": r["heading"], "page": r["page"], "url": r["url"],
+                "book_id": r["book_id"], "book_title": r["book_title"], "book_status": r["status"],
+                "online": r["kind"] == "online", "starred": bool(r["want_to_try"]),
+                "times_made": r["times_cooked"], "last_made": r["last_cooked"], "best_rating": r["best"] or None,
+                "match": r["match"], "photo": thumbs.get(r["id"])} for r in res["recipes"]]
+    return jsonify(mode=res["mode"], label=COOK_MODES[res["mode"]], include=include, title_only=res["title_only"],
+                   pool=res["pool"], limit=limit, offset=res["offset"], next_offset=res["next_offset"],
+                   recipes=recipes)
+
+
 # ======================================================== Dinner Log's "Pick for tonight"
-PICK_MODES = ("any", "fav", "new")
-PICK_FAV_MIN = 8      # the line Dinner Log draws for a favorite (its ratings are 1–10)
-PICK_MAX_TERMS = 5    # ingredients per list
-# Each recipe's cooking history: Dinner Log dinners matched to it, plus what an editor typed on the recipe.
-PICK_HIST = ("LEFT JOIN (SELECT recipe_id, max(rating) AS best, max(day) AS last, count(*) AS times FROM cooked "
-             "WHERE recipe_id IS NOT NULL GROUP BY recipe_id) h ON h.recipe_id=r.id")
-PICK_BEST = "max(coalesce(h.best, 0), coalesce(r.rating, 0))"
-PICK_LAST = "nullif(max(coalesce(h.last, ''), coalesce(r.last_made, '')), '')"
-
-
-def pick_terms(raw):
-    """'chicken, leeks' -> ['chicken', 'leeks']: trimmed, de-duplicated by fold(), at most PICK_MAX_TERMS."""
-    out, seen = [], set()
-    for s in str(raw or "").split(","):
-        s = (clean(s) or "")[:40]
-        if s and fold(s) not in seen:
-            seen.add(fold(s))
-            out.append(s)
-    return out[:PICK_MAX_TERMS]
-
-
 def pick(mode="any", include=(), exclude=(), n=10, rest_days=21, seed=None, today=None):
     """Recipes for Dinner Log's "Pick for tonight": a weighted random draw, best candidates first.
 
     mode  fav: best rating (from Dinner Log or the recipe itself) >= PICK_FAV_MIN, not cooked in rest_days
           new: never cooked
           any: not cooked in rest_days (never cooked counts)
-    include  every one must be used: tagged with it or in the title, exactly like the ingredient chips.
-    exclude  drop recipes that use any of them. Tags cover only some recipes and few ingredients, so this
-             is best effort; `title_only` in the result lists the ones with no tag at all.
-    Weight: ingredient match score (title beats tag, see ingredients.ranked), x3 for starred recipes outside
-    fav mode, and in fav mode 1 + how far the rating clears the bar. Then one per book first, like suggest().
-    """
+    include / exclude and the weights are cook_rank's; starred recipes outside fav mode count x3 here."""
     if mode not in PICK_MODES:
         raise ValueError("mode must be one of " + ", ".join(PICK_MODES))
-    import ingredients
-    ensure_synced()
-    con = db()
-    rest = ((today or date.today()) - timedelta(days=max(0, rest_days))).isoformat()
-    where, args = ["b.status NOT IN ('gone','wanted')"], []
-    for name in include:
-        cond, a = ingredients.ingredient_condition(con, name)
-        where.append(cond)
-        args += a
-    for name in exclude:
-        cond, a = ingredients.ingredient_condition(con, name)
-        where.append(f"NOT {cond}")
-        args += a
-    if mode == "fav":
-        where += [f"{PICK_BEST} >= ?", f"coalesce({PICK_LAST}, '') < ?"]
-        args += [PICK_FAV_MIN, rest]
-    elif mode == "new":
-        where.append("h.recipe_id IS NULL AND r.last_made IS NULL")
-    else:
-        where.append(f"coalesce({PICK_LAST}, '') < ?")
-        args.append(rest)
-    base = f" FROM recipes r JOIN books b ON b.id=r.book_id {PICK_HIST} WHERE " + " AND ".join(where)
-
-    terms = ingredients.search_terms("", " ".join(include))
-    scored = {x["id"]: x for x in ingredients.ranked(con, base, args, terms)} if terms else {}
-    rows = [dict(r) for r in con.execute(
-        "SELECT r.id, r.name, r.page, r.url, r.want_to_try, b.id AS book_id, b.title AS book_title, b.kind, "
-        f"{PICK_BEST} AS best, {PICK_LAST} AS last_cooked, coalesce(h.times, 0) AS times_cooked" + base, args)]
-
-    rng = random.Random(seed)
-    keyed = []
-    for r in rows:
-        w = max(scored[r["id"]]["score"], 0.25) if r["id"] in scored else 1.0
-        if mode == "fav":
-            w *= 1 + (r["best"] - PICK_FAV_MIN)
-        elif r["want_to_try"]:
-            w *= 3
-        keyed.append((rng.random() ** (1.0 / w), r))  # Efraimidis–Spirakis: weighted order in one sort
-    keyed.sort(key=lambda kr: -kr[0])
-    picked, books = [], set()
-    for _, r in keyed:  # one per book first so a heavily indexed book doesn't dominate, then fill
-        if r["book_id"] not in books and len(picked) < n:
-            picked.append(r)
-            books.add(r["book_id"])
-    for _, r in keyed:
-        if len(picked) >= n:
-            break
-        if r not in picked:
-            picked.append(r)
-
+    res = cook_rank({"any": "rested", "fav": "fav", "new": "new"}[mode], include, exclude, rest_days=rest_days,
+                    seed=seed, today=today, n=n, star_boost=3)
     out = [{"id": r["id"], "name": r["name"], "page": r["page"], "url": r["url"],
             "book_id": r["book_id"], "book_title": r["book_title"], "online": r["kind"] == "online",
             "starred": bool(r["want_to_try"]), "best_rating": r["best"] or None,
-            "last_cooked": r["last_cooked"], "times_cooked": r["times_cooked"],
-            "match": scored[r["id"]]["match"] if r["id"] in scored else None} for r in picked]
-    title_only = [s for s in [*include, *exclude] if not ingredients.resolve(con, s)]
+            "last_cooked": r["last_cooked"], "times_cooked": r["times_cooked"], "match": r["match"]}
+           for r in res["recipes"]]
     # Dinner Log names of every dinner matched to a recipe here, so Dinner Log can leave those dishes to this
     # list (which knows their ingredient tags) instead of offering them twice.
-    linked = [r[0] for r in con.execute("SELECT DISTINCT meal_name FROM cooked WHERE recipe_id IS NOT NULL "
-                                        "AND meal_name IS NOT NULL ORDER BY meal_name")]
-    return {"mode": mode, "include": list(include), "exclude": list(exclude), "title_only": title_only,
-            "pool": len(rows), "recipes": out, "linked_dinners": linked}
+    linked = [r[0] for r in db().execute("SELECT DISTINCT meal_name FROM cooked WHERE recipe_id IS NOT NULL "
+                                         "AND meal_name IS NOT NULL ORDER BY meal_name")]
+    return {"mode": mode, "include": list(include), "exclude": list(exclude), "title_only": res["title_only"],
+            "pool": res["pool"], "recipes": out, "linked_dinners": linked}
 
 
 @app.get("/admin/api/pick")

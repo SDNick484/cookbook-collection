@@ -156,7 +156,7 @@ Editors can attach photos of a dish to the recipe it came from.
 - Uploads (covers, dish photos, index photos) are accepted as JPEG, PNG or WebP; other formats are refused rather than decoded. iPhone HEIC photos work if the `pillow-heif` Python package is installed. Without it, Safari normally converts them to JPEG when uploading.
 
 ## What should we cook? / Stats / shelf
-- **Cook** gives random ideas in four modes: starred but not yet made, never made, forgotten books, and old favorites.
+- **Cook** (`/admin#/cook`, editors only) suggests what to make. Enter one or two ingredients (matched like the ingredient chips: tagged with it, or in the title), pick **Never made**, **Not lately** (made before, but not in the last 90 days), **Want to try** (starred, not yet made) or **Any**, and optionally a cuisine. Each result shows the book, page, when you last made it and how often, a ★ if it's on the want-to-try list and the newest photo if there is one; tapping it opens the book scrolled to that recipe. **Shuffle** reorders the same set. Behind it is `GET /admin/api/cook` (`mode`, repeatable `with`, `cuisine`, `limit` up to 50, `offset`, `seed`), which uses the same ranking as `/admin/api/suggest`, the MCP `suggest_recipes` tool and `/admin/api/pick`.
 - **Pulled out / Put back** on a book's page tracks books that are off the shelf.
 - **Stats → The collection** counts the books you own by author, publisher, tag, book rating, decade published and format. Publisher spellings that differ only by case or accents are counted together. Each list shows the top 12, with the rest under **All**, and tapping an author, publisher or tag opens those books in the catalog.
 

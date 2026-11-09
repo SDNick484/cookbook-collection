@@ -139,7 +139,7 @@ Editors can attach photos of a dish to the recipe it came from.
 - Image files are served with a one-day cache lifetime. If a CDN in front of the app caches them (Cloudflare caches `.jpg` by default), a deleted photo can stay reachable at its URL until that copy expires; purge the URL in your CDN if that matters.
 - Each upload is resized to at most 2048px, plus a 480px thumbnail, and saved as JPEG in `/var/lib/cookbooks/photos`. Re-encoding drops the EXIF data, including any phone GPS location.
 - Deleting a photo, recipe or book deletes its files. The nightly backup copies `photos/` to `BACKUP_TARGET`, and **Download JSON** lists each recipe's photo files.
-- iPhone HEIC photos work if the `pillow-heif` Python package is installed. Without it, Safari normally converts them to JPEG when uploading.
+- Uploads (covers, dish photos, index photos) are accepted as JPEG, PNG or WebP; other formats are refused rather than decoded. iPhone HEIC photos work if the `pillow-heif` Python package is installed. Without it, Safari normally converts them to JPEG when uploading.
 
 ## What should we cook? / Stats / shelf
 - **Cook** gives random ideas in four modes: starred but not yet made, never made, forgotten books, and old favorites.
@@ -152,6 +152,7 @@ Editors can attach photos of a dish to the recipe it came from.
 - The token is generated on install and lives in `/etc/conf.d/cookbooks`. Treat the private URL like a password.
 - `/mcp` must stay **outside** the Access app, which only protects `/admin`.
 - Prefer the header. The app keeps the token out of its own access log (`/mcp/<redacted>`), but a token in the URL still shows up in Cloudflare's request logs and anywhere the URL is pasted. The token is `MCP_TOKEN` in `/etc/conf.d/cookbooks`; the installer no longer prints it.
+- `get_book` returns up to 200 recipes per call (`limit` up to 500) with `recipe_count` and `next_offset`, so a long index is read in pages. A JSON-RPC batch may hold at most 20 requests.
 - `search_recipes` returns the best matches first, the `total`, and `next_offset` when there are more; each recipe's `match` is "title" when every word is in its title, or says per word where it came from: "chicken: title, leek: tag", "chicken: may be only chicken stock", or "chicken: only as “chicken stock” in the title". The server's instructions tell Claude that some books have no page numbers and that the recipe and book title are enough.
 
 ## AI search (Ask)

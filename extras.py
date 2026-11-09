@@ -921,8 +921,8 @@ def parse_claude_rows(text, truncated=False):
 
 
 def prepare_photo(raw):
-    from PIL import Image, ImageOps
-    img = ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert("L")  # grayscale: text only, smaller
+    from PIL import ImageOps
+    img = ImageOps.exif_transpose(core.open_image(raw)).convert("L")  # grayscale: text only, smaller
     # Current models read images up to 2576px on the long side; a dense three-column index needs all of it
     # (older models scale it down themselves).
     img.thumbnail((2576, 2576))
@@ -1029,6 +1029,7 @@ def features():
 
 # ======================================================== MCP endpoint
 MCP_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
+MCP_BATCH_MAX = 20  # JSON-RPC requests per POST; a batch is a convenience, not a bulk API
 MCP_INSTRUCTIONS = ("Search a home cookbook collection: books, and recipes indexed from those books "
                     "(name, index heading such as a main ingredient, and page). Recipes are physical: tell the user the "
                     "book and page. Index headings are often ingredients, so ingredient searches work well. "
@@ -1224,6 +1225,9 @@ def t_search_books(a, private):
     return {"count": len(books), "books": out}
 
 
+GET_BOOK_LIMIT, GET_BOOK_MAX = 200, 500  # recipes per get_book call: default, most
+
+
 def t_get_book(a, private):
     con = db()
     pub = "" if private else f" AND {core.PUBLIC_BOOKS}"
@@ -1247,7 +1251,12 @@ def t_get_book(a, private):
     if not row or (not private and row["kind"]):
         raise ToolError("No such book")
     b = core.book_dicts([row], private)[0]
-    recs = [dict(r) for r in con.execute("SELECT * FROM recipes WHERE book_id=? ORDER BY page_sort", (b["id"],))]
+    # Paged: a well-indexed book has hundreds of recipes, and the whole list would go into the model's context.
+    limit = max(1, min(int(a.get("limit") or GET_BOOK_LIMIT), GET_BOOK_MAX))
+    offset = max(0, int(a.get("offset") or 0))
+    recs = [dict(r) for r in con.execute(
+        "SELECT * FROM recipes WHERE book_id=? ORDER BY page_sort IS NULL, page_sort, name LIMIT ? OFFSET ?",
+        (b["id"], limit, offset))]
     if private:
         ensure_synced()
         st = cooked_stats_for([r["id"] for r in recs])
@@ -1258,6 +1267,10 @@ def t_get_book(a, private):
     if b.get("description"):
         out["description"] = b["description"]
     out["recipes"] = [{k: v for k, v in _recipe_out(r, private).items() if k not in ("book_id", "book_title")} for r in recs]
+    if offset:
+        out["offset"] = offset
+    if offset + len(recs) < (b.get("recipe_count") or 0):
+        out["next_offset"] = offset + len(recs)  # more recipes: call again with this offset
     return out
 
 
@@ -1369,8 +1382,14 @@ TOOLS = [
                 "when listing many books: the full records are several times larger"},
         limit={"type": "integer", "minimum": 1, "maximum": 200, "default": 50,
                "description": "Max books, default 50, at most 200"})),
-    ("get_book", False, t_get_book, "A cookbook's details and every recipe indexed from it, in page order.",
-     _S(book_id={"type": "integer"}, title={"type": "string"})),
+    ("get_book", False, t_get_book,
+     "A cookbook's details and the recipes indexed from it, in page order. recipe_count is the total; up to "
+     f"{GET_BOOK_LIMIT} recipes come back per call, and next_offset is present when there are more.",
+     _S(book_id={"type": "integer"}, title={"type": "string"},
+        limit={"type": "integer", "minimum": 1, "maximum": GET_BOOK_MAX, "default": GET_BOOK_LIMIT,
+               "description": f"Max recipes, default {GET_BOOK_LIMIT}, at most {GET_BOOK_MAX}"},
+        offset={"type": "integer", "minimum": 0, "default": 0,
+                "description": "Skip this many recipes: pass next_offset from the previous call"})),
     ("list_categories", False, t_list_categories, "Cuisines and tags used in the collection, with book counts.", _S()),
     ("suggest_recipes", True, t_suggest,
      "Random dinner ideas from the collection. Modes: want (starred, never cooked), untried (never cooked), "
@@ -1537,6 +1556,8 @@ def mcp():
         return jsonify(rpc_error(None, -32700, "Parse error")), 400
     private = level == "private"
     if isinstance(payload, list):
+        if len(payload) > MCP_BATCH_MAX:
+            return jsonify(rpc_error(None, -32600, f"Batch too large: at most {MCP_BATCH_MAX} requests")), 400
         out = [r for r in (handle_rpc(m, private) for m in payload) if r is not None]
         return (jsonify(out), 200) if out else Response(status=202)
     res = handle_rpc(payload, private)

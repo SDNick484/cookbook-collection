@@ -123,7 +123,7 @@ def test_paging_arguments_declare_their_bounds(c):
                 assert p["type"] == "integer" and p["minimum"] >= 0, (t["name"], name)
                 if name != "offset":
                     assert p["maximum"] > p["default"] >= 1, (t["name"], name)
-    assert seen == 4  # search_recipes limit+offset, search_books limit, suggest_recipes count
+    assert seen == 6  # search_recipes limit+offset, search_books limit, get_book limit+offset, suggest_recipes count
 
 
 def test_tool_annotations_describe_write_and_world_behavior(c):

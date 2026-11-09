@@ -55,9 +55,11 @@ def test_dinnerlog_matching(c, dl):
     assert r["cooked_count"] == 2 and r["cooked_avg"] == 8.0 and r["cooked_last"] == today
     _, pork = recipe_id(c, "Dining In", "Fennel-Rubbed Pork Chops")
     assert pork["cooked_count"] == 1
-    # public view never shows cooking history
+    # public view: how many times, never when or how it was rated (PUBLIC_RECIPE_COOKED)
     pub = c.get(f"/api/books/{bid}").json
-    assert all("cooked_count" not in x for x in pub["recipes"])
+    chicken = next(x for x in pub["recipes"] if x["id"] == r["id"])
+    assert chicken["cooked_count"] == 2
+    assert all(not ({"cooked_avg", "cooked_last", "recipe_id"} & set(x)) for x in pub["recipes"])
 
     # alias an unknown title to a book, then manually link + create a recipe
     binder = c.post("/admin/api/books", json={"title": "Family Recipes"}).json["id"]

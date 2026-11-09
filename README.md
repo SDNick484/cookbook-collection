@@ -3,7 +3,7 @@
 A family cookbook catalog: Flask + SQLite, running as one small service.
 On the server it's called `cookbooks`: the service, `/opt/cookbooks`, `/var/lib/cookbooks`, `/etc/conf.d/cookbooks`, and port 8767.
 
-- **Public** `https://cookbooks.example.com/` lets visitors browse and search books and recipe names, and see which shelf each book is on.
+- **Public** `https://cookbooks.example.com/` lets visitors browse and search books and recipe names, see which shelf each book is on, and (with Dinner Log linked) how many times each recipe was made.
 - **Editors** `https://cookbooks.example.com/admin` sit behind Cloudflare Access. From there you can add books by barcode, edit them, import indexes, manage shelf locations, and see ratings, notes and the want-to-try list.
 
 ![Cookbook Collection catalog](screenshot.jpg)
@@ -71,9 +71,10 @@ The table header counts how many entries will be added and how many are already 
 ## Dinner Log link (optional)
 Dinner Log, a companion meal-journal app, serves its cooking history at `GET /api/history` behind a token. Cookbook Collection pulls it and matches each dinner to a book and recipe.
 - **Setup:** generate a token (`openssl rand -hex 32`), set it as Dinner Log's `HISTORY_TOKEN`, and in `/etc/conf.d/cookbooks` set `DINNERLOG_TOKEN` to the same value and `DINNERLOG_API_URL` to Dinner Log's **private** address, e.g. `http://127.0.0.1:8000` when both run on the same server. The token travels in plain HTTP there, so keep it on loopback or a private network, or use https. Redirects are refused, so the token never follows one to another address.
-- **Matching:** dinners logged from here (the 🍽 link, Dinner Log's **Log tonight** on a pick, or its recipe picker) carry this catalog's book and recipe ids and match exactly. Older dinners, and ones typed in by hand, are matched to a book by title, then to a recipe by page number and name.
+- **Matching:** dinners logged from here (the 🍽 link, Dinner Log's **Log tonight** on a pick, or its recipe picker) carry this catalog's stable book and recipe uids, plus the integer ids, and match exactly. Older dinners, and ones typed in by hand, are matched to a book by title, then to a recipe by page number and name. The full order, and what each side stores, is in [docs/seam.md](docs/seam.md).
+- **Upgrading to uids:** either app can go first. Afterwards, run Dinner Log's `backfill_uids` (dry run first) to stamp uids on dinners logged before them; see its README. **Stats → Dinner Log** (`/admin/api/dinnerlog`, field `resolved`) shows how many dinners matched at each step, and the service log prints the same counts on every rebuild.
 - **Freshness:** pages never wait on Dinner Log. When the stored history is more than a minute old, the next page that needs it starts a fetch in the background (one at a time across workers), and a reload shows the result. If Dinner Log doesn't answer, the last history it sent is kept and fetches pause for five minutes. **Stats → Dinner Log** shows when it last answered and any error, and opening it fetches right away.
-- Recipes show cooked count, average rating and last made. **Stats** shows the overall picture.
+- Editors see each recipe's times made, last made and average rating ("made 3× · last Oct 12 · 8/10"). The public book page shows only the times made ("made 3×"): `PUBLIC_RECIPE_COOKED` in `app.py` is the list of history fields the public gets. **Stats** shows the overall picture.
 - When a name doesn't match, pick the book once on the Stats page. When a dinner matches the book but not a recipe, link it or add it as a recipe from the book's page.
 - **Upgrading from a version that read Dinner Log's database file:** upgrade and configure Dinner Log first, then this app. The installer removes the `cookbooks` user from the `dinnerlog` group; `DINNERLOG_DB` is no longer used. Cooking history already here is kept until the first fetch replaces it.
 

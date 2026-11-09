@@ -396,6 +396,8 @@ def search_words(q):
 PUBLIC_BOOK = ("id", "uid", "title", "subtitle", "isbn", "publisher", "year", "cuisine", "description", "cover", "signed",
                "format")
 PUBLIC_RECIPE = ("id", "uid", "book_id", "name", "heading", "page")
+# Dinner Log history on the public book page: how often a recipe was made, never when or how it was rated.
+PUBLIC_RECIPE_COOKED = ("cooked_count",)
 PUBLIC_BOOKS = "b.kind IS NULL"  # cookbooks; recipe websites (kind 'online') are for editors only
 
 
@@ -787,12 +789,15 @@ def get_book(book_id, private):
     recs = db().execute("SELECT * FROM recipes WHERE book_id=? ORDER BY page_sort IS NULL, page_sort, name",
                         (book_id,)).fetchall()
     book["recipes"] = [recipe_dict(r, private) for r in recs]
+    import extras
+    # Public pages sync too, so their counts stay current; a pull is leased, at most one a minute (with
+    # backoff after a failure), and nothing from the request reaches Dinner Log.
+    extras.ensure_synced()
+    cr = extras.cooked_by_recipe(book_id)
+    for r in book["recipes"]:
+        stats = cr.get(r["id"], {})
+        r.update(stats if private else {k: stats[k] for k in PUBLIC_RECIPE_COOKED if k in stats})
     if private:
-        import extras
-        extras.ensure_synced()
-        cr = extras.cooked_by_recipe(book_id)
-        for r in book["recipes"]:
-            r.update(cr.get(r["id"], {}))
         book.update(extras.cooked_by_book([book_id]).get(book_id, {}))
         book["wishes"] = extras.wishes_for_book(book_id)
         import photos

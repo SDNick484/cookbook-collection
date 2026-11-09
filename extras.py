@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS dl_link (meal_id INTEGER PRIMARY KEY, recipe_id INTEG
 CREATE TABLE IF NOT EXISTS dl_meals (       -- the last history pulled from Dinner Log, as sent
   id INTEGER PRIMARY KEY,                   -- Dinner Log meals.id
   day TEXT, name TEXT, source_type TEXT, source_title TEXT, source_detail TEXT,
-  rating REAL, cookbook_book_id INTEGER, cookbook_recipe_id INTEGER);
+  rating REAL, cookbook_book_id INTEGER, cookbook_recipe_id INTEGER,
+  cookbook_book_uid TEXT, cookbook_recipe_uid TEXT);  -- this catalog's books.uid / recipes.uid, when stamped
 INSERT OR IGNORE INTO meta(key, value) VALUES ('dl_lease', '0');
 """
 
@@ -72,6 +73,13 @@ def migrate(con):
                 "error='Reading that photo stopped partway (the server restarted). Try it again.' "
                 "WHERE status IN ('running', 'queued')")  # their threads died with the process
     con.execute("DELETE FROM meta WHERE key='dl_sig'")  # from reading Dinner Log's file directly
+    dl_cols = [r[1] for r in con.execute("PRAGMA table_info(dl_meals)")]
+    if "cookbook_book_uid" not in dl_cols:
+        for col in ("cookbook_book_uid", "cookbook_recipe_uid"):
+            con.execute(f"ALTER TABLE dl_meals ADD COLUMN {col} TEXT")
+        # The stored history was saved without the uid fields. If Dinner Log already sends them, its ETag
+        # still matches and every pull would get a 304, so the uids would never arrive: forget the ETag.
+        con.execute("DELETE FROM meta WHERE key='dl_etag'")
     if "meal_key" not in [r[1] for r in con.execute("PRAGMA table_info(dl_link)")]:
         con.execute("ALTER TABLE dl_link ADD COLUMN meal_key TEXT")
     cols = [r[1] for r in con.execute("PRAGMA table_info(books)")]
@@ -132,7 +140,7 @@ def dl_open(req, timeout):
 
 
 DL_MEAL_FIELDS = ("id", "day", "name", "source_type", "source_title", "source_detail", "rating",
-                  "cookbook_book_id", "cookbook_recipe_id")
+                  "cookbook_book_id", "cookbook_recipe_id", "cookbook_book_uid", "cookbook_recipe_uid")
 
 
 def store_snapshot(con, meals, etag, now=None):
@@ -270,13 +278,31 @@ def meal_key(day, name):
     return f"{day}|{fold(name)}"
 
 
+RESOLVE_LEVELS = ("manual", "recipe_uid", "book_uid", "int", "web", "text", "skipped")
+
+
+def _uid(v):
+    """A uid as Dinner Log stored it, or None if absent or malformed (so it can't shadow the ints)."""
+    return v if isinstance(v, str) and core.UID_RE.fullmatch(v) else None
+
+
 def rebuild_cooked(con, force=False):
     """Rebuild `cooked` from the stored Dinner Log history (dl_meals) and the catalog. Local only.
 
     Runs when a new history was stored or the catalog changed (or `force`), never before the first pull,
     so an upgrade keeps the old `cooked` until Dinner Log has answered. Per meal, the first that applies:
-    a manual link; the recipe id Dinner Log stamped; its stamped book, then the page and name within it;
-    a saved website recipe; the title, page and name (fuzzy)."""
+
+      manual      a link an editor made here (dl_link)
+      recipe_uid  the recipe uid Dinner Log stamped
+      book_uid    the book uid it stamped, then the page and name within that book
+      int         the int recipe id, then the int book id (+ page/name), only for meals without any uid:
+                  ints are rowids and can be reused after a delete, so a uid that no longer resolves must
+                  not hand the meal to whatever now has its old int
+      web         a link to a recipe saved from a website
+      text        the cookbook title, page and name (fuzzy)
+      skipped     not a cookbook, and no saved website matched
+
+    How many meals each level resolved is logged and kept in meta `dl_resolved` (counts only, no rows)."""
     gen = meta_get(con, "dl_gen")
     if gen is None:
         return {"rebuilt": False, "meals": 0}
@@ -291,6 +317,8 @@ def rebuild_cooked(con, force=False):
         links = {r[0]: (r[1], r[2]) for r in con.execute("SELECT meal_id, recipe_id, meal_key FROM dl_link")}
         recipe_book = dict(con.execute("SELECT id, book_id FROM recipes").fetchall())
         book_ids = {r[0] for r in con.execute("SELECT id FROM books")}
+        recipe_by_uid = {r[0]: r[1] for r in con.execute("SELECT uid, id FROM recipes WHERE uid IS NOT NULL")}
+        book_by_uid = {r[0]: r[1] for r in con.execute("SELECT uid, id FROM books WHERE uid IS NOT NULL")}
         rec_cache = {}
 
         def recipes_of(bid):
@@ -301,20 +329,39 @@ def rebuild_cooked(con, force=False):
 
         import online
         to_insert = []
+        counts = dict.fromkeys(RESOLVE_LEVELS, 0)
+        uid_missed = 0
         for m in meals:
             title, detail, name = m["source_title"] or "", m["source_detail"] or "", m["name"] or ""
-            stamped_rid = m["cookbook_recipe_id"] if m["cookbook_recipe_id"] in recipe_book else None
-            stamped_bid = m["cookbook_book_id"] if m["cookbook_book_id"] in book_ids else None
+            r_uid, b_uid = _uid(m["cookbook_recipe_uid"]), _uid(m["cookbook_book_uid"])
+            uid_rid = recipe_by_uid.get(r_uid) if r_uid else None
+            uid_bid = book_by_uid.get(b_uid) if b_uid else None
+            has_uid = bool(r_uid or b_uid)
+            if has_uid and not (uid_rid or uid_bid):
+                uid_missed += 1
+            stamped_rid = None if has_uid else (m["cookbook_recipe_id"] if m["cookbook_recipe_id"] in recipe_book else None)
+            stamped_bid = None if has_uid else (m["cookbook_book_id"] if m["cookbook_book_id"] in book_ids else None)
             link = links.get(m["id"])
             if link and link[1] not in (None, meal_key(m["day"], name)):
                 link = None  # a different meal now has this id
             bid, rid, how = None, None, "none"
             if link:
+                level = "manual"
                 rid, how = link[0], "manual"
-                bid = recipe_book.get(rid) if rid else (stamped_bid or match_book(title, books, aliases))
+                bid = recipe_book.get(rid) if rid else (uid_bid or stamped_bid or match_book(title, books, aliases))
+            elif uid_rid:
+                level = "recipe_uid"
+                bid, rid, how = recipe_book[uid_rid], uid_rid, "linked"
+            elif uid_bid:
+                level = "book_uid"
+                bid = uid_bid
+                rid = match_recipe(recipes_of(bid), detail, name)
+                how = "auto" if rid else "book"
             elif stamped_rid:
+                level = "int"
                 bid, rid, how = recipe_book[stamped_rid], stamped_rid, "linked"
             elif stamped_bid:
+                level = "int"
                 bid = stamped_bid
                 rid = match_recipe(recipes_of(bid), detail, name)
                 how = "auto" if rid else "book"
@@ -322,22 +369,30 @@ def rebuild_cooked(con, force=False):
                 is_web = "://" in detail or "://" in title
                 web_bid, web_rid = online.match_meal(con, detail, title) if is_web else (None, None)
                 if web_rid:  # a link to a recipe saved from a website
+                    level = "web"
                     bid, rid, how = web_bid, web_rid, "auto"
                 elif m["source_type"] != "cookbook":
+                    counts["skipped"] += 1
                     continue  # a website we haven't saved, or no source at all
                 else:
+                    level = "text"
                     bid = match_book(title, books, aliases)
                     if bid:
                         rid = match_recipe(recipes_of(bid), detail, name)
                         how = "auto" if rid else "book"
+            counts[level] += 1
             to_insert.append((m["id"], m["day"], name, title, detail, m["rating"], bid, rid, how))
         con.execute("DELETE FROM cooked")
         con.executemany("INSERT INTO cooked VALUES (?,?,?,?,?,?,?,?,?)", to_insert)
+        counts["uid_missed"] = uid_missed
+        app.logger.info("Dinner Log history matched: %d meals; %s", len(meals),
+                        " ".join(f"{k}={v}" for k, v in counts.items()))
+        meta_set(con, "dl_resolved", json.dumps(counts, separators=(",", ":")))
         meta_set(con, "dl_built_gen", gen)
         meta_set(con, "dl_cat_sig", sig)
         meta_set(con, "dl_synced", time.strftime("%Y-%m-%d %H:%M:%S"))
         con.commit()
-        return {"rebuilt": True, "meals": len(to_insert)}
+        return {"rebuilt": True, "meals": len(to_insert), "resolved": counts}
 
 
 def dinnerlog_available(con):
@@ -437,7 +492,9 @@ def dinnerlog_status():
     unmatched = [dict(r) for r in con.execute(
         "SELECT dl_title AS title, count(*) AS n, max(day) AS last FROM cooked WHERE book_id IS NULL "
         "AND trim(coalesce(dl_title,'')) <> '' GROUP BY fold(dl_title) ORDER BY n DESC")]
+    resolved = meta_get(con, "dl_resolved")
     return jsonify(available=True, **info,
+                   resolved=json.loads(resolved) if resolved else None,  # meals per resolution level
                    meals=q("SELECT count(*) FROM cooked"),
                    linked=q("SELECT count(*) FROM cooked WHERE how='linked'"),
                    recipe_matched=q("SELECT count(*) FROM cooked WHERE recipe_id IS NOT NULL"),
@@ -622,8 +679,8 @@ def cook_rank(mode="any", include=(), exclude=(), cuisine=None, tag=None, rest_d
     terms = ingredients.search_terms("", " ".join(include))
     scored = {x["id"]: x for x in ingredients.ranked(con, base, args, terms)} if terms else {}
     rows = [dict(r) for r in con.execute(
-        "SELECT r.id, r.name, r.heading, r.page, r.url, r.want_to_try, r.rating, r.notes, r.last_made, "
-        "b.id AS book_id, b.title AS book_title, b.kind, b.cuisine, b.status, "
+        "SELECT r.id, r.uid, r.name, r.heading, r.page, r.url, r.want_to_try, r.rating, r.notes, r.last_made, "
+        "b.id AS book_id, b.uid AS book_uid, b.title AS book_title, b.kind, b.cuisine, b.status, "
         f"{PICK_BEST} AS best, {PICK_LAST} AS last_cooked, coalesce(h.times, 0) AS times_cooked, "
         "h.avg AS cooked_avg, h.last AS dl_last" + base, args)]
 
@@ -723,8 +780,9 @@ def cook_route():
     except ValueError as e:
         return make_err(400, str(e))
     thumbs = thumbs_for([r["id"] for r in res["recipes"]])
-    recipes = [{"id": r["id"], "name": r["name"], "heading": r["heading"], "page": r["page"], "url": r["url"],
-                "book_id": r["book_id"], "book_title": r["book_title"], "book_status": r["status"],
+    recipes = [{"id": r["id"], "uid": r["uid"], "name": r["name"], "heading": r["heading"], "page": r["page"],
+                "url": r["url"], "book_id": r["book_id"], "book_uid": r["book_uid"], "book_title": r["book_title"],
+                "book_status": r["status"],
                 "online": r["kind"] == "online", "starred": bool(r["want_to_try"]),
                 "times_made": r["times_cooked"], "last_made": r["last_cooked"], "best_rating": r["best"] or None,
                 "match": r["match"], "photo": thumbs.get(r["id"])} for r in res["recipes"]]
@@ -745,8 +803,9 @@ def pick(mode="any", include=(), exclude=(), n=10, rest_days=21, seed=None, toda
         raise ValueError("mode must be one of " + ", ".join(PICK_MODES))
     res = cook_rank({"any": "rested", "fav": "fav", "new": "new"}[mode], include, exclude, rest_days=rest_days,
                     seed=seed, today=today, n=n, star_boost=3)
-    out = [{"id": r["id"], "name": r["name"], "page": r["page"], "url": r["url"],
-            "book_id": r["book_id"], "book_title": r["book_title"], "online": r["kind"] == "online",
+    out = [{"id": r["id"], "uid": r["uid"], "name": r["name"], "page": r["page"], "url": r["url"],
+            "book_id": r["book_id"], "book_uid": r["book_uid"], "book_title": r["book_title"],
+            "online": r["kind"] == "online",
             "starred": bool(r["want_to_try"]), "best_rating": r["best"] or None,
             "last_cooked": r["last_cooked"], "times_cooked": r["times_cooked"], "match": r["match"]}
            for r in res["recipes"]]

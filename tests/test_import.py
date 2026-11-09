@@ -493,3 +493,147 @@ def test_a_database_error_leaves_out_that_book_only_and_replace_does_not_prune_i
     assert con.execute("SELECT count(*) FROM books WHERE title='Fine book'").fetchone()[0] == 1
     assert rep.deleted_books == []
     con.close()
+
+
+# ------------------------------------------------------------------ --photos: cover and photo files
+def _jpeg(path, size=(60, 40), color="red"):
+    from PIL import Image
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", size, color).save(path, "JPEG")
+    return path
+
+
+PHOTO_OK = "1" * 32 + ".jpg"
+PHOTO_GONE = "2" * 32 + ".jpg"
+PHOTO_BAD = "3" * 32 + ".jpg"
+COVER_OK = "7-abcdef12.jpg"
+
+
+def _book_with_files():
+    """An export-shaped book carrying a cover and three photos: one good (no thumbnail), one nowhere, one not an image."""
+    return {"books": [{"uid": "c" * 32, "title": "Book with files", "cover": COVER_OK, "recipes": [
+        {"uid": "b" * 32, "name": "Photographed", "photos": [
+            {"file": PHOTO_OK, "taken_on": "2026-01-02", "caption": "ok"},
+            {"file": PHOTO_GONE}, {"file": PHOTO_BAD}]}]}]}
+
+
+def _backup_folder(tmp_path):
+    """A folder laid out like BACKUP_TARGET/files/<app>/: covers/ and photos/."""
+    src = tmp_path / "backup"
+    _jpeg(src / "covers" / COVER_OK, (80, 120))
+    _jpeg(src / "photos" / PHOTO_OK, (60, 40))
+    (src / "photos" / PHOTO_BAD).write_text("<html>not an image</html>")
+    return src
+
+
+def test_photos_dir_copies_what_the_export_references_and_reports_the_rest(new_catalog, tmp_path_factory):
+    import importer, photos
+    src = _backup_folder(tmp_path_factory.mktemp("src"))
+    dest = new_catalog()
+    con = A.connect()
+    rep = importer.import_data(con, _book_with_files(), photos_dir=src)
+    assert (A.COVER_DIR / COVER_OK).read_bytes() == (src / "covers" / COVER_OK).read_bytes()
+    assert (photos.PHOTO_DIR / PHOTO_OK).is_file()
+    assert not (photos.PHOTO_DIR / PHOTO_BAD).exists() and not (photos.PHOTO_DIR / PHOTO_GONE).exists()
+    assert rep.files["copied"] == 2 and rep.files["present"] == 0
+    assert any(PHOTO_GONE in m for m in rep.files["missing"])
+    assert any(photos.thumb_name(PHOTO_OK) in m for m in rep.files["missing"])   # no thumbnail beside the good one
+    assert any(PHOTO_BAD in m and "image" in m for m in rep.files["unusable"])
+    # every row is kept (the files can still be added later); the size is read from a file we have
+    rows = {r["file"]: r for r in con.execute("SELECT * FROM recipe_photos")}
+    assert set(rows) == {PHOTO_OK, PHOTO_GONE, PHOTO_BAD}
+    assert (rows[PHOTO_OK]["width"], rows[PHOTO_OK]["height"]) == (60, 40) and rows[PHOTO_GONE]["width"] is None
+    assert con.execute("SELECT cover FROM books").fetchone()[0] == COVER_OK
+    assert not list(dest.rglob("*.part"))
+    con.close()
+
+
+def test_a_thumbnail_next_to_the_photo_is_copied_too(new_catalog, tmp_path_factory):
+    import importer, photos
+    src = _backup_folder(tmp_path_factory.mktemp("src"))
+    _jpeg(src / "photos" / photos.thumb_name(PHOTO_OK), (30, 20))
+    new_catalog()
+    con = A.connect()
+    rep = importer.import_data(con, _book_with_files(), photos_dir=src)
+    assert (photos.PHOTO_DIR / photos.thumb_name(PHOTO_OK)).is_file() and rep.files["copied"] == 3
+    con.close()
+
+
+def test_a_folder_of_loose_files_works_too(new_catalog, tmp_path_factory):
+    import importer, photos
+    src = tmp_path_factory.mktemp("loose")
+    _jpeg(src / COVER_OK)
+    _jpeg(src / PHOTO_OK)
+    new_catalog()
+    con = A.connect()
+    importer.import_data(con, _book_with_files(), photos_dir=src)
+    assert (A.COVER_DIR / COVER_OK).is_file() and (photos.PHOTO_DIR / PHOTO_OK).is_file()
+    con.close()
+
+
+def test_dry_run_copies_nothing(new_catalog, tmp_path_factory):
+    import importer, photos
+    src = _backup_folder(tmp_path_factory.mktemp("src"))
+    new_catalog()
+    con = A.connect()
+    rep = importer.import_data(con, _book_with_files(), photos_dir=src, dry_run=True)
+    assert rep.files["copied"] == 2                        # "would copy"
+    assert not any(A.COVER_DIR.iterdir()) and not any(photos.PHOTO_DIR.iterdir())
+    con.close()
+
+
+def test_files_already_here_are_kept_not_overwritten(new_catalog, tmp_path_factory):
+    import importer, photos
+    src = _backup_folder(tmp_path_factory.mktemp("src"))
+    new_catalog()
+    mine = _jpeg(A.COVER_DIR / COVER_OK, (10, 10), "blue")
+    before = mine.read_bytes()
+    con = A.connect()
+    rep = importer.import_data(con, _book_with_files(), photos_dir=src)
+    assert mine.read_bytes() == before and rep.files["present"] == 1 and rep.files["copied"] == 1
+    con.close()
+
+
+def test_without_photos_dir_missing_files_are_reported_not_fatal(new_catalog):
+    import importer
+    new_catalog()
+    con = A.connect()
+    rep = importer.import_data(con, _book_with_files())
+    assert con.execute("SELECT count(*) FROM books").fetchone()[0] == 1
+    assert rep.files["copied"] == 0 and any(COVER_OK in m for m in rep.files["missing"])
+    con.close()
+
+
+@pytest.mark.parametrize("name", ["../../etc/passwd", "../x.jpg", "sub/x.jpg", "/tmp/x.jpg", "..\\x.jpg", ".hidden.jpg",
+                                  "x.jpg\0", "x.svg", "x.jpg/", "x"])
+def test_file_names_that_are_not_plain_image_names_are_refused(new_catalog, tmp_path_factory, name):
+    """Names are joined onto the data folders (and unlinked when a book is deleted), so a name from a file must never
+    be able to leave them."""
+    import importer, photos
+    src = tmp_path_factory.mktemp("src")
+    dest = new_catalog()
+    con = A.connect()
+    con.execute("INSERT INTO books(title, cover) VALUES ('Has a cover', 'keep-me.jpg')")
+    uid = con.execute("SELECT uid FROM books").fetchone()[0]
+    con.commit()
+    data = {"books": [{"uid": uid, "title": "Has a cover", "cover": name,
+                       "recipes": [{"name": "R", "photos": [{"file": name}]}]}]}
+    rep = importer.import_data(con, data, photos_dir=src)
+    assert con.execute("SELECT cover FROM books").fetchone()[0] == "keep-me.jpg"   # unchanged
+    assert con.execute("SELECT count(*) FROM recipe_photos").fetchone()[0] == 0
+    assert len(rep.warnings) >= 2 and rep.files["copied"] == 0
+    assert not [p for p in dest.rglob("*") if p.is_file() and p.name != ".init.lock" and not p.name.startswith("cookbooks.db")]
+    con.close()
+
+
+def test_a_symlink_in_the_photos_folder_is_not_followed(new_catalog, tmp_path_factory):
+    import importer, photos
+    outside = _jpeg(tmp_path_factory.mktemp("elsewhere") / "secret.jpg")
+    src = tmp_path_factory.mktemp("src")
+    (src / "photos").mkdir()
+    (src / "photos" / PHOTO_OK).symlink_to(outside)
+    new_catalog()
+    con = A.connect()
+    rep = importer.import_data(con, _book_with_files(), photos_dir=src)
+    assert not (photos.PHOTO_DIR / PHOTO_OK).exists() and rep.files["copied"] == 0
+    con.close()

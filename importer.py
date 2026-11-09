@@ -9,8 +9,12 @@ function that only connect() registers.
 All writes happen in one transaction: a failure, or --dry-run, rolls the whole import back.
 """
 import math
+import os
 import re
+import shutil
 import sqlite3
+import stat
+from pathlib import Path
 
 SAFE_FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.(?:jpe?g|png|webp)", re.I)  # a bare name, never a path
 TIMESTAMP = re.compile(r"\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d")
@@ -37,6 +41,8 @@ class Report:
         self.hints_set = 0
         self.deleted_books = []  # (uid, title) of the books --replace removes (or, in a dry run, would)
         self.dry_run = False
+        # Cover and photo files the export references. "copied" is "would copy" in a dry run.
+        self.files = {"present": 0, "copied": 0, "missing": [], "unusable": []}
         self.conflicts = []  # (what, label, why): rows left out because they'd clash with something already there
         self.warnings = []   # values that were dropped or corrected
 
@@ -163,6 +169,95 @@ def _recipe_vals(src, cols, label, rep):
     return vals
 
 
+# ------------------------------------------------------------------ cover and photo files
+# Where a file lives: covers in COVER_DIR, photos and their thumbnails in PHOTO_DIR. --photos DIR may be a copy of
+# the data folder or of BACKUP_TARGET/files/<app> (covers/ and photos/ inside), or one flat folder of files.
+SUBDIR = {"cover": "covers", "photo": "photos", "thumb": "photos"}
+
+
+def _places(ctx, kind, name):
+    """(where the file belongs here, where --photos might have it)."""
+    import photos
+    dest = (ctx.A.COVER_DIR if kind == "cover" else photos.PHOTO_DIR) / name
+    if ctx.photos_dir is None:
+        return dest, []
+    return dest, [ctx.photos_dir / SUBDIR[kind] / name, ctx.photos_dir / name]
+
+
+def _is_regular(path):
+    """A plain file; a symlink doesn't count, so a backup folder can't point the import at files elsewhere."""
+    try:
+        return stat.S_ISREG(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
+def _image_size(path):
+    """(width, height) if `path` is an image of a kind the app accepts for uploads (JPEG, PNG, WebP, HEIC) and not
+    absurdly big, else None. Decoding goes through the app's own open_image, which limits the formats."""
+    A = _app()
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(A.app.config["MAX_CONTENT_LENGTH"] + 1)
+        if len(raw) > A.app.config["MAX_CONTENT_LENGTH"]:
+            return None
+        return A.open_image(raw).size
+    except Exception:  # noqa: BLE001 — not an image, truncated, or a decompression bomb: all "unusable"
+        return None
+
+
+def _known_size(ctx, kind, name):
+    """The size of an image we already have or are about to copy, or None (the row is kept without one)."""
+    dest, sources = _places(ctx, kind, name)
+    for path in [dest, *sources]:
+        if _is_regular(path):
+            return _image_size(path)
+    return None
+
+
+def _resolve(ctx, kind, name, label, rep, plan):
+    """Decide what happens to one file: already here, to be copied (added to `plan`), missing, or not an image.
+    True if it is here or will be."""
+    dest, sources = _places(ctx, kind, name)
+    if os.path.lexists(dest):
+        rep.files["present"] += 1
+        return True
+    found = next((s for s in sources if _is_regular(s)), None)
+    if found is None:
+        rep.files["missing"].append(label)
+        return False
+    if _image_size(found) is None:
+        rep.files["unusable"].append(f"{label} (not a JPEG, PNG, WebP or HEIC image)")
+        return False
+    plan.append((found, dest, label))
+    rep.files["copied"] += 1
+    return True
+
+
+def _transfer(ctx, rep, dry_run):
+    """Copy the referenced files that are missing here and found in --photos, after the database commit, so a
+    rolled-back import leaves no files behind. Nothing already here is overwritten. A missing file is reported."""
+    import photos
+    plan = []
+    for kind, name in sorted(ctx.refs):
+        here = _resolve(ctx, kind, name, f"{kind} {name}", rep, plan)
+        if here and kind == "photo":
+            thumb = photos.thumb_name(name)
+            _resolve(ctx, "thumb", thumb, f"thumbnail {thumb}", rep, plan)
+    if dry_run:
+        return
+    for src, dest, label in plan:
+        tmp = dest.with_name(dest.name + ".part")
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, tmp)
+            os.replace(tmp, dest)
+        except OSError as e:
+            tmp.unlink(missing_ok=True)
+            rep.files["copied"] -= 1
+            rep.files["unusable"].append(f"{label} (copy failed: {e.strerror or e})")
+
+
 # ------------------------------------------------------------------ books
 def _current_people(con, bid):
     authors = [r[0] for r in con.execute(
@@ -222,6 +317,8 @@ def _book(ctx, src, label, rep):
     A, con = ctx.A, ctx.con
     uid = _uid(src, label, rep)
     vals = _book_vals(src, ctx.cols["books"], label, rep)
+    if vals.get("cover"):
+        ctx.book_files.add(("cover", vals["cover"]))
     bid = _find_book(ctx, src, uid, vals)
     if bid is None:
         if not vals.get("title"):
@@ -329,14 +426,16 @@ def _set_photos(ctx, rid, photos, label, rep):
         if not name:
             continue
         listed.add(name)
+        ctx.book_files.add(("photo", name))
         day = A.clean(p.get("taken_on") if isinstance(p.get("taken_on"), str) else None)
         day = day if day and DAY.fullmatch(day) else None
         caption = A.clean(p.get("caption") if isinstance(p.get("caption"), str) else None)
         row = con.execute("SELECT id, taken_on, caption FROM recipe_photos WHERE recipe_id=? AND file=?",
                           (rid, name)).fetchone()
         if row is None:
-            con.execute("INSERT INTO recipe_photos(recipe_id, file, taken_on, caption) VALUES (?,?,?,?)",
-                        (rid, name, day, caption))
+            width, height = _known_size(ctx, "photo", name) or (None, None)
+            con.execute("INSERT INTO recipe_photos(recipe_id, file, width, height, taken_on, caption) VALUES (?,?,?,?,?,?)",
+                        (rid, name, width, height, day, caption))
             rep.counts["photos"]["insert"] += 1
         elif (row["taken_on"], row["caption"]) != (day, caption):
             con.execute("UPDATE recipe_photos SET taken_on=?, caption=? WHERE id=?", (day, caption, row["id"]))
@@ -390,9 +489,12 @@ def _recipe(ctx, bid, src, label, rep):
 
 # ------------------------------------------------------------------ the import
 class _Ctx:
-    def __init__(self, con):
+    def __init__(self, con, photos_dir=None):
         import ingredients
         self.A, self.ing, self.con = _app(), ingredients, con
+        self.photos_dir = Path(photos_dir) if photos_dir else None
+        self.refs = set()        # (kind, file name) the imported books reference
+        self.book_files = set()  # the same for the book being imported; kept only if it went through
         self.cols = {t: _columns(con, t) for t in ("books", "recipes")}
         self.keep = set()  # ids of the books the file accounts for (found, inserted, or held by a clash)
         self.claimed_books, self.claimed_recipes = set(), set()  # local rows an entry has already matched
@@ -476,11 +578,12 @@ def _count(con, table):
     return con.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
 
 
-def import_data(con, data, *, replace=False, dry_run=False, log=None):
+def import_data(con, data, *, replace=False, dry_run=False, photos_dir=None, log=None):
     """Import the parsed export `data` through `con` (from app.connect()), commit, and return a Report.
 
     replace: also delete what the file doesn't list (see _replace); the default is to merge.
     dry_run: do all of it, report it, then roll the transaction back, so the plan is the real code path's.
+    photos_dir: a folder to copy the covers and photos the export references from (see "cover and photo files").
     log: called with a line at a time for what --replace is about to delete."""
     A = _app()
     if not isinstance(data, dict) or not isinstance(data.get("books"), list):
@@ -490,7 +593,9 @@ def import_data(con, data, *, replace=False, dry_run=False, log=None):
         raise ImportFileError("Refusing --replace: the file has no books, so it would delete the whole catalog")
     if con.in_transaction:
         raise RuntimeError("import_data needs a connection with no open transaction")
-    rep, ctx = Report(), _Ctx(con)
+    if photos_dir is not None and not Path(photos_dir).is_dir():
+        raise ImportFileError(f"--photos: {photos_dir} is not a folder")
+    rep, ctx = Report(), _Ctx(con, photos_dir)
     rep.dry_run = dry_run
     con.execute("BEGIN IMMEDIATE")  # take the write lock now, and keep one transaction for the whole import
     try:
@@ -501,7 +606,7 @@ def import_data(con, data, *, replace=False, dry_run=False, log=None):
                 rep.warnings.append(f"{label}: not an object, left out")
                 continue
             mine = Report()
-            ctx.book_recipes, ctx.book_photos = set(), {}
+            ctx.book_recipes, ctx.book_photos, ctx.book_files = set(), {}, set()
             con.execute("SAVEPOINT book")
             try:
                 bid = _book(ctx, src, label, mine)
@@ -517,6 +622,7 @@ def import_data(con, data, *, replace=False, dry_run=False, log=None):
                     ctx.complete.add(bid)
                     ctx.seen_recipes.setdefault(bid, set()).update(ctx.book_recipes)
                     ctx.seen_photos.update(ctx.book_photos)
+                    ctx.refs |= ctx.book_files
             except sqlite3.Error as e:  # a constraint the checks above missed: leave this book out, not the whole import
                 con.execute("ROLLBACK TO book")
                 con.execute("RELEASE book")
@@ -538,4 +644,5 @@ def import_data(con, data, *, replace=False, dry_run=False, log=None):
     except BaseException:
         con.rollback()
         raise
+    _transfer(ctx, rep, dry_run)
     return rep

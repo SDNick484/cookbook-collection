@@ -294,14 +294,16 @@ const whereHTML = (r) => r.url ? `<a class="pg web" href="${esc(r.url)}" target=
 const uidParams = (r) => [["cookbook_book_uid", r.book_uid || S.bookUid], ["cookbook_recipe_uid", r.uid]]
   .filter(([, v]) => v).map(([k, v]) => `&${k}=${encodeURIComponent(v)}`).join("");
 function recipeRow(r) {
+  // From Dinner Log: editors see "made 3× · last Oct 12 · 8/10" (average rating); the public view gets only the
+  // count, because that is all the server sends it (PUBLIC_RECIPE_COOKED).
   const extra = [];
-  if (r.cooked_count) extra.push(`<span class="cooked">Cooked ${r.cooked_count}×${r.cooked_avg != null ? ` · <span class="rating">${num(r.cooked_avg)}/10</span>` : ""} · ${fmtDay(r.cooked_last)}</span>`);
-  if (r.rating != null) extra.push(`<span class="rating">${num(r.rating)}/10</span>${r.cooked_count ? " (journal)" : ""}`);
-  if (r.last_made) extra.push(`made ${fmtDay(r.last_made)}`);
-  if (r.notes) extra.push(esc(r.notes));
+  if (r.cooked_count) extra.push(`<span class="cooked">made ${r.cooked_count}×${ADMIN && r.cooked_last ? ` · last ${fmtDay(r.cooked_last)}` : ""}${ADMIN && r.cooked_avg != null ? ` · <span class="rating">${num(r.cooked_avg)}/10</span>` : ""}</span>`);
+  if (ADMIN && r.rating != null) extra.push(`<span class="rating">${num(r.rating)}/10</span>${r.cooked_count ? " (journal)" : ""}`);
+  if (ADMIN && r.last_made) extra.push(`made ${fmtDay(r.last_made)}`);
+  if (ADMIN && r.notes) extra.push(esc(r.notes));
   const nph = (S.bookPhotos || []).filter((p) => p.recipe_id === r.id).length;
   return `<li data-id="${r.id}"><div class="rn">${r.heading ? `<span class="rh">${esc(r.heading)} · </span>` : ""}${esc(r.name)}
-    ${ADMIN && extra.length ? `<div class="extra">${extra.join(" · ")}</div>` : ""}</div>
+    ${extra.length ? `<div class="extra">${extra.join(" · ")}</div>` : ""}</div>
     ${whereHTML(r)}
     ${ADMIN ? `<span class="acts">${S.features && S.features.dinnerlog_url && S.bookTitle ? `<a class="log" title="Log this dinner in Dinner Log" target="_blank" rel="noopener"
         href="${esc(S.features.dinnerlog_url)}/new?source_type=cookbook&source_title=${encodeURIComponent(S.bookTitle)}&source_detail=${encodeURIComponent(r.page || r.url || "")}&cookbook_book_id=${r.book_id}&cookbook_recipe_id=${r.id}${uidParams(r)}&name=${encodeURIComponent(r.heading && r.name[0] === r.name[0].toLowerCase() ? r.heading + ", " + r.name : r.name)}">🍽</a>` : ""}

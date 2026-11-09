@@ -192,7 +192,9 @@ def _init_db_locked():
                     (json.dumps({"n": merged, "at": time.strftime("%Y-%m-%d %H:%M")}),))
     empty = con.execute("SELECT count(*) FROM books").fetchone()[0] == 0
     seed = APP_DIR / "seed.json"
-    if empty and seed.exists():
+    # SKIP_SEED=1 is for importer.py (a restore into a new database must not start from the seed catalog). It is
+    # read at call time, and the service never sets it, so it is not in setup-head.sh's export line.
+    if empty and seed.exists() and not _flag("SKIP_SEED"):
         load_seed(con, json.loads(seed.read_text()))
     if HAS_FTS:  # rebuilt on every start, so a change to fold() reaches the whole catalog
         reindex_all_books(con)
@@ -1235,14 +1237,26 @@ def lookup_search():
 
 
 # ---- export
+# Shape version of export.json, read by importer.py, which refuses a file newer than it knows. Bump it only for a
+# change an older importer would misread (a renamed or removed key); adding a key is not one.
+EXPORT_VERSION = 1
+
+
 @app.get("/admin/api/export.json")
 @editor_required
 def export_json():
     rows = db().execute("SELECT * FROM books ORDER BY id").fetchall()
     books = book_dicts(rows, True)
+    tags = {}  # recipe id -> its ingredient tag names; [] in the file means untagged, a missing key an older export
+    for rid, name in db().execute("SELECT ri.recipe_id, i.name FROM recipe_ingredients ri "
+                                  "JOIN ingredients i ON i.id=ri.ingredient_id ORDER BY i.name"):
+        tags.setdefault(rid, []).append(name)
+    hints = [r[0] for r in db().execute("SELECT name FROM ingredients WHERE hint=1 ORDER BY name")]
     for b in books:
         b["recipes"] = [dict(r) for r in db().execute("SELECT * FROM recipes WHERE book_id=? ORDER BY page_sort",
                                                       (b["id"],))]
+        for r in b["recipes"]:
+            r["ingredients"] = tags.get(r["id"], [])
         photos = {}  # file names in DATA_DIR/photos
         for p in db().execute("SELECT p.recipe_id, p.file, p.taken_on, p.caption FROM recipe_photos p "
                               "JOIN recipes r ON r.id=p.recipe_id WHERE r.book_id=?", (b["id"],)):
@@ -1250,7 +1264,10 @@ def export_json():
         for r in b["recipes"]:
             if r["id"] in photos:
                 r["photos"] = photos[r["id"]]
-    body = json.dumps({"exported": time.strftime("%Y-%m-%dT%H:%M:%S"), "books": books}, ensure_ascii=False, indent=1)
+    body = json.dumps({"version": EXPORT_VERSION, "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                       "exported": time.strftime("%Y-%m-%dT%H:%M:%S"),  # local time; kept for older readers
+                       "ingredient_hints": hints,  # tags that are search hints (no chip on the catalog page)
+                       "books": books}, ensure_ascii=False, indent=1)
     return Response(body, mimetype="application/json",
                     headers={"Content-Disposition": "attachment; filename=cookbooks.json"})
 

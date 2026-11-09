@@ -353,3 +353,143 @@ def test_two_entries_with_the_same_isbn_do_not_overwrite_one_book():
     assert rep.counts["books"]["update"] == 1 and rep.counts["books"]["insert"] == 0 and len(rep.conflicts) == 1
     assert con.execute("SELECT cuisine FROM books WHERE id=?", (bid,)).fetchone()[0] == "First"
     con.close()
+
+
+# ------------------------------------------------------------------ --replace and --dry-run
+def dump_all(con):
+    """Every row of every table (the search indexes' tables included), to prove a run changed nothing."""
+    out = {}
+    for (name,) in con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall():
+        out[name] = sorted(repr(tuple(r)) for r in con.execute(f'SELECT * FROM "{name}"'))
+    return out
+
+
+def _add_local_only_things(con, data):
+    """Things this catalog has that `data` (exported first) does not: a book with a recipe, a photo and its own
+    author and tag; plus a recipe and a photo row added to a book and recipe the file does list."""
+    only = _local_book(con, "Only here", ["Nobody Else"], recipes=[("Orphan stew", "1")])
+    A.set_people(con, only, ["Nobody Else"], ["Orphan tag"])
+    rid = con.execute("SELECT id FROM recipes WHERE book_id=?", (only,)).fetchone()[0]
+    con.execute("INSERT INTO recipe_photos(recipe_id, file) VALUES (?, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.jpg')", (rid,))
+    kept = next(b for b in data["books"] if b["recipes"] and not b["recipes"][0].get("photos"))
+    kb = con.execute("SELECT id FROM books WHERE uid=?", (kept["uid"],)).fetchone()[0]
+    kr = con.execute("SELECT id FROM recipes WHERE uid=?", (kept["recipes"][0]["uid"],)).fetchone()[0]
+    con.execute("INSERT INTO recipes(book_id, name) VALUES (?, 'Local extra recipe')", (kb,))
+    con.execute("INSERT INTO recipe_photos(recipe_id, file) VALUES (?, 'cccccccccccccccccccccccccccccccc.jpg')", (kr,))
+    A.reindex_all_books(con)
+    con.commit()
+    return only
+
+
+def test_merge_keeps_what_the_file_lacks_and_replace_deletes_only_that(client):
+    import importer
+    decorate_catalog()
+    data = export(client)
+    con = A.connect()
+    as_exported = catalog(con)                          # what the file describes
+    only = _add_local_only_things(con, data)
+    only_uid = con.execute("SELECT uid FROM books WHERE id=?", (only,)).fetchone()[0]
+    n_books = con.execute("SELECT count(*) FROM books").fetchone()[0]
+
+    rep = importer.import_data(con, data)              # merge: the default
+    assert rep.counts["books"]["delete"] == rep.counts["recipes"]["delete"] == rep.counts["photos"]["delete"] == 0
+    assert con.execute("SELECT count(*) FROM books").fetchone()[0] == n_books
+    assert con.execute("SELECT count(*) FROM recipes WHERE name='Local extra recipe'").fetchone()[0] == 1
+
+    said = []
+    rep = importer.import_data(con, data, replace=True, log=said.append)
+    assert rep.deleted_books == [(only_uid, "Only here")]
+    assert any("Only here" in line for line in said) and any("1 book" in line for line in said)  # named before deleting
+    assert rep.counts["books"]["delete"] == 1
+    assert rep.counts["recipes"]["delete"] == 2         # Orphan stew (with its book) + Local extra recipe
+    assert rep.counts["photos"]["delete"] == 2          # one on each of them
+    assert catalog(con) == as_exported                  # exactly the file: nothing missing, nothing extra
+    assert con.execute("SELECT count(*) FROM recipes WHERE name IN ('Orphan stew', 'Local extra recipe')").fetchone()[0] == 0
+    assert con.execute("SELECT count(*) FROM recipe_photos WHERE file LIKE 'b%' OR file LIKE 'cccc%'").fetchone()[0] == 0
+    assert con.execute("SELECT count(*) FROM authors WHERE name='Nobody Else'").fetchone()[0] == 0   # orphans tidied
+    assert con.execute("SELECT count(*) FROM tags WHERE name='Orphan tag'").fetchone()[0] == 0
+    assert con.execute("SELECT count(*) FROM books_fts").fetchone()[0] == n_books - 1
+    assert con.execute("SELECT count(*) FROM recipes_fts").fetchone()[0] == con.execute("SELECT count(*) FROM recipes").fetchone()[0]
+    con.close()
+
+
+def test_replace_refuses_a_file_with_no_books(client):
+    import importer
+    con = A.connect()
+    n = con.execute("SELECT count(*) FROM books").fetchone()[0]
+    with pytest.raises(importer.ImportFileError, match="no books"):
+        importer.import_data(con, {"version": 1, "books": []}, replace=True)
+    assert con.execute("SELECT count(*) FROM books").fetchone()[0] == n
+    con.close()
+
+
+def test_replace_keeps_the_local_book_an_isbn_clash_is_held_by(new_catalog):
+    import importer
+    new_catalog()  # its own catalog: --replace with a one-book file deletes everything else
+    con = A.connect()
+    isbn = _isbn(4)
+    bid = _local_book(con, "Held under replace", ["Hal Held"], isbn=isbn)
+    data = {"books": [{"uid": "d" * 32, "title": "Other copy", "isbn": isbn}]}
+    rep = importer.import_data(con, data, replace=True)
+    assert len(rep.conflicts) == 1
+    assert con.execute("SELECT count(*) FROM books WHERE id=?", (bid,)).fetchone()[0] == 1   # not deleted
+    assert all(title != "Held under replace" for _, title in rep.deleted_books)
+    con.close()
+
+
+def test_dry_run_changes_nothing_but_reports_everything(client):
+    import importer
+    data = export(client)
+    con = A.connect()
+    only = _add_local_only_things(con, data)
+    data["books"][0]["title"] = "Dry run rename"
+    data["books"].append({"uid": "e" * 32, "title": "Dry run book", "authors": ["Dry Author"],
+                          "recipes": [{"name": "Dry run soup", "ingredients": ["Dry ingredient"]}]})
+    before = dump_all(con)
+    rep = importer.import_data(con, data, replace=True, dry_run=True)
+    assert rep.counts["books"]["insert"] == 1 and rep.counts["books"]["update"] == 1 and rep.counts["books"]["delete"] == 1
+    assert rep.counts["recipes"]["insert"] == 1 and rep.counts["recipes"]["delete"] == 2
+    assert rep.new_names["authors"] == 1 and rep.new_names["ingredients"] == 1
+    assert [t for _, t in rep.deleted_books] == ["Only here"]
+    assert not con.in_transaction
+    assert dump_all(con) == before
+    con.close()
+    con = A.connect()
+    assert dump_all(con) == before                      # nor anything left behind for another connection
+    assert con.execute("SELECT count(*) FROM books WHERE id=?", (only,)).fetchone()[0] == 1
+    con.close()
+
+
+def test_dry_run_into_an_empty_database_leaves_it_empty(client, new_catalog):
+    import importer
+    data = export(client)
+    new_catalog()
+    con = A.connect()
+    before = dump_all(con)
+    rep = importer.import_data(con, data, dry_run=True)
+    assert rep.counts["books"]["insert"] == len(data["books"])
+    assert dump_all(con) == before
+    con.close()
+
+
+def test_a_database_error_leaves_out_that_book_only_and_replace_does_not_prune_it(new_catalog):
+    """A constraint the pre-checks can't see (forced here with a trigger) rolls back that book's changes and
+    nothing else; --replace must not then delete the recipes it never got to read."""
+    import importer
+    new_catalog()
+    con = A.connect()
+    bid = _local_book(con, "Fragile", ["Fran Fragile"], recipes=[("Local only", "1")])
+    uid = con.execute("SELECT uid FROM books WHERE id=?", (bid,)).fetchone()[0]
+    con.execute("CREATE TRIGGER boom BEFORE INSERT ON recipes WHEN new.name='Boom' BEGIN SELECT RAISE(ABORT, 'boom'); END")
+    con.commit()
+    data = {"books": [{"uid": uid, "title": "Fragile, renamed", "authors": ["Fran Fragile"],
+                       "recipes": [{"name": "Boom"}]},
+                      {"uid": "9" * 32, "title": "Fine book"}]}
+    rep = importer.import_data(con, data, replace=True)
+    assert len(rep.conflicts) == 1 and "boom" in rep.conflicts[0][2]
+    assert rep.counts["books"]["insert"] == 1 and rep.counts["books"]["update"] == 0
+    assert con.execute("SELECT title FROM books WHERE id=?", (bid,)).fetchone()[0] == "Fragile"   # rolled back
+    assert con.execute("SELECT count(*) FROM recipes WHERE book_id=? AND name='Local only'", (bid,)).fetchone()[0] == 1
+    assert con.execute("SELECT count(*) FROM books WHERE title='Fine book'").fetchone()[0] == 1
+    assert rep.deleted_books == []
+    con.close()

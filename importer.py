@@ -35,6 +35,8 @@ class Report:
         self.counts = {t: {"insert": 0, "update": 0, "skip": 0, "delete": 0} for t in TABLES}
         self.new_names = {"authors": 0, "tags": 0, "ingredients": 0}
         self.hints_set = 0
+        self.deleted_books = []  # (uid, title) of the books --replace removes (or, in a dry run, would)
+        self.dry_run = False
         self.conflicts = []  # (what, label, why): rows left out because they'd clash with something already there
         self.warnings = []   # values that were dropped or corrected
 
@@ -317,6 +319,7 @@ def _set_ingredients(ctx, rid, names):
 def _set_photos(ctx, rid, photos, label, rep):
     """Photo rows are matched by file name, which is random per photo, so it is their identity."""
     A, con = ctx.A, ctx.con
+    listed = ctx.book_photos.setdefault(rid, set())
     if not isinstance(photos, list):
         return
     for p in photos:
@@ -325,6 +328,7 @@ def _set_photos(ctx, rid, photos, label, rep):
         name = _file_name(p.get("file"), label, "photo", rep)
         if not name:
             continue
+        listed.add(name)
         day = A.clean(p.get("taken_on") if isinstance(p.get("taken_on"), str) else None)
         day = day if day and DAY.fullmatch(day) else None
         caption = A.clean(p.get("caption") if isinstance(p.get("caption"), str) else None)
@@ -354,6 +358,7 @@ def _recipe(ctx, bid, src, label, rep):
         clash = con.execute("SELECT id FROM recipes WHERE book_id=? AND ext_id=? AND id IS NOT ?",
                             (bid, vals["ext_id"], cur["id"] if cur else None)).fetchone()
         if clash:
+            ctx.book_recipes.add(clash["id"])  # held by the clash, so --replace keeps it
             rep.conflicts.append(("recipe", label, f"another recipe in this book already has web id {vals['ext_id']!r}"))
             rep.counts["recipes"]["skip"] += 1
             return
@@ -379,6 +384,7 @@ def _recipe(ctx, bid, src, label, rep):
         if changes:
             con.execute(f"UPDATE recipes SET {','.join(f'{k}=?' for k in changes)} WHERE id=?", [*changes.values(), rid])
         rep.counts["recipes"]["update" if changes or tagged else "skip"] += 1
+    ctx.book_recipes.add(rid)
     _set_photos(ctx, rid, src.get("photos"), label, rep)
 
 
@@ -390,6 +396,64 @@ class _Ctx:
         self.cols = {t: _columns(con, t) for t in ("books", "recipes")}
         self.keep = set()  # ids of the books the file accounts for (found, inserted, or held by a clash)
         self.claimed_books, self.claimed_recipes = set(), set()  # local rows an entry has already matched
+        # For --replace: what the file accounts for. Filled per book, and only kept when the book went through.
+        self.complete = set()          # ids of books imported without a database error
+        self.seen_recipes = {}         # book id -> ids of its recipes the file lists (or that a clash holds)
+        self.seen_photos = {}          # recipe id -> file names of its photos the file lists
+        self.book_recipes, self.book_photos = set(), {}  # the same, for the book being imported
+
+
+def _chunks(ids, n=500):
+    for i in range(0, len(ids), n):
+        yield ids[i:i + n]
+
+
+def _count_in(con, sql, ids):
+    """`sql` (with {q} where the id list goes) summed over chunks of `ids`, to stay under SQLite's variable limit."""
+    return sum(con.execute(sql.format(q=",".join("?" * len(c))), c).fetchone()[0] for c in _chunks(ids))
+
+
+def _delete_in(con, sql, ids):
+    for c in _chunks(ids):
+        con.execute(sql.format(q=",".join("?" * len(c))), c)
+
+
+def _replace(ctx, rep, log):
+    """Make the catalog equal the file: delete the books it doesn't list, and the recipes and photo rows it doesn't
+    list for the books and recipes it does. Files on disk are left alone. The list goes to `log` first."""
+    A, con = ctx.A, ctx.con
+    gone = [r for r in con.execute("SELECT id, uid, title FROM books ORDER BY id") if r["id"] not in ctx.keep]
+    rep.deleted_books = [(r["uid"], r["title"]) for r in gone]
+    gone_ids = [r["id"] for r in gone]
+    stale_recipes = [r[0] for bid in sorted(ctx.complete) for r in con.execute("SELECT id FROM recipes WHERE book_id=?", (bid,))
+                     if r[0] not in ctx.seen_recipes.get(bid, set())]
+    stale_photos = [pid for rid, names in ctx.seen_photos.items()
+                    for pid, f in con.execute("SELECT id, file FROM recipe_photos WHERE recipe_id=?", (rid,))
+                    if f not in names]
+    in_gone = "SELECT id FROM recipes WHERE book_id IN ({q})"
+    rep.counts["books"]["delete"] = len(gone_ids)
+    rep.counts["recipes"]["delete"] = len(stale_recipes) + _count_in(
+        con, "SELECT count(*) FROM recipes WHERE book_id IN ({q})", gone_ids)
+    rep.counts["photos"]["delete"] = len(stale_photos) \
+        + _count_in(con, f"SELECT count(*) FROM recipe_photos WHERE recipe_id IN ({in_gone})", gone_ids) \
+        + _count_in(con, "SELECT count(*) FROM recipe_photos WHERE recipe_id IN ({q})", stale_recipes)
+    if log and (gone or stale_recipes or stale_photos):
+        verb = "would be deleted" if rep.dry_run else "will be deleted"
+        log(f"--replace: {len(gone)} book(s), {rep.counts['recipes']['delete']} recipe(s) and "
+            f"{rep.counts['photos']['delete']} photo row(s) in this catalog are not in the file and {verb}:")
+        for uid, title in rep.deleted_books:
+            log(f"  - {title} ({uid})")
+        if stale_recipes or stale_photos:
+            log(f"  - and {len(stale_recipes)} recipe(s) / {len(stale_photos)} photo row(s) missing from books and "
+                "recipes that are in the file")
+    _delete_in(con, "DELETE FROM recipes WHERE id IN ({q})", stale_recipes)  # their photo rows cascade
+    _delete_in(con, "DELETE FROM recipe_photos WHERE id IN ({q})", stale_photos)
+    _delete_in(con, "DELETE FROM books WHERE id IN ({q})", gone_ids)         # and their recipes, photo rows, links
+    if A.HAS_FTS:
+        _delete_in(con, "DELETE FROM books_fts WHERE rowid IN ({q})", gone_ids)
+    if gone_ids:  # the same tidying delete_book does
+        con.execute("DELETE FROM authors WHERE id NOT IN (SELECT author_id FROM book_authors)")
+        con.execute("DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM book_tags)")
 
 
 def check_version(data):
@@ -412,15 +476,22 @@ def _count(con, table):
     return con.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
 
 
-def import_data(con, data):
-    """Import the parsed export `data` through `con` (from app.connect()), commit, and return a Report."""
+def import_data(con, data, *, replace=False, dry_run=False, log=None):
+    """Import the parsed export `data` through `con` (from app.connect()), commit, and return a Report.
+
+    replace: also delete what the file doesn't list (see _replace); the default is to merge.
+    dry_run: do all of it, report it, then roll the transaction back, so the plan is the real code path's.
+    log: called with a line at a time for what --replace is about to delete."""
     A = _app()
     if not isinstance(data, dict) or not isinstance(data.get("books"), list):
         raise ImportFileError("That isn't a Cookbook Collection export (no list of books)")
     check_version(data)
+    if replace and not data["books"]:
+        raise ImportFileError("Refusing --replace: the file has no books, so it would delete the whole catalog")
     if con.in_transaction:
         raise RuntimeError("import_data needs a connection with no open transaction")
     rep, ctx = Report(), _Ctx(con)
+    rep.dry_run = dry_run
     con.execute("BEGIN IMMEDIATE")  # take the write lock now, and keep one transaction for the whole import
     try:
         before = {t: _count(con, t) for t in rep.new_names}
@@ -430,6 +501,7 @@ def import_data(con, data):
                 rep.warnings.append(f"{label}: not an object, left out")
                 continue
             mine = Report()
+            ctx.book_recipes, ctx.book_photos = set(), {}
             con.execute("SAVEPOINT book")
             try:
                 bid = _book(ctx, src, label, mine)
@@ -441,6 +513,10 @@ def import_data(con, data):
                         else:
                             mine.warnings.append(f"{label}: recipe #{m} is not an object, left out")
                 con.execute("RELEASE book")
+                if bid is not None:
+                    ctx.complete.add(bid)
+                    ctx.seen_recipes.setdefault(bid, set()).update(ctx.book_recipes)
+                    ctx.seen_photos.update(ctx.book_photos)
             except sqlite3.Error as e:  # a constraint the checks above missed: leave this book out, not the whole import
                 con.execute("ROLLBACK TO book")
                 con.execute("RELEASE book")
@@ -453,7 +529,12 @@ def import_data(con, data):
                 iid = A.name_id(con, "ingredients", ctx.ing.clean_name(name))
                 rep.hints_set += con.execute("UPDATE ingredients SET hint=1 WHERE id=? AND hint=0", (iid,)).rowcount
         rep.new_names = {t: _count(con, t) - before[t] for t in rep.new_names}
-        con.commit()
+        if replace:
+            _replace(ctx, rep, log)
+        if dry_run:
+            con.rollback()
+        else:
+            con.commit()
     except BaseException:
         con.rollback()
         raise

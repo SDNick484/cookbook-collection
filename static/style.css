@@ -38,11 +38,17 @@ h1 { font-size: 1.8rem; } h2 { font-size: 1.3rem; } h3 { font-size: 1.05rem; }
   text-decoration: none; font-size: .92rem; color: var(--ink); background: var(--card); }
 #ask-top:hover, #ask-top.on { background: var(--chip); border-color: var(--chip); }
 
+@media (max-width: 640px) {
+  .brand, #nav a, #ask-top { min-height: 40px; display: inline-flex; align-items: center; }
+  #nav a { padding: 0 8px; }
+  .top-row { padding-top: 6px; }
+  .back { display: inline-flex; align-items: center; min-height: 40px; margin: 6px 0 4px; }
+}
 /* controls */
 .controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 8px; align-items: center; }
 .search { flex: 1 1 280px; position: relative; }
 .controls select { flex: 0 1 auto; }
-@media (max-width: 640px) { .search { flex-basis: 100%; } .controls select { flex: 1 1 0; font-size: .9rem; padding: 7px 24px 7px 8px; } }
+@media (max-width: 640px) { .search { flex-basis: 100%; } .controls select { flex: 1 1 0; min-height: 40px; font-size: .9rem; padding: 7px 24px 7px 8px; } }
 .search input { width: 100%; padding: 11px 14px 11px 38px; font-size: 1rem; }
 .search::before { content: "⌕"; position: absolute; left: 13px; top: 50%; transform: translateY(-52%); color: var(--muted); font-size: 1.15rem; }
 input, select, textarea { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line);
@@ -317,3 +323,21 @@ table.zip .ztag { width: 100%; min-width: 9em; font: inherit; padding: 3px 6px; 
 .ask-book .by { font-size: .85rem; color: var(--muted); }
 #ask-form { position: sticky; bottom: 0; display: flex; gap: 8px; padding: 10px 0 calc(10px + env(safe-area-inset-bottom)); background: var(--paper); }
 #ask-form input { flex: 1; min-width: 0; }
+
+/* cook (#/cook) */
+.cookbar { display: grid; gap: 10px; margin: 8px 0 12px; }
+.cook-ings { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+@media (max-width: 640px) { .cook-ings { grid-template-columns: 1fr; } }
+.cookbar input, .cookbar select { min-height: 44px; font-size: 1rem; width: 100%; }
+.cookbar .seg button, .cookbar .cook-row button, #cook-more button { min-height: 40px; }
+.cookbar .seg { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); }
+@media (max-width: 480px) { .cookbar .seg { grid-template-columns: 1fr 1fr; } }
+.cook-row { display: flex; gap: 8px; }
+.cook-row select { flex: 1 1 0; }
+.cooklist { list-style: none; margin: 0 0 16px; padding: 0; display: grid; gap: 10px; }
+.idea.cook { display: flex; gap: 12px; align-items: flex-start; }
+.cook .cthumb { width: 64px; height: 64px; object-fit: cover; border-radius: 6px; flex: none; background: var(--chip); }
+.cook .cbody { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.cook .star { color: var(--warn); font-weight: 600; }
+.cooklist .empty { padding: 28px 0; }
+.rlist li.hl { background: color-mix(in srgb, var(--accent) 14%, transparent); border-radius: 6px; }

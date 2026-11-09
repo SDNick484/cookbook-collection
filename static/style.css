@@ -42,12 +42,13 @@ h1 { font-size: 1.8rem; } h2 { font-size: 1.3rem; } h3 { font-size: 1.05rem; }
   .brand, #nav a, #ask-top { min-height: 40px; display: inline-flex; align-items: center; }
   #nav a { padding: 0 8px; }
   .top-row { padding-top: 6px; }
+  .back { display: inline-flex; align-items: center; min-height: 40px; margin: 6px 0 4px; }
 }
 /* controls */
 .controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 8px; align-items: center; }
 .search { flex: 1 1 280px; position: relative; }
 .controls select { flex: 0 1 auto; }
-@media (max-width: 640px) { .search { flex-basis: 100%; } .controls select { flex: 1 1 0; font-size: .9rem; padding: 7px 24px 7px 8px; } }
+@media (max-width: 640px) { .search { flex-basis: 100%; } .controls select { flex: 1 1 0; min-height: 40px; font-size: .9rem; padding: 7px 24px 7px 8px; } }
 .search input { width: 100%; padding: 11px 14px 11px 38px; font-size: 1rem; }
 .search::before { content: "⌕"; position: absolute; left: 13px; top: 50%; transform: translateY(-52%); color: var(--muted); font-size: 1.15rem; }
 input, select, textarea { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line);

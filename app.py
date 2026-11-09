@@ -1235,6 +1235,11 @@ def lookup_search():
 
 
 # ---- export
+# Shape version of export.json, read by importer.py, which refuses a file newer than it knows. Bump it only for a
+# change an older importer would misread (a renamed or removed key); adding a key is not one.
+EXPORT_VERSION = 1
+
+
 @app.get("/admin/api/export.json")
 @editor_required
 def export_json():
@@ -1250,7 +1255,9 @@ def export_json():
         for r in b["recipes"]:
             if r["id"] in photos:
                 r["photos"] = photos[r["id"]]
-    body = json.dumps({"exported": time.strftime("%Y-%m-%dT%H:%M:%S"), "books": books}, ensure_ascii=False, indent=1)
+    body = json.dumps({"version": EXPORT_VERSION, "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                       "exported": time.strftime("%Y-%m-%dT%H:%M:%S"),  # local time; kept for older readers
+                       "books": books}, ensure_ascii=False, indent=1)
     return Response(body, mimetype="application/json",
                     headers={"Content-Disposition": "attachment; filename=cookbooks.json"})
 

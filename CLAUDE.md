@@ -6,8 +6,8 @@ and an MCP server at `/mcp`. README.md is the user-facing guide; this file is ho
 ## Map
 | File | What's in it |
 |---|---|
-| `app.py` | Core: schema + `init_db`, `connect()`/`db()`, `fold()` (accent/case folding, also an SQL function), FTS (`books_fts`, `recipes_fts`), auth (`editor_required`), books/recipes/facets API, index paste import, `PUBLIC_BOOKS`, `cuisine_condition()` |
-| `extras.py` | Dinner Log history (pulled over HTTP into `dl_meals`, rebuilt into `cooked`; `ensure_synced()` starts background pulls under a DB lease), suggestions, stats, photo index import (Claude API, background jobs in `photo_jobs`), MCP server (`TOOLS`, `WRITE_TOOLS`, `handle_rpc`, `run_tool`), `messages_api` (Claude API call), wishlist |
+| `app.py` | Core: schema + `init_db`, `connect()`/`db()`, `fold()` (accent/case folding, also an SQL function), FTS (`books_fts`, `recipes_fts`), auth (`editor_required`), books/recipes/facets API, index paste import (`parse_index`, `mark_duplicates`, `index_commit`), `PUBLIC_BOOKS`, `cuisine_condition()`, `env_int`/`local_midnight` |
+| `extras.py` | Dinner Log history (pulled over HTTP into `dl_meals`, rebuilt into `cooked`; `ensure_synced()` starts background pulls under a DB lease), suggestions, stats, photo index import (Claude API, background jobs in `photo_jobs`; whole-index scans are a parent row with one child per page, `scan_state` derives the status, `merge_pages` joins them, `pages_today` enforces `PHOTO_DAILY_LIMIT`), MCP server (`TOOLS`, `WRITE_TOOLS`, `handle_rpc`, `run_tool`), `messages_api` (Claude API call), wishlist |
 | `ask.py` | AI search: `POST /admin/api/ask`, `ask_log`, tool loop over `run_tool`, `show_results` hydration |
 | `ingredients.py` | Ingredient tags and search hints, CSV/zip import, `resolve()`, `ranked()` search ranking |
 | `eyb.py` | Eat Your Books import, merging garbled duplicate recipes |
@@ -17,7 +17,7 @@ and an MCP server at `/mcp`. README.md is the user-facing guide; this file is ho
 | `static/` | Single-page app (`app.js`, `style.css`, `index.html`) |
 | `installer/` | `build.sh` -> `dist/setup-cookbooks.sh` (Alpine/OpenRC installer: `setup-head.sh` + base64 tarball) |
 | `ops/` | Backup and health-check scripts the installer sets up; `migrate-ops` moves files from older container-named paths |
-| `tests/` | pytest; each file sets `DATA_DIR` to a temp dir and seeds from `seed.json` |
+| `tests/` | pytest; each file sets `DATA_DIR` to a temp dir and seeds from `seed.json`. `test_scan.py` covers scans, merging and the page-number forms |
 
 Modules register routes onto `app.app` and add their tables in a `migrate(con)` that `init_db` calls.
 
@@ -44,6 +44,9 @@ Chromium for Playwright checks: `/opt/pw-browsers/chromium-*/chrome-linux/chrome
   `WRITE_TOOLS` and are private-only. Keep tool output compact: it stays in the assistant's context.
 - Ask (`ask.py`) reuses `run_tool()`; it must never be offered `WRITE_TOOLS`.
 - Tests: commit the test's own connection before calling the app, or SQLite reports "database is locked".
+- Photo jobs: never call Claude from tests (monkeypatch `call_claude` or `messages_api`). A scan page's thread waits on
+  `_photo_sem` as `queued` and only becomes `running` (with `started`) when it gets a slot; stale checks use `started`.
+  Finished jobs are deleted after `PHOTO_JOB_KEEP`; it must stay >= a day because `pages_today()` counts them.
 - Every write route uses `@editor_required`, which refuses cross-site edits (Origin check) before auth.
   LAN editing (`lan_identity()`) trusts only the socket peer, never forwarded headers.
 - Don't `pkill -f`/`pgrep -f` a server by a pattern that also matches your own shell command.

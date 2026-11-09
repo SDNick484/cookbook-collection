@@ -155,6 +155,20 @@ table.preview td { padding: 3px 4px; border-bottom: 1px solid var(--line); }
 table.preview input[type=text] { width: 100%; padding: 4px 6px; }
 table.preview tr.dup { opacity: .5; }
 table.preview td.pg input { width: 84px; }
+table.preview tr.carried td.hn input[name=heading] { background: color-mix(in srgb, var(--warn) 18%, var(--card)); }
+table.preview td.pg.warn { white-space: nowrap; }
+table.preview td.pg.warn span { color: var(--warn); margin-left: 3px; }
+/* pages of an index scan: thumbnail strip with each page's state, scrolls sideways on a phone */
+.scanpages { display: flex; gap: 10px; overflow-x: auto; padding: 4px 0 6px; margin-top: 6px; scrollbar-width: thin; }
+.scanpage { flex: none; width: 76px; text-align: center; font-size: .78rem; }
+.scanpage img { width: 76px; height: 96px; object-fit: cover; border-radius: 6px; display: block; background: var(--chip); border: 2px solid var(--line); }
+.scanpage.done img { border-color: var(--ok); }
+.scanpage.error img { border-color: var(--accent); }
+.scanpage.running img { border-color: var(--warn); }
+.scanpage .pn { margin-top: 3px; }
+.scanpage .ps { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scanpage.error .ps { color: var(--accent); }
+.scanpage .retry { margin-top: 3px; padding: 2px 8px; font-size: .78rem; }
 table.preview td.hn { display: grid; gap: 3px; padding: 6px 4px; }
 table.preview td.hn input[name=heading] { font-size: .8rem; color: var(--muted); padding: 2px 6px; }
 table.preview td:first-child { width: 28px; }

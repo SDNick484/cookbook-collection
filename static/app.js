@@ -744,123 +744,154 @@ async function indexView(id) {
   const b = await api("books/" + id);
   view.innerHTML = `<a class="back" href="#/book/${id}">← ${esc(b.title)}</a><h1>Import index</h1>
     <div class="panel">
-      <p class="small muted" style="margin-top:0">Paste a page or two of the book's index, or use <strong>📷 Take photo</strong> on each
-      index page in turn: the entries from every page collect in one preview. Without photo import, take a photo in Google Lens instead,
-      choose <em>Text → Select all → Copy</em>, and paste here. Lines without a page number become headings
-      (like “Chicken”), and the lowercase or indented lines under them become sub-entries.</p>
-      <textarea id="txt" rows="12" placeholder="Chicken&#10;  braised with figs, honey, and vinegar, 350&#10;  roast, with bread salad, 342&#10;Zuni Caesar Salad, 154"></textarea>
-      <div class="actions"><button class="primary" id="parse">Preview</button>
-        <span id="photobtns"><label class="btn">📷 Take photo<input id="snap" type="file" accept="image/*" capture="environment" hidden></label>
+      <p class="small muted" style="margin-top:0">Photograph every page of the book's index in order with <strong>📷 Take photo</strong>
+      (or pick them all with <strong>Choose photos</strong>); the pages are read in the background and merged into one table to check
+      and add in one go. Or paste the index text: Google Lens on Android can copy it from a photo. Lines without a page number
+      become headings (like “Chicken”), and the lowercase or indented lines under them become sub-entries.</p>
+      <div class="actions" style="margin-top:0"><span id="photobtns"><label class="btn primary">📷 Take photo<input id="snap" type="file" accept="image/*" capture="environment" hidden></label>
         <label class="btn">Choose photos<input id="photos" type="file" accept="image/*" multiple hidden></label></span></div>
+      <div id="scanpages" class="scanpages hidden"></div>
       <div id="photostatus" class="small muted"></div>
+      <details id="pastebox"><summary class="small muted">Paste index text instead</summary>
+        <textarea id="txt" rows="8" placeholder="Chicken&#10;  braised with figs, honey, and vinegar, 350&#10;  roast, with bread salad, 342&#10;Zuni Caesar Salad, 154"></textarea>
+        <div class="actions"><button id="parse">Preview pasted text</button></div></details>
     </div>
     <div id="prev"></div>`;
   let feat = { photo_import: false };
   try { feat = await api("features"); } catch { /* ignore */ }
   if (!feat.photo_import) {
     $("#photobtns").classList.add("hidden");
+    $("#pastebox").open = true;
     $("#photostatus").innerHTML = `Photo import is off. Add <code>ANTHROPIC_API_KEY</code> to <code>/etc/conf.d/cookbooks</code> to read index photos directly.`;
   }
-  // Entries read so far. Photos add to them, one index page at a time ("Take photo" again for the next page),
-  // keeping whatever was already corrected in the preview.
-  let collected = [], photos = 0, photoChain = Promise.resolve();
+  const here = () => location.hash.startsWith(`#/book/${id}/index`);
+  // One scan per visit: a parent job on the server with a page per photo. The browser keeps each photo's File
+  // (for the thumbnail and for "Retry"), polls the parent, and shows the merged rows once every page is read.
+  const scan = { id: null, pages: [], state: null, polling: false };
+  let pasted = [];        // rows from pasted text, kept apart from the scan
+  const edits = {};       // key -> the fields the editor changed: corrections survive a re-render
+  let rendered = {};      // key -> the row as last shown, to tell an edit from the server's own value
+  const rowKey = (r, i) => r.from === "paste" ? `paste:${i}` : `${r.page_no}:${r.name}|${r.page}`;
   const keepEdits = () => {
-    if (!$("#prev tbody")) return;
-    collected = $$("#prev tbody tr").map((tr) => ({ ...collected[+tr.dataset.i], checked: $("input[type=checkbox]", tr).checked,
-      heading: $("[name=heading]", tr).value, name: $("[name=name]", tr).value, page: $("[name=page]", tr).value }));
-  };
-  // Each photo is a job on the server (a dense page takes a minute or two); all photos start at once,
-  // and their entries are added in the order they were chosen.
-  const waitForJob = async (job, tick) => {
-    const t0 = Date.now();
-    for (;;) {
-      await new Promise((ok) => setTimeout(ok, 3000));
-      if (!location.hash.startsWith(`#/book/${id}/index`)) throw new Error("Cancelled");
-      let r;
-      try { r = await api(`index/photo/${job}`); }
-      catch (err) {
-        if (err.status === 400 || err.status === 401 || err.status === 404 || Date.now() - t0 > 15 * 60000) throw err;
-        continue;
-      }  // a dropped connection: keep checking
-      if (r.status === "done") return r;
-      if (r.status === "error") throw new Error(r.error);
-      tick(r.elapsed);
-    }
-  };
-  const runBatch = async (files) => {
-    if (!files.length || !location.hash.startsWith(`#/book/${id}/index`)) return;
-    const st = $("#photostatus"), many = files.length > 1;
-    const label = (i) => many ? `Photo ${i + 1}` : "The photo";
-    const notes = [], waiting = new Set(files.keys());
-    let read = 0, secs = 0;
-    const show = () => {
-      if (!$("#photostatus")) return;
-      st.innerHTML = (waiting.size ? `<div>Reading ${many ? `${waiting.size} of ${files.length} photos` : "the photo"}… ${secs ? `${secs}s` : ""}
-        (a full index page can take a minute or two)</div>` : "") + notes.map((x) => `<div class="${x.bad ? "err" : ""}">${esc(x.text)}</div>`).join("");
-    };
-    show();
-    // The server reads a few photos at once; when it's full (429) wait and try again.
-    const start = async (fd) => {
-      for (let tries = 0; ; tries++) {
-        try { return await api(`books/${id}/index/photo`, { method: "POST", body: fd }); }
-        catch (err) { if (err.status !== 429 || tries >= 40) throw err; await new Promise((r) => setTimeout(r, 3000)); }
+    $$("#prev tbody tr").forEach((tr) => {
+      const k = tr.dataset.k, r = rendered[k];
+      if (!r) return;
+      const e = edits[k] || {}, was = (f) => e[f] ?? (f === "checked" ? !r.duplicate : r[f] ?? "");
+      for (const [f, v] of [["checked", $("input[type=checkbox]", tr).checked], ["heading", $("[name=heading]", tr).value],
+        ["name", $("[name=name]", tr).value], ["page", $("[name=page]", tr).value]]) {
+        if (v !== was(f)) e[f] = v;
       }
-    };
-    const jobs = files.map(async (f, i) => {
-      const fd = new FormData(); fd.append("file", f);
-      try {
-        const { job } = await start(fd);
-        return await waitForJob(job, (s) => { secs = Math.max(secs, s); show(); });
-      } catch (err) { return { error: err.message }; }
-      finally { waiting.delete(i); show(); }
+      if (Object.keys(e).length) edits[k] = e;
     });
-    const results = [];
-    for (const [i, p] of jobs.entries()) results.push([i, await p]);  // in the order chosen
-    if (!location.hash.startsWith(`#/book/${id}/index`)) return;
-    keepEdits();
-    for (const [i, r] of results) {
-      if (r.error) { notes.push({ bad: true, text: `${label(i)}: ${r.error}` }); continue; }
-      collected.push(...r.rows.map((x) => ({ ...x, from: "photo" }))); read += r.rows.length; photos++;
-      if (r.warning) notes.push({ bad: true, text: `${label(i)}: ${r.warning}` });
+  };
+  const status = (html, bad) => { const st = $("#photostatus"); if (st) st.innerHTML = html ? `<div class="${bad ? "err" : ""}">${html}</div>` : ""; };
+  const showPages = () => {
+    const box = $("#scanpages");
+    if (!box) return;
+    box.classList.toggle("hidden", !scan.pages.length);
+    const srv = Object.fromEntries((scan.state?.pages || []).map((p) => [p.page_no, p]));
+    box.innerHTML = scan.pages.map((pg) => {
+      const p = srv[pg.no] || { status: pg.status || "queued" };
+      const pill = p.status === "done" ? `${p.rows} entr${p.rows === 1 ? "y" : "ies"}${p.warning ? " ⚠" : ""}`
+        : p.status === "error" ? "failed" : p.status === "running" ? `reading… ${p.elapsed ? p.elapsed + "s" : ""}` : "waiting";
+      return `<div class="scanpage ${p.status}" data-no="${pg.no}" title="${esc(p.error || p.warning || "")}">
+        <img src="${pg.url}" alt="Page ${pg.no}"><div class="pn">Page ${pg.no}</div><div class="ps">${esc(pill)}</div>
+        ${p.status === "error" || (p.status === "done" && p.warning) ? `<button type="button" class="retry">Retry</button>` : ""}</div>`;
+    }).join("");
+    $$("#scanpages .retry").forEach((el) => el.onclick = () => retryPage(+el.closest(".scanpage").dataset.no));
+  };
+  const summarize = () => {
+    const st = scan.state;
+    if (!st) return;
+    const bad = st.pages.filter((p) => p.status === "error");
+    const warned = st.pages.filter((p) => p.status === "done" && p.warning);
+    const notes = [];
+    if (st.status === "running") notes.push(`Reading ${st.pages.filter((p) => p.status !== "done" && p.status !== "error").length} of ${st.pages.length} pages… a full index page can take a minute or two. Take the next photo meanwhile.`);
+    else if (st.pages.length) notes.push(`${st.pages.length} page${st.pages.length === 1 ? "" : "s"} read. Take the next photo, or check the entries below and add them.`);
+    for (const p of bad) notes.push(`Page ${p.page_no}: ${p.error} Use Retry under its thumbnail.`);
+    for (const p of warned) notes.push(`Page ${p.page_no}: ${p.warning}`);
+    status(notes.map(esc).join("<br>"), bad.length > 0);
+  };
+  const poll = async () => {
+    if (scan.polling) return;
+    scan.polling = true;
+    try {
+      const t0 = Date.now();
+      for (;;) {
+        if (!here()) return;
+        let r;
+        try { r = await api(`index/scan/${scan.id}`); }
+        catch (err) {
+          if (err.status === 400 || err.status === 401 || err.status === 404 || Date.now() - t0 > 60 * 60000) { status(esc(err.message), true); return; }
+          await new Promise((ok) => setTimeout(ok, 3000)); continue;  // a dropped connection: keep checking
+        }
+        scan.state = r; showPages(); summarize();
+        if (r.status !== "running") { renderPreview(); return; }
+        await new Promise((ok) => setTimeout(ok, 3000));
+      }
+    } finally { scan.polling = false; }
+  };
+  const sendPages = async (files, put) => {
+    const fd = new FormData();
+    for (const f of files) fd.append("file", f);
+    try {
+      if (!scan.id) scan.id = (await api(`books/${id}/index/scan`, { method: "POST" })).scan;
+      const r = await api(put ? `index/scan/${scan.id}/pages/${put}` : `index/scan/${scan.id}/pages`, { method: put ? "PUT" : "POST", body: fd });
+      return r.pages;
+    } catch (err) {
+      status(esc(err.message), true);  // the daily page limit, a bad scan id, or the server being away
+      return null;
     }
-    const n = (k, w) => `${k} ${w}${k === 1 ? "y" : "ies"}`;  // entry / entries
-    if (collected.length) notes.unshift({ text: `${n(read, "entr")} from ${many ? "these photos" : "this photo"}; ${n(collected.length, "entr")} from ${photos} photo${photos === 1 ? "" : "s"} so far. `
-      + "Take another photo for the next index page, or check them below (especially page numbers) and add them." });
-    show();
-    if (collected.length) renderPreview(collected);
   };
-  const readPhotos = (e) => {
-    const files = [...e.target.files]; e.target.value = "";
-    if (!files.length) return;
-    photoChain = photoChain.then(() => runBatch(files)).catch(() => {});
+  const addPhotos = async (files) => {
+    if (!files.length || !here()) return;
+    const nos = await sendPages(files);
+    if (!nos) return;
+    nos.forEach((no, i) => scan.pages.push({ no, file: files[i], url: URL.createObjectURL(files[i]), status: "queued" }));
+    scan.pages.sort((a, b) => a.no - b.no);
+    showPages(); status("Reading…");
+    poll();
   };
+  const retryPage = async (no) => {
+    const pg = scan.pages.find((p) => p.no === no);
+    if (!pg || !(await sendPages([pg.file], no))) return;
+    pg.status = "queued";
+    if (scan.state) { const p = scan.state.pages.find((x) => x.page_no === no); if (p) { p.status = "queued"; p.error = null; } }
+    showPages(); poll();
+  };
+  const readPhotos = (e) => { const files = [...e.target.files]; e.target.value = ""; addPhotos(files); };
   $("#snap").onchange = readPhotos;
   $("#photos").onchange = readPhotos;
   $("#parse").onclick = () => busy($("#parse"), async () => {
     const { rows } = await api(`books/${id}/index/parse`, { method: "POST", body: { text: $("#txt").value } });
-    if (!rows.length) { $("#prev").innerHTML = `<p class="muted">Couldn't find any entries with page numbers in that text.</p>`; return; }
-    keepEdits();  // the pasted text replaces what was pasted before; photo entries stay
-    collected = collected.filter((r) => r.from !== "paste").concat(rows.map((r) => ({ ...r, from: "paste" })));
-    renderPreview(collected);
+    if (!rows.length && !scan.pages.length) { $("#prev").innerHTML = `<p class="muted">Couldn't find any entries with page numbers in that text.</p>`; return; }
+    keepEdits();
+    pasted = rows.map((r) => ({ ...r, from: "paste" }));  // new text replaces the earlier paste; photo rows stay
+    renderPreview();
   });
-  function renderPreview(rows) {
+  function renderPreview() {
+    if (!here()) return;
+    keepEdits();
+    const rows = [...(scan.state?.rows || []), ...pasted];
+    if (!rows.length) { $("#prev").innerHTML = ""; return; }
+    rendered = Object.fromEntries(rows.map((r, i) => [rowKey(r, i), r]));
     const fresh = rows.filter((r) => !r.duplicate).length;
-    $("#prev").innerHTML = `<div class="section-h"><h2>${rows.length} entries</h2><span class="muted small">${rows.length - fresh} already in this book</span></div>
+    const flagged = rows.filter((r) => r.warn).length;
+    $("#prev").innerHTML = `<div class="section-h"><h2>${fresh} to add</h2><span class="muted small">${rows.length - fresh} already in this book${flagged ? ` · ${flagged} ⚠ page${flagged === 1 ? "" : "s"} to check` : ""}</span></div>
+      ${rows.some((r) => r.carried) ? `<p class="small muted" style="margin:0 0 6px">Tinted headings were carried over from the page before; fix any that belong to a new section.</p>` : ""}
       <div class="overflow"><table class="preview"><thead><tr><th></th><th>Heading / recipe</th><th>Page</th></tr></thead><tbody>
-      ${rows.map((r, i) => `<tr class="${r.duplicate ? "dup" : ""}" data-i="${i}"><td><input type="checkbox" ${(r.checked ?? !r.duplicate) ? "checked" : ""}></td>
-        <td class="hn"><input type="text" name="heading" placeholder="(no heading)" value="${esc(r.heading)}"><input type="text" name="name" value="${esc(r.name)}"></td>
-        <td class="pg"><input type="text" name="page" value="${esc(r.page)}"></td></tr>`).join("")}</tbody></table></div>
-      <div class="actions"><button class="primary" id="commit">Add checked entries</button><button id="again">Paste more</button></div>`;
-    $("#again").onclick = () => {  // start over
-      $("#txt").value = ""; $("#txt").focus(); $("#prev").innerHTML = ""; $("#photostatus").textContent = ""; collected = []; photos = 0;
-      window.scrollTo(0, 0);
-    };
+      ${rows.map((r, i) => { const k = rowKey(r, i), e = edits[k] || {}; return `<tr class="${r.duplicate ? "dup" : ""} ${r.carried ? "carried" : ""}" data-k="${esc(k)}"><td><input type="checkbox" ${(e.checked ?? !r.duplicate) ? "checked" : ""}></td>
+        <td class="hn"><input type="text" name="heading" placeholder="(no heading)" value="${esc(e.heading ?? r.heading)}"><input type="text" name="name" value="${esc(e.name ?? r.name)}"></td>
+        <td class="pg ${r.warn ? "warn" : ""}" ${r.warn ? `title="Unusual page number: check it"` : ""}><input type="text" name="page" value="${esc(e.page ?? r.page)}">${r.warn ? "<span>⚠</span>" : ""}</td></tr>`; }).join("")}</tbody></table></div>
+      <div class="actions"><button class="primary" id="commit">Add checked entries</button><button id="again">Start over</button></div>`;
+    $("#again").onclick = () => indexView(id);
     $("#commit").onclick = () => busy($("#commit"), async () => {
       const out = $$("#prev tbody tr").filter((tr) => $("input[type=checkbox]", tr).checked).map((tr) => ({
         heading: $("[name=heading]", tr).value, name: $("[name=name]", tr).value, page: $("[name=page]", tr).value }));
       const r = await api(`books/${id}/index/commit`, { method: "POST", body: { rows: out } });
       toast(`Added ${r.added} recipes${r.skipped ? `, skipped ${r.skipped} duplicates` : ""}`);
-      $("#txt").value = ""; $("#prev").innerHTML = ""; $("#photostatus").textContent = ""; collected = []; photos = 0; S.facets = null; window.scrollTo(0, 0);
+      S.facets = null;
+      indexView(id);
     });
   }
 }

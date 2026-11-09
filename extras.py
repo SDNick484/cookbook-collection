@@ -939,6 +939,40 @@ def parse_claude_rows(text, truncated=False):
     return rows
 
 
+OVERLAP_WINDOW = 60  # rows at the end of a page that the next photo can show again
+
+
+def merge_pages(pages):
+    """Rows of a whole-index scan, page by page in order (pages[i] is page i+1; an empty list is a page that
+    failed or hasn't been read). Returns one list with page_no on every row, after:
+    - carrying the last heading of a page into the headless rows at the top of the next page (a section
+      continues across a page or column break, and the model can't see the previous page), marked carried;
+    - dropping the leading run of rows on a page that repeat (folded name + page) rows near the end of
+      the previous page: the photos overlapped. Same-name recipes elsewhere are kept."""
+    out, prev = [], None  # prev: the previous page's rows, or None after a gap
+    for i, rows in enumerate(pages):
+        if not rows:
+            prev = None
+            continue
+        carry = prev[-1]["heading"] if prev else None
+        tail = {(fold(r["name"]), r["page"] or "") for r in prev[-OVERLAP_WINDOW:]} if prev else set()
+        kept, overlapping = [], True
+        for r in rows:
+            r = {**r, "page_no": i + 1}
+            overlapping = overlapping and (fold(r["name"]), r["page"] or "") in tail
+            if overlapping:
+                continue  # the leading run of repeats; a repeat further down is for mark_duplicates to flag
+            if carry is not None:
+                if r.get("heading") is None:
+                    r["heading"], r["carried"] = carry, True
+                else:
+                    carry = None  # the leading headless run is over
+            kept.append(r)
+        out.extend(kept)
+        prev = rows
+    return out
+
+
 def prepare_photo(raw):
     from PIL import ImageOps
     img = ImageOps.exif_transpose(core.open_image(raw)).convert("L")  # grayscale: text only, smaller

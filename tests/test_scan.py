@@ -80,3 +80,44 @@ def test_parse_claude_rows_strips_prefixes_and_flags_odd_pages():
     # the JSON shape older prompts produced goes through the same cleanup
     rows = X.parse_claude_rows('{"entries": [{"heading": null, "name": "Lomo saltado", "page": "pag. 212"}]}')
     assert rows == [{"heading": None, "name": "Lomo saltado", "page": "212"}]
+
+
+# ------------------------------------------------------------------ merging pages
+def R(heading, name, page, **extra):
+    return {"heading": heading, "name": name, "page": page, **extra}
+
+
+def test_merge_carries_the_last_heading_into_headless_rows_at_the_top_of_the_next_page():
+    page1 = [R(None, "Almonds, toasted", "72"), R("Chicken", "braised with figs", "350"), R("Chicken", "roast", "342")]
+    page2 = [R(None, "with bread salad", "344"), R(None, "stock", "12"), R("Chickpeas", "with chard", "100"), R(None, "Polenta", "88")]
+    out = X.merge_pages([page1, page2])
+    assert [(r["heading"], r["name"]) for r in out] == [
+        (None, "Almonds, toasted"), ("Chicken", "braised with figs"), ("Chicken", "roast"),
+        ("Chicken", "with bread salad"), ("Chicken", "stock"), ("Chickpeas", "with chard"), (None, "Polenta")]
+    assert [r.get("carried") for r in out] == [None, None, None, True, True, None, None]
+    assert [r["page_no"] for r in out] == [1, 1, 1, 2, 2, 2, 2]
+
+
+def test_merge_does_not_invent_a_heading_from_a_headless_last_row():
+    out = X.merge_pages([[R(None, "Zuppa", "10")], [R(None, "Risotto", "20")]])
+    assert out[1]["heading"] is None and "carried" not in out[1]
+
+
+def test_merge_drops_overlap_between_the_end_of_one_page_and_the_start_of_the_next():
+    page1 = [R("Pasta", "al pomodoro", "42"), R("Pasta", "alla gricia", "43"), R(None, "Pane", "50")]
+    page2 = [R(None, "alla gricia", "43"), R(None, "Pane", "50"), R(None, "Pane", "51"), R(None, "Pane", "50")]
+    out = X.merge_pages([page1, page2])
+    assert [(r["name"], r["page"], r["page_no"]) for r in out] == [
+        ("al pomodoro", "42", 1), ("alla gricia", "43", 1), ("Pane", "50", 1), ("Pane", "51", 2), ("Pane", "50", 2)]
+    # same name on another page survives; a repeat deeper into page 2 is for mark_duplicates, not the overlap rule
+
+
+def test_merge_overlap_matches_on_folded_name():
+    out = X.merge_pages([[R(None, "Ají amarillo", "51")], [R(None, "AJI AMARILLO", "51"), R(None, "Causa", "52")]])
+    assert [r["name"] for r in out] == ["Ají amarillo", "Causa"]
+
+
+def test_merge_does_not_carry_across_a_missing_page():
+    # page 2 failed (or hasn't been read yet): nothing is known about where its headings end
+    out = X.merge_pages([[R("A", "one", "1")], [], [R(None, "two", "2")]])
+    assert [(r["name"], r["page_no"], r["heading"]) for r in out] == [("one", 1, "A"), ("two", 3, None)]

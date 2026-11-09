@@ -62,9 +62,15 @@ def migrate(con):
     con.executescript(MIGRATIONS)
     con.execute(WISH_SCHEMA)
     con.execute(PHOTO_SCHEMA)
+    # Whole-index scans (one parent row, one child row per page). Single-page jobs leave all three NULL.
+    photo_cols = [r[1] for r in con.execute("PRAGMA table_info(photo_jobs)")]
+    for col, typ in (("parent_id", "TEXT"), ("page_no", "INTEGER"), ("started", "REAL")):
+        if col not in photo_cols:
+            con.execute(f"ALTER TABLE photo_jobs ADD COLUMN {col} {typ}")
+    con.execute("CREATE INDEX IF NOT EXISTS photo_jobs_parent ON photo_jobs(parent_id)")
     con.execute("UPDATE photo_jobs SET status='error', "
                 "error='Reading that photo stopped partway (the server restarted). Try it again.' "
-                "WHERE status='running'")
+                "WHERE status IN ('running', 'queued')")  # their threads died with the process
     con.execute("DELETE FROM meta WHERE key='dl_sig'")  # from reading Dinner Log's file directly
     if "meal_key" not in [r[1] for r in con.execute("PRAGMA table_info(dl_link)")]:
         con.execute("ALTER TABLE dl_link ADD COLUMN meal_key TEXT")
@@ -832,8 +838,9 @@ Chicken | braised with figs | 350
  | Ceviche, classic | 42"""
 
 PHOTO_SCHEMA = """CREATE TABLE IF NOT EXISTS photo_jobs (
-  id TEXT PRIMARY KEY, book_id INTEGER, status TEXT,  -- running | done | error
-  rows TEXT, warning TEXT, error TEXT, created REAL)"""
+  id TEXT PRIMARY KEY, book_id INTEGER, status TEXT,  -- running | done | error; scans add queued and scan (parent)
+  rows TEXT, warning TEXT, error TEXT, created REAL,
+  parent_id TEXT, page_no INTEGER, started REAL)""" # pages of a scan; NULL on single-page jobs (migrate() adds them)
 PHOTO_JOB_LIMIT = 600  # seconds; a job still "running" after this died with its worker
 PHOTO_JOBS_MAX = 3     # reading photos at once across the server; more get 429 and the browser retries
 

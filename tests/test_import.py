@@ -47,3 +47,36 @@ def test_export_carries_ingredient_tags(client):
     assert soup["ingredients"] == ["Smoked paprika", "Tomatoes"]
     assert all(isinstance(r["ingredients"], list) for r in recipes)  # [] = untagged, not "old export"
     assert "Paprika" in j["ingredient_hints"]
+
+
+# ------------------------------------------------------------------ an empty catalog to restore into
+@pytest.fixture()
+def empty_db(tmp_path, monkeypatch):
+    """A second, unseeded catalog in its own folder; the module's seeded one is put back afterwards."""
+    import photos
+    monkeypatch.setenv("SKIP_SEED", "1")
+    monkeypatch.setattr(A, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(A, "DB_PATH", tmp_path / "cookbooks.db")
+    monkeypatch.setattr(A, "COVER_DIR", tmp_path / "covers")
+    monkeypatch.setattr(photos, "PHOTO_DIR", tmp_path / "photos")
+    A.init_db()
+    return tmp_path
+
+
+def test_skip_seed_leaves_a_new_database_empty(empty_db):
+    con = A.connect()
+    assert con.execute("SELECT count(*) FROM books").fetchone()[0] == 0
+    con.close()
+
+
+def test_a_new_database_is_seeded_by_default(tmp_path, monkeypatch):
+    import photos
+    monkeypatch.delenv("SKIP_SEED", raising=False)
+    monkeypatch.setattr(A, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(A, "DB_PATH", tmp_path / "cookbooks.db")
+    monkeypatch.setattr(A, "COVER_DIR", tmp_path / "covers")
+    monkeypatch.setattr(photos, "PHOTO_DIR", tmp_path / "photos")
+    A.init_db()
+    con = A.connect()
+    assert con.execute("SELECT count(*) FROM books").fetchone()[0] > 100
+    con.close()

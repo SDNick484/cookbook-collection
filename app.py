@@ -192,7 +192,9 @@ def _init_db_locked():
                     (json.dumps({"n": merged, "at": time.strftime("%Y-%m-%d %H:%M")}),))
     empty = con.execute("SELECT count(*) FROM books").fetchone()[0] == 0
     seed = APP_DIR / "seed.json"
-    if empty and seed.exists():
+    # SKIP_SEED=1 is for importer.py (a restore into a new database must not start from the seed catalog). It is
+    # read at call time, and the service never sets it, so it is not in setup-head.sh's export line.
+    if empty and seed.exists() and not _flag("SKIP_SEED"):
         load_seed(con, json.loads(seed.read_text()))
     if HAS_FTS:  # rebuilt on every start, so a change to fold() reaches the whole catalog
         reindex_all_books(con)

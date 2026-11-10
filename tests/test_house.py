@@ -618,3 +618,14 @@ def test_readme_rollback_matches_the_code():
         assert var in (A.APP_DIR / "installer" / "setup-head.sh").read_text().split("export DATA_DIR", 1)[1].split("\n")[0]
         if (A.APP_DIR / ".env.example").exists():  # not shipped by the installer
             assert f"\n{var}=" in (A.APP_DIR / ".env.example").read_text()
+
+
+def test_photos_of_house_recipes_stay_out_of_the_public_gallery(c):
+    rid, _ = add_house_recipe("Photographed Secret Dish")
+    con = A.connect()
+    con.execute("INSERT INTO recipe_photos(recipe_id, file) VALUES (?, ?)", (rid, "0" * 32 + ".jpg"))
+    con.commit()
+    con.close()
+    assert all(p["recipe_id"] != rid for p in c.get("/api/photos").json["photos"])
+    assert any(p["recipe_id"] == rid for p in c.get("/admin/api/photos").json["photos"])
+    assert c.get(f"/api/books/{house_id()}").status_code == 404  # and its page (with the photos) isn't public

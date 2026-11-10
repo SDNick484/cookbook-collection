@@ -76,6 +76,7 @@ Dinner Log, a companion meal-journal app, serves its cooking history at `GET /ap
 - **Freshness:** pages never wait on Dinner Log. When the stored history is more than a minute old, the next page that needs it starts a fetch in the background (one at a time across workers), and a reload shows the result. If Dinner Log doesn't answer, the last history it sent is kept and fetches pause for five minutes. **Stats → Dinner Log** shows when it last answered and any error, and opening it fetches right away.
 - Editors see each recipe's times made, last made and average rating ("made 3× · last Oct 12 · 8/10"). The public book page shows only the times made ("made 3×"): `PUBLIC_RECIPE_COOKED` in `app.py` is the list of history fields the public gets. **Stats** shows the overall picture.
 - When a name doesn't match, pick the book once on the Stats page. When a dinner matches the book but not a recipe, link it or add it as a recipe from the book's page.
+- **Dinner photos:** a photo shared from Dinner Log (its **Show on the cookbook page** box) appears on its recipe here, in the book's photos and the public gallery, without being uploaded twice. Nothing to set up beyond the link above. See *Photos from Dinner Log* under *Photos of what you made*.
 - **Upgrading from a version that read Dinner Log's database file:** upgrade and configure Dinner Log first, then this app. The installer removes the `cookbooks` user from the `dinnerlog` group; `DINNERLOG_DB` is no longer used. Cooking history already here is kept until the first fetch replaces it.
 
 ## Eat Your Books import
@@ -195,6 +196,15 @@ Editors can attach photos of a dish to the recipe it came from.
 - Deleting a photo, recipe or book deletes its files. The nightly backup copies `photos/` to `BACKUP_TARGET`, and **Download JSON** lists each recipe's photo files.
 - Uploads (covers, dish photos, index photos) are accepted as JPEG, PNG or WebP; other formats are refused rather than decoded. iPhone HEIC photos work if the `pillow-heif` Python package is installed. Without it, Safari normally converts them to JPEG when uploading.
 
+### Photos from Dinner Log
+With the Dinner Log link set up, photos shared there are imported here on their own: Dinner Log's history lists each dinner's shared photos, and after each history fetch this app copies the ones whose dinner matches a recipe (by the same rules as cooking history), in the background.
+- **What becomes public:** the same as an upload. A copy on a cookbook's recipe is public (gallery and image file); on a recipe from a website, or in a house book that isn't public, it stays editor-only. Dinner Log's box says so where it's ticked; it's off by default for every photo.
+- **How it's stored:** each photo is fetched once with `DINNERLOG_TOKEN` (no redirects, no proxy, at most 10 MB), decoded as JPEG/PNG/WebP only, re-encoded like an upload (EXIF dropped again; Dinner Log has already stripped it), under a name of its own. **Cooked on** is the dinner's day. Editors see *from Dinner Log* next to it; the caption and date can be edited as usual.
+- **Staying in step:** every fetch reconciles. A photo unshared or deleted in Dinner Log, or whose dinner was deleted or no longer matches a recipe, loses its copy here (row and files). A dinner that now matches a different recipe moves its photos there. Removals come first and aren't limited; new copies are limited to 8 per fetch (and 45 seconds), so a large first batch arrives over a few minutes of normal use.
+- **Deleting here wins:** deleting an imported photo in the editor keeps it from coming back, even if it's shared again in Dinner Log. A file that can't be read is skipped the same way, and logged.
+- **Caching:** imported photos are served with a 10-minute cache lifetime (uploads keep a day), so after an unshare a browser or CDN copy expires within minutes. The page itself stops listing the photo after the next fetch, which starts with the next page view once the stored history is a minute old.
+- **Backups:** the photo files and rows are in the nightly backup like uploads. **Download JSON** marks each imported photo with its Dinner Log file (`dl_file`), so a restore from it doesn't import them a second time.
+
 ## Shelf locations
 Where each book lives is a tree of locations of any depth: room › area › shelf, say `Kitchen › Pantry › Shelf 2`. A book is in at most one.
 - **Manage** them under **More → Shelf locations**, or with **Manage** beside the Location picker on a book's edit form (editors only). Tap a location to add one inside it, rename it, move it, reorder it among its siblings, or delete it. A location can't go inside itself or anything below it, and two siblings can't share a name (compared ignoring case and accents). Deleting asks first and says how many books become unshelved and how many sub-locations go with it; the books themselves stay.
@@ -283,6 +293,8 @@ rc-service cookbooks start
 - The import is one transaction. A file with a newer `version` than the importer knows is refused.
 - Exit codes: `0` done, `1` refused or nothing changed, `2` bad usage, `3` done but some rows were left
   out (listed in the output).
+- A photo's `dl_file` (an imported Dinner Log photo, see *Photos from Dinner Log*) is restored with it, unless
+  another photo here already holds that file; the next fetch then finds the copy instead of importing it again.
 - Files are copied from `--photos` only if they are missing from `covers/` or `photos/` (nothing is
   overwritten, symlinks are ignored, only JPEG/PNG/WebP/HEIC with plain file names). Missing source files
   are reported, not fatal.

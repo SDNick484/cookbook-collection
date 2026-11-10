@@ -232,6 +232,34 @@ def pull_history(con, now=None):
     return {"ok": True, "changed": True, "error": None}
 
 
+DL_PHOTO_TIMEOUT = 10
+DL_PHOTO_MAX_BYTES = 10 * 1024 * 1024  # Dinner Log sends a 1600 px JPEG, well under this
+
+
+class DLPhotoTooLarge(ValueError):
+    pass
+
+
+def fetch_dl_photo(name):
+    """One shared photo from Dinner Log's GET /api/photos/<name>, as bytes; None on a 404 (not shared any more).
+    Same rules as the history call: the bearer token, no redirects, no environment proxies. Other HTTP and
+    network errors are raised; an oversized body is DLPhotoTooLarge. Decoding is the caller's (photos.store)."""
+    if not DL_FILE_RE.fullmatch(name or ""):
+        raise ValueError("not a Dinner Log photo name")
+    req = urllib.request.Request(f"{DINNERLOG_API_URL}/api/photos/{name}",
+                                 headers={"Authorization": f"Bearer {DINNERLOG_TOKEN}", "Accept": "image/jpeg"})
+    try:
+        with dl_open(req, DL_PHOTO_TIMEOUT) as resp:
+            body = resp.read(DL_PHOTO_MAX_BYTES + 1)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+    if len(body) > DL_PHOTO_MAX_BYTES:
+        raise DLPhotoTooLarge(f"larger than {DL_PHOTO_MAX_BYTES} bytes")
+    return body
+
+
 def match_book(t, books, aliases):
     k = norm_title(t)
     if not k:
@@ -436,11 +464,20 @@ def start_background(fn):
 
 
 def background_pull():
-    """Pull and rebuild on a connection of its own; the request that started it doesn't wait."""
+    """Pull and rebuild on a connection of its own; the request that started it doesn't wait. After a pull that
+    worked (a 304 included), bring the photos Dinner Log shares in line with it (photos.sync_dl_photos), still
+    under the lease. Never in rebuild_cooked, which also runs on the request path."""
     con = core.connect()
     try:
-        pull_history(con)
+        pulled = pull_history(con)
         rebuild_cooked(con)
+        if pulled.get("ok"):
+            import photos
+            try:
+                photos.sync_dl_photos(con, fetch_dl_photo)
+            except Exception:  # a photo problem isn't a failed pull: the history is fine, so no dl_error
+                con.rollback()
+                app.logger.exception("Dinner Log photo sync stopped")
     except Exception as e:
         app.logger.exception("Dinner Log history pull stopped")
         try:

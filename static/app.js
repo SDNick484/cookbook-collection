@@ -525,13 +525,16 @@ function photoDialog(r, done) {
   const grid = $(".pgrid", d), form = $("form", d);
   const show = (list) => {
     grid.innerHTML = list.length ? list.map((p) => `<div class="pt" data-id="${p.id}"><img src="${esc(p.thumb)}" alt="">
-      <span class="small muted">${fmtDay(p.taken_on)}${p.caption ? " · " + esc(p.caption) : ""}</span>
+      <span class="small muted">${fmtDay(p.taken_on)}${p.caption ? " · " + esc(p.caption) : ""}${p.from_dinner_log ? " · from Dinner Log" : ""}</span>
       <button type="button" class="x" title="Delete photo" aria-label="Delete photo">×</button></div>`).join("")
       : `<p class="muted small" style="margin:0">No photos yet. Add some of the dish you made.</p>`;
     $$(".pt", grid).forEach((el) => {
       $("img", el).onclick = () => lightbox(list.map((p) => ({ ...p, recipe_name: r.name, recipe_page: r.page })), list.findIndex((p) => p.id === +el.dataset.id));
       $(".x", el).onclick = async () => {
-        if (!confirm("Delete this photo?")) return;
+        const p = list.find((x) => x.id === +el.dataset.id);
+        if (!confirm(p && p.from_dinner_log
+          ? "Delete this photo? It came from Dinner Log and won't be imported again, even if it's shared there again."
+          : "Delete this photo?")) return;
         try { await api("photos/" + el.dataset.id, { method: "DELETE" }); changed = true; show(list.filter((p) => p.id !== +el.dataset.id)); }
         catch (e) { toast(e.message); }
       };

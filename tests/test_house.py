@@ -163,8 +163,7 @@ def test_rollback_sql_from_the_pr_works(tmp_path):
     con = A.connect()
     con.execute("VACUUM INTO ?", (str(path),))
     con.close()
-    con = sqlite3.connect(path)
-    con.create_function("fold", 1, A.fold, deterministic=True)
+    con = sqlite3.connect(path)  # like the sqlite3 command line: no fold() function registered
     con.executescript(H.ROLLBACK_SQL)
     assert "visibility" not in [r[1] for r in con.execute("PRAGMA table_info(books)")]
     assert not con.execute("SELECT 1 FROM sqlite_master WHERE name IN "
@@ -392,19 +391,19 @@ def test_writes_need_an_editor(c, monkeypatch):
 
 
 # ------------------------------------------------------------------ return URLs
-ORIGINS = H.parse_origins("https://dinner.example.com, http://192.168.1.5:8000/, https://Other.Example:443, "
+ORIGINS = H.parse_origins("https://dinner.example.com, http://192.0.2.5:8000/, https://Other.Example:443, "
                           "ftp://x.example, https://bad.example/path, https://u:p@cred.example")
 
 
 def test_parse_origins_keeps_only_bare_origins():
-    assert ORIGINS == {"https://dinner.example.com", "http://192.168.1.5:8000", "https://other.example"}
+    assert ORIGINS == {"https://dinner.example.com", "http://192.0.2.5:8000", "https://other.example"}
 
 
 @pytest.mark.parametrize("url,expected", [
     ("https://dinner.example.com/new?name=Rag%C3%B9", "https://dinner.example.com/new?name=Rag%C3%B9"),
     ("https://dinner.example.com", "https://dinner.example.com/"),
     ("https://DINNER.example.com:443/meals/3#top", "https://dinner.example.com/meals/3#top"),
-    ("http://192.168.1.5:8000/new", "http://192.168.1.5:8000/new"),
+    ("http://192.0.2.5:8000/new", "http://192.0.2.5:8000/new"),
     ("https://other.example/x", "https://other.example/x"),
     ("/admin#/book/3", "/admin#/book/3"),
     ("/", "/"),
@@ -417,7 +416,7 @@ def test_return_urls_allowed(url, expected):
     "https://evil.example/", "http://dinner.example.com/new",  # wrong scheme for that origin
     "https://dinner.example.com.evil.example/", "https://evil.example/?https://dinner.example.com",
     "https://dinner.example.com@evil.example/", "https://user:pw@dinner.example.com/",
-    "https://dinner.example.com:8443/", "http://192.168.1.5/new",
+    "https://dinner.example.com:8443/", "http://192.0.2.5/new",
     "//evil.example/x", "///evil.example", "/\\evil.example", "\\\\evil.example", "https:\\\\dinner.example.com",
     "javascript:alert(1)", "data:text/html,hi", "JaVaScRiPt:alert(1)", "dinner.example.com/new", "new",
     "https://dinner.example.com/a\nb", "https://dinner.example.com/a b", "https://dinner.example.com/\x00",
@@ -609,3 +608,13 @@ def test_new_recipe_path_serves_the_app(c):
     page itself has no data in it, and the app turns the address into #/recipe/new."""
     r = c.get("/admin/recipe/new?title=Soup&return=https://dinner.example.com/new")
     assert r.status_code == 200 and b"/static/app.js" in r.data
+
+
+def test_readme_rollback_matches_the_code():
+    readme = (A.APP_DIR / "README.md").read_text()
+    assert H.ROLLBACK_SQL.strip() in readme
+    for var in ("HOUSE_BOOK_TITLE", "RETURN_URL_ORIGINS"):  # documented, on the service's export line, in .env.example
+        assert f"`{var}`" in readme
+        assert var in (A.APP_DIR / "installer" / "setup-head.sh").read_text().split("export DATA_DIR", 1)[1].split("\n")[0]
+        if (A.APP_DIR / ".env.example").exists():  # not shipped by the installer
+            assert f"\n{var}=" in (A.APP_DIR / ".env.example").read_text()

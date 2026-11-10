@@ -15,7 +15,9 @@ Environment:
   LAN_CIDRS       client networks LAN editing is allowed from (default: loopback + private ranges)
   LAN_HOSTS       extra Host names accepted for LAN editing, e.g. cookbooks.lan (IP literals always are)
   ALLOWED_ORIGINS extra origins allowed to send edits, e.g. https://cookbooks.example.com
-  READ_TOKEN      optional bearer token for read-only private routes (Dinner Log's picks)
+  READ_TOKEN      optional bearer token for read-only private routes (Dinner Log's picks, house recipes)
+  HOUSE_BOOK_TITLE    title of the house book when it is first created (house.py)
+  RETURN_URL_ORIGINS  origins the recipe editor may return to after a save (house.py)
 """
 import csv, fcntl, io, ipaddress, json, os, re, sqlite3, time, unicodedata, urllib.parse, urllib.request, uuid
 from functools import wraps

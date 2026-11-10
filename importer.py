@@ -307,6 +307,12 @@ def _find_book(ctx, src, uid, vals):
         if row:
             ctx.claimed_books.add(row[0])
             return row[0]
+        if src.get("kind") == "house":  # there is only ever one house book: the file's is this catalog's
+            row = con.execute("SELECT id FROM books WHERE kind='house'").fetchone()
+            if row and row[0] not in ctx.claimed_books:
+                con.execute("UPDATE books SET uid=? WHERE id=?", (uid, row[0]))  # keep the file's stable id
+                ctx.claimed_books.add(row[0])
+                return row[0]
         return None
     if vals.get("isbn"):
         row = con.execute("SELECT id FROM books WHERE isbn=?", (vals["isbn"],)).fetchone()
@@ -554,6 +560,7 @@ def _replace(ctx, rep, log):
     """Make the catalog equal the file: delete the books it doesn't list, and the recipes and photo rows it doesn't
     list for the books and recipes it does. Files on disk are left alone. The list goes to `log` first."""
     A, con = ctx.A, ctx.con
+    ctx.keep.update(r[0] for r in con.execute("SELECT id FROM books WHERE kind='house'"))  # structural: never deleted
     gone = [r for r in con.execute("SELECT id, uid, title FROM books ORDER BY id") if r["id"] not in ctx.keep]
     rep.deleted_books = [(r["uid"], r["title"]) for r in gone]
     gone_ids = [r["id"] for r in gone]

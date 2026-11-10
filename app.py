@@ -232,8 +232,9 @@ def _init_db_locked():
     global HAS_FTS
     con = connect()
     con.executescript(SCHEMA)
-    import extras, eyb, ingredients, photos, online, ask
+    import extras, eyb, ingredients, photos, online, ask, house
     online.migrate(con)
+    house.migrate(con)  # after online: books.kind must exist
     extras.migrate(con)
     eyb.migrate(con)
     ingredients.migrate(con)
@@ -259,6 +260,8 @@ def _init_db_locked():
     # read at call time, and the service never sets it, so it is not in setup-head.sh's export line.
     if empty and seed.exists() and not _flag("SKIP_SEED"):
         load_seed(con, json.loads(seed.read_text()))
+    if not _flag("SKIP_SEED"):  # after the seed check, or an empty catalog would never be seeded; a restore
+        house.ensure_house_book(con)  # (SKIP_SEED) brings its own, uid and all, and the next start adds one if not
     if HAS_FTS:  # rebuilt on every start, so a change to fold() reaches the whole catalog
         reindex_all_books(con)
         con.execute("DELETE FROM recipes_fts")
@@ -394,11 +397,20 @@ def search_words(q):
 
 
 PUBLIC_BOOK = ("id", "uid", "title", "subtitle", "isbn", "publisher", "year", "cuisine", "description", "cover", "signed",
-               "format")
+               "format", "kind")  # kind: NULL, or 'house' (only those kinds are ever public)
 PUBLIC_RECIPE = ("id", "uid", "book_id", "name", "heading", "page")
 # Dinner Log history on the public book page: how often a recipe was made, never when or how it was rated.
 PUBLIC_RECIPE_COOKED = ("cooked_count",)
-PUBLIC_BOOKS = "b.kind IS NULL"  # cookbooks; recipe websites (kind 'online') are for editors only
+# Who may read a book without signing in. An allow-list of kinds: cookbooks (kind NULL) and the house book
+# (kind 'house', house.py) can be public; recipe websites (kind 'online') are for editors only, whatever their
+# visibility. Every anonymous read path (pages, JSON API, MCP, search, counts) filters with this or book_public().
+PUBLIC_BOOKS = "((b.kind IS NULL OR b.kind = 'house') AND b.visibility = 'public')"
+COOKBOOKS = "b.kind IS NULL"  # physical cookbooks: what "books in the collection" counts, separate from visibility
+
+
+def book_public(row):
+    """PUBLIC_BOOKS for a books row already loaded (a sqlite3.Row or dict with kind and visibility)."""
+    return row["kind"] in (None, "house") and row["visibility"] == "public"
 
 
 def book_dicts(rows, private):
@@ -783,7 +795,7 @@ def list_books(private):
 
 def get_book(book_id, private):
     row = db().execute("SELECT * FROM books WHERE id=?", (book_id,)).fetchone()
-    if not row or (not private and row["kind"]):
+    if not row or (not private and not book_public(row)):
         abort(404)
     book = book_dicts([row], private)[0]
     recs = db().execute("SELECT * FROM recipes WHERE book_id=? ORDER BY page_sort IS NULL, page_sort, name",
@@ -914,7 +926,7 @@ def facets(private):
         publishers=sorted((r[0] for r in d.execute(
             "SELECT DISTINCT publisher FROM books WHERE publisher IS NOT NULL")), key=fold) if private else [],
         locations=get_locations(d, public=not private),  # editors get empty ones too, for the picker
-        stats={"books": d.execute(f"SELECT count(*) FROM books b WHERE {PUBLIC_BOOKS}").fetchone()[0],  # cookbooks
+        stats={"books": d.execute(f"SELECT count(*) FROM books b WHERE {COOKBOOKS}" + pub_and).fetchone()[0],  # cookbooks
                "recipes": d.execute("SELECT count(*) FROM recipes r JOIN books b ON b.id=r.book_id"
                                     + pub).fetchone()[0]},
     )
@@ -946,7 +958,8 @@ def me():
 
 # ------------------------------------------------------------- write API
 BOOK_FIELDS = ("title", "subtitle", "isbn", "publisher", "year", "cuisine", "format", "description", "location_id",
-               "status", "loaned_to", "signed", "private_notes", "needs_review", "rating")  # not `location`: see migrate_locations
+               "status", "loaned_to", "signed", "private_notes", "needs_review", "rating",
+               "visibility")  # not `location`: see migrate_locations
 
 
 def book_values(data):
@@ -969,6 +982,9 @@ def book_values(data):
                 abort(make_err(400, "That shelf location doesn't exist"))
         elif k == "status":
             v = v if v in ("owned", "out", "loaned", "gone", "wanted") else "owned"
+        elif k == "visibility":  # who may read it without signing in (see PUBLIC_BOOKS)
+            if v not in ("public", "members"):
+                abort(make_err(400, "Visibility is 'public' or 'members'"))
         elif k == "rating":  # overall book rating: 0–5 stars in half stars, None = unrated
             try:
                 v = float(v) if v not in (None, "") else None
@@ -1031,7 +1047,7 @@ def update_book(book_id):
     data = request.get_json(force=True)
     vals = book_values(data)
     if vals.get("location_id") is not None and row["kind"]:
-        return make_err(400, "A recipe website isn't on a shelf")
+        return make_err(400, "Only cookbooks go on a shelf")
     dup = isbn_conflict(vals.get("isbn"), exclude=book_id)
     if dup:
         return make_err(409, f"Another book already has that ISBN: {dup['title']}", book_id=dup["id"])
@@ -1059,9 +1075,11 @@ def update_book(book_id):
 @editor_required
 def delete_book(book_id):
     con = db()
-    row = con.execute("SELECT cover FROM books WHERE id=?", (book_id,)).fetchone()
+    row = con.execute("SELECT cover, kind FROM books WHERE id=?", (book_id,)).fetchone()
     if not row:
         abort(404)
+    if row["kind"] == "house":  # it would be recreated, empty, on the next start
+        return make_err(409, "The house book can't be deleted; delete its recipes instead")
     import photos
     photo_files = photos.files_where(con, "recipe_id IN (SELECT id FROM recipes WHERE book_id=?)", book_id)
     con.execute("DELETE FROM books WHERE id=?", (book_id,))
@@ -1602,4 +1620,5 @@ else:
     import photos  # noqa: E402,F401 — photos of dishes cooked from the books
     import online  # noqa: E402,F401 — recipes from websites
     import ask  # noqa: E402,F401 — AI search
+    import house  # noqa: E402,F401 — house recipes
     init_db()

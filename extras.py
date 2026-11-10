@@ -1583,7 +1583,7 @@ def t_get_book(a, private):
                     raise ToolError(f"Multiple books match '{a['title']}': {choices}. Call get_book with book_id.")
     else:
         raise ToolError("book_id or title is required")
-    if not row or (not private and row["kind"]):
+    if not row or (not private and not core.book_public(row)):
         raise ToolError("No such book")
     b = core.book_dicts([row], private)[0]
     # Paged: a well-indexed book has hundreds of recipes, and the whole list would go into the model's context.
@@ -1625,7 +1625,7 @@ def t_list_categories(a, private):
         "tags": [dict(r) for r in con.execute(
             "SELECT t.name, count(*) AS books FROM tags t JOIN book_tags bt ON bt.tag_id=t.id "
             "JOIN books b ON b.id=bt.book_id" + pub + " GROUP BY t.id ORDER BY 2 DESC")],
-        "totals": {"books": con.execute(f"SELECT count(*) FROM books b WHERE {core.PUBLIC_BOOKS}").fetchone()[0],
+        "totals": {"books": con.execute(f"SELECT count(*) FROM books b WHERE {core.COOKBOOKS}" + pub_and).fetchone()[0],
                    "recipes": con.execute("SELECT count(*) FROM recipes r JOIN books b ON b.id=r.book_id"
                                           + pub).fetchone()[0]},
     }

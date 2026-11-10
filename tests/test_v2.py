@@ -334,7 +334,7 @@ def test_mcp_public(c):
     assert init["protocolVersion"] == "2025-03-26" and "tools" in init["capabilities"]
     assert rpc(c, "notifications/initialized", mid=None).status_code == 202
     names = {t["name"] for t in rpc(c, "tools/list").json["result"]["tools"]}
-    assert names == {"search_recipes", "search_books", "get_book", "list_categories"}
+    assert names == {"search_recipes", "search_books", "get_book", "get_recipe", "list_categories"}
     res = rpc(c, "tools/call", {"name": "search_recipes", "arguments": {"query": "chicken"}}).json["result"]
     data = json.loads(res["content"][0]["text"])
     assert data["count"] > 0 and all("rating" not in r and "notes" not in r for r in data["recipes"])

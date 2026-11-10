@@ -77,14 +77,21 @@ def tidy_names(con):
 
 
 # ------------------------------------------------------------------ search support (used by app.py)
+# A house recipe's own ingredient list (house.py), as text with punctuation turned into spaces, padded with spaces
+# so a whole word is "% word %". Only house recipes have lines, so this is a small table.
+LINE_TEXT = ("(' ' || replace(replace(replace(replace(replace(fold(l.item), ',', ' '), '(', ' '), ')', ' '), '-', ' '), "
+             "'/', ' ') || ' ')")
+
+
 def token_condition(token):
-    """SQL + args matching a recipe whose name/heading has a word starting with `token`, or that is
-    tagged with an ingredient containing a word starting with it. Plural words match by their singular stem,
-    so "leeks" also finds "Leek and potato soup"."""
+    """SQL + args matching a recipe whose name/heading has a word starting with `token`, that is tagged with an
+    ingredient containing a word starting with it, or (a house recipe) has an ingredient line with such a word.
+    Plural words match by their singular stem, so "leeks" also finds "Leek and potato soup"."""
     t = stem(fold(token))
-    ing = ("r.id IN (SELECT ri.recipe_id FROM recipe_ingredients ri JOIN ingredients i ON i.id=ri.ingredient_id "
-           "WHERE fold(i.name) LIKE ? OR fold(i.name) LIKE ?)")
-    ing_args = [f"{t}%", f"% {t}%"]
+    ing = ("(r.id IN (SELECT ri.recipe_id FROM recipe_ingredients ri JOIN ingredients i ON i.id=ri.ingredient_id "
+           "WHERE fold(i.name) LIKE ? OR fold(i.name) LIKE ?) OR r.id IN (SELECT l.recipe_id FROM "
+           f"recipe_ingredient_lines l WHERE {LINE_TEXT} LIKE ?))")
+    ing_args = [f"{t}%", f"% {t}%", f"% {t}%"]
     if core.UNSPACED.search(t):  # Chinese/Japanese/Korean/Thai: find it anywhere in the name, not just word starts
         return f"(instr(fold(r.name) || ' ' || fold(r.heading), ?) > 0 OR {ing})", [t] + ing_args
     if core.HAS_FTS:
@@ -147,8 +154,22 @@ def title_condition(name):
     return " AND ".join(conds), args
 
 
+def line_condition(name):
+    """A house recipe with an ingredient line naming every word of `name`, singular or plural ("ground beef" finds
+    "500 g ground beef"; "beef" finds it too)."""
+    conds, args = [], []
+    for w in ingredient_words(name):
+        forms = sorted({w, w + "s", w + "es"} | ({w[:-1] + "ies"} if w.endswith("y") else set()))
+        conds.append("(" + " OR ".join([f"{LINE_TEXT} LIKE ?"] * len(forms)) + ")")
+        args += [f"% {f} %" for f in forms]
+    if not conds:
+        return "", []
+    return f"r.id IN (SELECT l.recipe_id FROM recipe_ingredient_lines l WHERE {' AND '.join(conds)})", args
+
+
 def ingredient_condition(con, name):
-    """SQL + args for "uses this ingredient": tagged with each tag it names, or has it in the title."""
+    """SQL + args for "uses this ingredient": tagged with each tag it names, has it in the title, or (a house
+    recipe) has it in its ingredient list."""
     tags = resolve(con, name)
     parts, args = [], []
     if tags:
@@ -158,6 +179,10 @@ def ingredient_condition(con, name):
     if tsql:
         parts.append(tsql)
         args += targs
+    lsql, largs = line_condition(name)
+    if lsql:
+        parts.append(lsql)
+        args += largs
     if not parts:
         return "0", []
     return "(" + " OR ".join(f"({p})" for p in parts) + ")", args
@@ -593,11 +618,14 @@ def ranked(con, base_sql, args, terms, by_book=False):
     maybe only stock (2¼). Ties, and searches without terms, go by book and page. by_book keeps each book's
     recipes together, books with the best matches first (the website groups results under a heading per book)."""
     rows = con.execute("SELECT r.id, r.name, r.heading, r.page_sort, b.id AS book_id, b.title" + base_sql, args).fetchall()
-    tags = {}
+    tags, lines = {}, {}
     if terms and rows:
         for rid, iid in con.execute("SELECT ri.recipe_id, ri.ingredient_id FROM recipe_ingredients ri "
                                     "WHERE ri.recipe_id IN (SELECT r.id" + base_sql + ")", args):
             tags.setdefault(rid, set()).add(iid)
+        for rid, item in con.execute("SELECT l.recipe_id, l.item FROM recipe_ingredient_lines l "
+                                     "WHERE l.recipe_id IN (SELECT r.id" + base_sql + ")", args):
+            lines.setdefault(rid, []).append(re.sub(r"[^\w\s]", " ", fold(item)))
     kinds, minor_of = tag_kinds(con) if terms else ({}, {})
     asked = set(terms)
     out = []
@@ -612,7 +640,7 @@ def ranked(con, base_sql, args, terms, by_book=False):
                 titled += 1
                 why.append(f"{t}: title")
                 continue
-            best, minor_names = (0.5, []) if stock_title else (0, [])
+            best, minor_names, from_line = (0.5, [], False) if stock_title else (0, [], False)
             for iid in mine:
                 w, kind, _ = kinds.get(iid, (set(), "plain", ""))
                 if t not in w:
@@ -625,8 +653,17 @@ def ranked(con, base_sql, args, terms, by_book=False):
                     minor_names += [kinds[m][2].lower() for m in sorted(minor_of[iid] & mine)]
                 else:
                     best = max(best, 1.5)
+            if best < 1.5:  # a house recipe's ingredient list counts like a tag; a stock or paste of it, like a minor tag
+                for item in lines.get(r["id"], ()):
+                    if in_title(t, item):
+                        minor = minor_in_title(t, item, asked)
+                        if not minor:
+                            best, from_line = 1.5, True
+                            break
+                        if best < 0.25:
+                            best, minor_names = 0.25, minor_names + [minor]
             points.append(best)
-            why.append(f"{t}: " + ("tag" if best >= 1.5 else f"only as \u201c{stock_title}\u201d in the title" if best == 0.5
+            why.append(f"{t}: " + ("ingredients" if from_line else "tag" if best >= 1.5 else f"only as \u201c{stock_title}\u201d in the title" if best == 0.5
                                    else "may be only " + " or ".join(dict.fromkeys(minor_names)) if best == 0.25 else "matched"))
         score = sum(points) + (1 if terms and titled == len(terms) else 0)
         # for the MCP, why it matched: "title" when every word is in the title, else per word

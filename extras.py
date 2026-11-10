@@ -1376,7 +1376,10 @@ MCP_INSTRUCTIONS = ("Search a home cookbook collection: books, and recipes index
                     "(tag = the recipe is on Eat Your Books' list for that ingredient, so it does use it even though the "
                     "title doesn't say so), 'chicken: may be only chicken stock' (the ingredient may only be used as stock, "
                     "tomato paste, rice wine…) or 'chicken: only as \u201cchicken stock\u201d in the title' (a recipe for "
-                    "the stock itself); when next_offset is present there are more results to fetch.")
+                    "the stock itself); when next_offset is present there are more results to fetch. "
+                    "Some recipes are our own (the house book): they have full ingredients and steps instead of a page, "
+                    "full: true in search results, and 'ingredients' in match when a word is in their ingredient "
+                    "list; get_recipe returns them.")
 
 MCP_WEB_RECIPES = (" Some recipes come from recipe websites instead of a book: their book is the site (e.g. NYT Cooking) "
                    "and they have a url instead of a page, so give the link.")  # private view only
@@ -1457,7 +1460,7 @@ def _book_out(b, private):
 
 
 def _recipe_out(r, private):
-    keys = ["id", "name", "heading", "page", "url", "book_id", "book_title", "match"]
+    keys = ["id", "name", "heading", "page", "url", "book_id", "book_title", "match", "full"]
     if private:
         keys += ["want_to_try", "rating", "notes", "cooked_count", "cooked_avg", "cooked_last", "last_made"]
     return {k: r.get(k) for k in keys if r.get(k) not in (None, "", 0) or k == "page"}
@@ -1477,8 +1480,11 @@ def t_search_recipes(a, private):
     page = order[offset:offset + limit]
     match = {x["id"]: x["match"] for x in page}
     rows = [dict(r) for r in core.recipes_by_id(list(match))]
+    import house
+    full = house.detail_ids(db(), [r["id"] for r in rows])
     for r in rows:
         r["match"] = match[r["id"]]
+        r["full"] = r["id"] in full  # a house recipe: get_recipe has its ingredients and steps
     if private:
         ensure_synced()
         st = cooked_stats_for([r["id"] for r in rows])
@@ -1609,6 +1615,23 @@ def t_get_book(a, private):
     return out
 
 
+def t_get_recipe(a, private):
+    """One recipe in full: a house recipe's ingredients and steps, or a cookbook recipe's book and page."""
+    import house
+    con = db()
+    if a.get("recipe_id") not in (None, ""):
+        row = con.execute(house.RECIPE_SQL + " WHERE r.id=?", (int(a["recipe_id"]),)).fetchone()
+        if row and not private and not core.book_public(row):
+            row = None
+    elif a.get("uid"):
+        row = house.find_recipe(con, str(a["uid"]).strip().lower(), private)
+    else:
+        raise ToolError("recipe_id or uid is required")
+    if not row:
+        raise ToolError("No such recipe")
+    return house.recipe_for_model(con, row, private)
+
+
 def t_list_categories(a, private):
     con = db()
     pub = "" if private else f" WHERE {core.PUBLIC_BOOKS}"
@@ -1725,6 +1748,11 @@ TOOLS = [
                "description": f"Max recipes, default {GET_BOOK_LIMIT}, at most {GET_BOOK_MAX}"},
         offset={"type": "integer", "minimum": 0, "default": 0,
                 "description": "Skip this many recipes: pass next_offset from the previous call"})),
+    ("get_recipe", False, t_get_recipe,
+     "One recipe by recipe_id (from search_recipes or get_book) or uid. For our own recipes (full: true): description, "
+     "yield, servings, times, methods, equipment, notes, the ingredient list (in order, with sections) and the steps "
+     "(with timers). For a cookbook recipe: its book and page, since the text is in the book.",
+     _S(recipe_id={"type": "integer"}, uid={"type": "string", "description": "The recipe's 32-character uid"})),
     ("list_categories", False, t_list_categories, "Cuisines and tags used in the collection, with book counts.", _S()),
     ("suggest_recipes", True, t_suggest,
      "Random dinner ideas from the collection. Modes: want (starred, never cooked), untried (never cooked), "

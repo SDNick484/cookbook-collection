@@ -516,3 +516,89 @@ def test_export_and_import_carry_ingredients_and_steps(c, monkeypatch, tmp_path)
     assert any("Broken" in w and "ingredient name" in w for w in rep.warnings)
     assert any("isn't in the house book" in w for w in rep.warnings)
     con.close()
+
+
+# ------------------------------------------------------------------ search, MCP and Ask find house recipes
+SEARCH_DOC = {"name": "Grandpa's Sunday Gravy", "ingredients": [
+    {"quantity": "2", "unit": "lb", "item": "pork neck bones"}, {"quantity": "1", "item": "can San Marzano tomatoes"},
+    {"quantity": "1", "unit": "cup", "item": "chicken stock"}], "steps": ["Brown the pork.", "Simmer all day."]}
+
+
+@pytest.fixture()
+def gravy(c):
+    j = c.post("/admin/api/house/recipes", json=SEARCH_DOC).json
+    yield j
+    c.delete(f"/admin/api/recipes/{j['id']}")
+
+
+def test_site_search_finds_house_recipes_by_ingredient(c, gravy):
+    for query in ("q=marzano", "q=pork neck", "q=pork gravy", "ingredient=pork", "ingredient=tomatoes"):
+        hits = c.get(f"/admin/api/recipes?{query}&limit=500").json["recipes"]
+        assert any(r["id"] == gravy["id"] for r in hits), query
+    assert all(r["id"] != gravy["id"] for r in c.get("/api/recipes?q=marzano&limit=500").json["recipes"])
+    assert all(r["id"] != gravy["id"] for r in c.get("/api/recipes?ingredient=pork&limit=500").json["recipes"])
+    assert all(b["id"] != house_id() for b in c.get("/api/recipes/books?ingredient=pork").json["books"])
+
+
+def test_ranking_explains_an_ingredient_list_match(gravy):
+    import ingredients as I
+    con = A.connect()
+    try:
+        base = " FROM recipes r JOIN books b ON b.id=r.book_id WHERE r.id=?"
+        (pork,) = I.ranked(con, base, [gravy["id"]], ["pork"])
+        assert pork["score"] == 1.5 and pork["match"] == "pork: ingredients"
+        (chicken,) = I.ranked(con, base, [gravy["id"]], ["chicken"])  # only as stock: ranks like a minor tag
+        assert chicken["score"] == 0.25 and "may be only chicken stock" in chicken["match"]
+        (gravy_hit,) = I.ranked(con, base, [gravy["id"]], ["gravy", "pork"])
+        assert gravy_hit["score"] == 3.5 and gravy_hit["match"] == "gravy: title, pork: ingredients"
+    finally:
+        con.close()
+
+
+def test_mcp_finds_house_recipes_privately_and_only_privately(c, gravy, monkeypatch):
+    monkeypatch.setattr(X, "MCP_TOKEN", "tok")
+    res = mcp(c, "search_recipes", {"query": "marzano"}, token="tok")["structuredContent"]
+    hit = next(r for r in res["recipes"] if r["id"] == gravy["id"])
+    assert hit["full"] is True and "ingredients" in hit["match"]
+    res = mcp(c, "search_recipes", {"ingredient": "pork"}, token="tok")["structuredContent"]
+    assert any(r["id"] == gravy["id"] for r in res["recipes"])
+    full = mcp(c, "get_recipe", {"recipe_id": gravy["id"]}, token="tok")["structuredContent"]
+    assert full["ingredients"] == ["2 lb pork neck bones", "1 can San Marzano tomatoes", "1 cup chicken stock"]
+    assert full["steps"] == ["1. Brown the pork.", "2. Simmer all day."]
+    assert mcp(c, "get_recipe", {"uid": gravy["uid"]}, token="tok")["structuredContent"]["id"] == gravy["id"]
+    # the public MCP: not found by search, by id or by uid
+    assert all(r["id"] != gravy["id"] for r in mcp(c, "search_recipes", {"query": "marzano"})["structuredContent"]["recipes"])
+    assert mcp(c, "get_recipe", {"recipe_id": gravy["id"]})["isError"]
+    assert mcp(c, "get_recipe", {"uid": gravy["uid"]})["isError"]
+    assert mcp(c, "get_recipe", {})["isError"]
+    cookbook = q("SELECT r.id FROM recipes r JOIN books b ON b.id=r.book_id WHERE b.kind IS NULL AND r.page IS NOT NULL "
+                 "LIMIT 1")[0][0]
+    page = mcp(c, "get_recipe", {"recipe_id": cookbook})["structuredContent"]
+    assert page["page"] and "in the book" in page["note"] and "ingredients" not in page
+
+
+class Script:
+    def __init__(self, items):
+        self.items = list(items)
+
+    def __call__(self, body, key, timeout):
+        item = self.items.pop(0)
+        return item(body) if callable(item) else item
+
+
+def test_ask_finds_house_recipes_by_ingredient(c, gravy, monkeypatch):
+    import ask
+    monkeypatch.setattr(ask, "SEARCH_KEY", "k")
+
+    def finish(body):
+        found = json.loads(body["messages"][-1]["content"][0]["content"])
+        assert any(r["id"] == gravy["id"] and r["full"] for r in found["recipes"])
+        return {"content": [{"type": "tool_use", "id": "t2", "name": "show_results",
+                             "input": {"answer": "Your gravy.", "recipe_ids": [gravy["id"]]}}], "usage": {}}
+    monkeypatch.setattr(X, "messages_api", Script([
+        {"content": [{"type": "tool_use", "id": "t1", "name": "search_recipes", "input": {"ingredient": "pork"}}],
+         "usage": {}}, finish]))
+    r = c.post("/admin/api/ask", json={"thread": [{"q": "what uses pork neck?"}]})
+    assert r.status_code == 200, r.json
+    item = r.json["items"][0]
+    assert item["id"] == gravy["id"] and item["has_detail"] is True and item["uid"] == gravy["uid"]

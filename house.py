@@ -420,6 +420,48 @@ RECIPE_SQL = ("SELECT r.*, b.uid AS book_uid, b.title AS book_title, b.kind AS b
               "b.kind AS kind FROM recipes r JOIN books b ON b.id=r.book_id")
 
 
+def _line_text(x):
+    q = " ".join(v for v in (x["quantity_text"], x["unit"]) if v)
+    return f"{q} {x['item']}".strip() + (f", {x['prep_note']}" if x["prep_note"] else "") + \
+        (" (optional)" if x["optional"] else "")
+
+
+def recipe_for_model(con, row, private):
+    """recipe_full, compacted for the MCP and Ask (it stays in the model's context): lines and steps as text."""
+    full = recipe_full(con, row, private)
+    out = {"id": full["id"], "uid": full["uid"], "name": full["name"], "book_id": full["book"]["id"],
+           "book_title": full["book"]["title"]}
+    if full["page"]:
+        out["page"] = full["page"]
+    if row["url"] if "url" in row.keys() else None:
+        out["url"] = row["url"]
+    for k, v in (full["detail"] or {}).items():
+        if v not in (None, "", []) and k != "updated_at":
+            out[k] = v
+    section, lines = None, []
+    for x in full["ingredients"]:
+        if x["section"] != section and x["section"]:
+            lines.append(f"[{x['section']}]")
+        section = x["section"]
+        lines.append(_line_text(x))
+    if lines:
+        out["ingredients"] = lines
+    section, steps = None, []
+    for n, x in enumerate(full["steps"], 1):
+        if x["section"] != section and x["section"]:
+            steps.append(f"[{x['section']}]")
+        section = x["section"]
+        steps.append(f"{n}. {x['text']}" + (f" (timer {x['timer_minutes']} min)" if x["timer_minutes"] else ""))
+    if steps:
+        out["steps"] = steps
+    if not full["detail"] and not lines and not steps:
+        out["note"] = "Only the index entry is here: the recipe is in the book" + (
+            f" on page {full['page']}." if full["page"] else ".")
+    if private:
+        out.update({k: full[k] for k in ("want_to_try", "rating", "notes") if full.get(k) not in (None, "", 0)})
+    return out
+
+
 def find_recipe(con, uid, private, house_only=False):
     """The recipe with this uid, if this caller may read it; else None. A recipe in a book the caller can't see
     is indistinguishable from one that doesn't exist."""

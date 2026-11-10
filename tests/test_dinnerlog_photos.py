@@ -448,3 +448,41 @@ def test_dl_file_never_reaches_output(con, recipes, client):
     [p] = client.get(f"/admin/api/recipes/{rid}/photos").json["photos"]
     assert p["from_dinner_log"] is True
     assert "from_dinner_log" not in client.get("/api/photos", headers=CF).json["photos"][0]
+
+
+def test_export_and_import_keep_dl_file(con, recipes, client):
+    import importer
+    rid, ruid = recipes["Pan sauce chicken"]
+    snapshot(con, [meal(1, ruid, [F1])])
+    P.sync_dl_photos(con, Fetch())
+    bid = con.execute("SELECT book_id FROM recipes WHERE id=?", (rid,)).fetchone()[0]
+    data = client.get("/admin/api/export.json").json
+    book = next(b for b in data["books"] if b["id"] == bid)
+    [ph] = next(r for r in book["recipes"] if r["id"] == rid)["photos"]
+    assert ph["dl_file"] == F1
+    con.execute("UPDATE recipe_photos SET dl_file=NULL WHERE dl_file=?", (F1,))   # as a restore would find it
+    con.commit()
+    importer.import_data(con, {**data, "books": [book]})
+    assert imported(con)[F1]["file"] == ph["file"]
+    fetch = Fetch()
+    assert P.sync_dl_photos(con, fetch)["imported"] == 0 and fetch.calls == []   # no duplicate after a restore
+
+
+def test_import_doesnt_steal_a_tracked_dl_file(con, recipes, client):
+    import importer
+    (r1, u1), (r2, _) = recipes["Pan sauce chicken"], recipes["Braised beans"]
+    snapshot(con, [meal(1, u1, [F1])])
+    P.sync_dl_photos(con, Fetch())
+    con.execute("INSERT INTO recipe_photos(recipe_id, file) VALUES (?, 'dddddddddddddddddddddddddddddddd.jpg')", (r2,))
+    con.commit()
+    bid = con.execute("SELECT book_id FROM recipes WHERE id=?", (r2,)).fetchone()[0]
+    data = client.get("/admin/api/export.json").json
+    book = next(b for b in data["books"] if b["id"] == bid)
+    for r in book["recipes"]:
+        for p in r.get("photos", []):
+            if p["file"].startswith("dddd"):
+                p["dl_file"] = F1                               # an export that claims the tracked file again
+    importer.import_data(con, {**data, "books": [book]})
+    assert imported(con)[F1]["recipe_id"] == r1
+    con.execute("DELETE FROM recipe_photos WHERE file LIKE 'dddd%'")
+    con.commit()

@@ -1600,9 +1600,12 @@ def export_json():
             if doc:
                 r["detail"] = doc
         photos = {}  # file names in DATA_DIR/photos
-        for p in db().execute("SELECT p.recipe_id, p.file, p.taken_on, p.caption FROM recipe_photos p "
+        for p in db().execute("SELECT p.recipe_id, p.file, p.taken_on, p.caption, p.dl_file FROM recipe_photos p "
                               "JOIN recipes r ON r.id=p.recipe_id WHERE r.book_id=?", (b["id"],)):
-            photos.setdefault(p["recipe_id"], []).append({k: p[k] for k in ("file", "taken_on", "caption")})
+            ph = {k: p[k] for k in ("file", "taken_on", "caption")}
+            if p["dl_file"]:  # imported from Dinner Log: keeps a restore from importing it a second time
+                ph["dl_file"] = p["dl_file"]
+            photos.setdefault(p["recipe_id"], []).append(ph)
         for r in b["recipes"]:
             if r["id"] in photos:
                 r["photos"] = photos[r["id"]]

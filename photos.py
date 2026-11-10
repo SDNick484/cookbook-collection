@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS dl_photo_skip (      -- Dinner Log files never to imp
 """
 DL_PHOTO_BATCH = 8       # imports per pull, so a first sync with many photos doesn't hold the lease too long
 DL_PHOTO_BUDGET = 45     # seconds of importing per pull (the lease is extras.LEASE_TTL, 120)
+DL_PHOTO_MAX_AGE = 600   # cache lifetime of an imported photo's files, so an unshare doesn't linger for a day
 _clock = time.monotonic
 
 try:  # iPhone photos, when the browser hands them over as HEIC
@@ -53,6 +54,7 @@ def migrate(con):
     if "dl_file" not in [r[1] for r in con.execute("PRAGMA table_info(recipe_photos)")]:
         con.execute("ALTER TABLE recipe_photos ADD COLUMN dl_file TEXT")  # existing photos: NULL, never synced
     con.execute("CREATE UNIQUE INDEX IF NOT EXISTS recipe_photos_dl_file ON recipe_photos(dl_file)")
+    con.execute("CREATE INDEX IF NOT EXISTS recipe_photos_file ON recipe_photos(file)")
 
 
 def thumb_name(file):
@@ -152,7 +154,11 @@ def gallery(private):
 @app.get("/photos/<name>")
 @app.get("/admin/photos/<name>")  # older links; the files are no longer private
 def photo_file(name):
-    return send_from_directory(PHOTO_DIR, name, max_age=86400)
+    """Public, like the catalog. A photo imported from Dinner Log (or its thumbnail) is cached for minutes, not
+    a day, so taking it down there isn't undone by browsers and a CDN keeping their copy."""
+    base = name[:-6] + ".jpg" if name.endswith("-t.jpg") else name
+    imported = db().execute("SELECT 1 FROM recipe_photos WHERE file=? AND dl_file IS NOT NULL", (base,)).fetchone()
+    return send_from_directory(PHOTO_DIR, name, max_age=DL_PHOTO_MAX_AGE if imported else 86400)
 
 
 @app.get("/api/photos")

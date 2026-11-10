@@ -420,6 +420,21 @@ def test_sync_crash_doesnt_look_like_a_failed_pull(con, recipes, monkeypatch):
     assert X.meta_get(con, "dl_error") is None and X.meta_get(con, "dl_lease") == "0"
 
 
+# ------------------------------------------------------------------ what visitors and editors see
+
+def test_imported_photos_cache_briefly(con, recipes, client):
+    snapshot(con, [meal(1, recipes["Pan sauce chicken"][1], [F1])])
+    P.sync_dl_photos(con, Fetch())
+    f = imported(con)[F1]["file"]
+    for name in (f, P.thumb_name(f)):
+        r = client.get(f"/photos/{name}", headers=CF)
+        assert r.status_code == 200 and r.cache_control.max_age == P.DL_PHOTO_MAX_AGE
+    rid = recipes["Braised beans"][0]
+    up = client.post(f"/admin/api/recipes/{rid}/photos", content_type="multipart/form-data",
+                     data={"file": (io.BytesIO(jpeg()), "x.jpg")}).json["photos"][0]
+    assert client.get(up["url"], headers=CF).cache_control.max_age == 86400
+
+
 def test_dl_file_never_reaches_output(con, recipes, client):
     rid, ruid = recipes["Pan sauce chicken"]
     snapshot(con, [meal(1, ruid, [F1])])

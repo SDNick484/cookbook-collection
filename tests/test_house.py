@@ -276,3 +276,28 @@ def test_restore_maps_the_house_book_onto_this_catalogs_own(c, monkeypatch, tmp_
     assert con.execute("SELECT count(*) FROM books WHERE kind='house'").fetchone()[0] == 1
     assert all(t != house["title"] for _, t in rep.deleted_books)
     con.close()
+
+
+# ------------------------------------------------------------------ quantity parsing
+@pytest.mark.parametrize("text,expected", [
+    ("2", (2, None)), ("12", (12, None)), ("0.25", (0.25, None)), ("1.5", (1.5, None)), ("1,5", (1.5, None)),
+    ("1,500", (1500, None)), ("1/2", (0.5, None)), ("3/4", (0.75, None)), ("1 1/2", (1.5, None)),
+    ("1  1/2", (1.5, None)), ("1-1/2", (1.5, None)), ("2 3/4", (2.75, None)),
+    ("½", (0.5, None)), ("1½", (1.5, None)), ("1 ½", (1.5, None)), ("⅓", (0.3333, None)), ("2⅔", (2.6667, None)),
+    ("1⁄2", (0.5, None)),  # FRACTION SLASH, what some keyboards and pastes give
+    ("2-3", (2, 3)), ("2–3", (2, 3)), ("2 — 3", (2, 3)), ("2 to 3", (2, 3)), ("2 or 3", (2, 3)),
+    ("1/2-1", (0.5, 1)), ("1 1/2-2", (1.5, 2)), ("½-¾", (0.5, 0.75)), ("3-3", (3, None)),
+    ("about 2", (2, None)), ("approx. 250", (250, None)), ("~3", (3, None)), ("ca. 1,5", (1.5, None)),
+    ("a", (1, None)), ("one", (1, None)), ("Two", (2, None)), ("dozen", (12, None)), ("half", (0.5, None)),
+    ("2.", (2, None)), ("  3  ", (3, None)),
+])
+def test_parse_quantity(text, expected):
+    assert H.parse_quantity(text) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "", None, "a pinch", "to taste", "1 (14-oz)", "1 can", "pinch", "some", "3-2", "0", "0/0", "1/0", "-2",
+    "1..5", "2 3", "x" * 41, "9999999", "1e3", "½ cup",
+])
+def test_parse_quantity_leaves_text_alone(text):
+    assert H.parse_quantity(text) == (None, None)

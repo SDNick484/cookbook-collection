@@ -11,7 +11,7 @@ Only recipes in the house book carry details (see write routes). `books.visibili
 the gate for anonymous readers: the house book is created 'members', every existing book stays 'public'. Every
 anonymous read path filters with app.PUBLIC_BOOKS or app.book_public().
 """
-import os
+import os, re, unicodedata
 
 from app import app, clean
 
@@ -84,6 +84,70 @@ def ensure_house_book(con):
 def house_book_id(con):
     row = con.execute("SELECT id FROM books WHERE kind='house'").fetchone()
     return row[0] if row else None
+
+
+# ------------------------------------------------------------------ quantities
+# quantity_text is kept exactly as typed; quantity_num (and quantity_max for a range) is what scaling multiplies.
+# Anything that isn't plainly a number ("a pinch", "1 (14-oz) can", "to taste") is stored as text with no number,
+# never refused.
+VULGAR = {"¼": "1/4", "½": "1/2", "¾": "3/4", "⅐": "1/7", "⅑": "1/9", "⅒": "1/10", "⅓": "1/3", "⅔": "2/3",
+          "⅕": "1/5", "⅖": "2/5", "⅗": "3/5", "⅘": "4/5", "⅙": "1/6", "⅚": "5/6", "⅛": "1/8", "⅜": "3/8",
+          "⅝": "5/8", "⅞": "7/8"}
+WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+         "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "half": 0.5, "dozen": 12}
+QUALIFIER = re.compile(r"^(?:about|approx(?:\.|imately)?|around|roughly|ca\.?|~)\s*")
+AMOUNT = r"(?:\d+\s+\d+/\d+|\d+/\d+|\d+(?:[.,]\d+)?|[a-z]+)"
+QUANTITY = re.compile(rf"(?P<a>{AMOUNT})(?:\s*(?:-|to|or)\s*(?P<b>{AMOUNT}))?")
+QUANTITY_MAX = 1_000_000
+
+
+def _amount(tok):
+    """'1 1/2' -> 1.5, '3/4' -> 0.75, '1,5' -> 1.5, '1,500' -> 1500.0, 'two' -> 2.0; None if it isn't one."""
+    if tok in WORDS:
+        return float(WORDS[tok])
+    m = re.fullmatch(r"(?:(\d+)\s+)?(\d+)/(\d+)", tok)
+    if m:
+        whole, n, d = int(m.group(1) or 0), int(m.group(2)), int(m.group(3))
+        return whole + n / d if d else None
+    if re.fullmatch(r"\d+,\d{3}", tok):  # a thousands separator: "1,500" (grams)
+        return float(tok.replace(",", ""))
+    if re.fullmatch(r"\d+(?:[.,]\d+)?", tok):  # "1.5", or "1,5" as Italian and most of Europe write it
+        return float(tok.replace(",", "."))
+    return None
+
+
+def parse_quantity(text):
+    """(quantity_num, quantity_max) for a typed quantity, or (None, None) when it isn't plainly a number.
+
+        "2" -> (2, None)    "1 1/2", "1½", "1-1/2", "1.5", "1,5" -> (1.5, None)    "½" -> (0.5, None)
+        "2-3", "2–3", "2 to 3", "2 or 3" -> (2, 3)    "about 2" -> (2, None)    "a pinch", "1 (14-oz)" -> (None, None)
+    A "range" whose top is a fraction below its bottom is a mixed number written with a hyphen ("1-1/2")."""
+    s = clean(text)
+    if not s or len(s) > 40:
+        return None, None
+    s = unicodedata.normalize("NFC", s).lower().replace("⁄", "/").replace("∕", "/")
+    s = re.sub(r"[‐-―−]", "-", s)  # en/em dashes, minus
+    for ch, frac in VULGAR.items():
+        s = s.replace(ch, f" {frac} ")
+    s = " ".join(QUALIFIER.sub("", s.strip()).split()).rstrip(".").strip()
+    m = QUANTITY.fullmatch(s)
+    if not m:
+        return None, None
+    lo = _amount(m.group("a"))
+    hi = _amount(m.group("b")) if m.group("b") else None
+    if lo is None or (m.group("b") and hi is None):
+        return None, None
+    if hi is not None and hi < lo:
+        mixed = re.fullmatch(r"(\d+)\s*-\s*(\d+)/(\d+)", s)
+        if mixed and int(mixed.group(2)) < int(mixed.group(3)):
+            lo, hi = int(mixed.group(1)) + hi, None
+        else:
+            return None, None
+    if hi == lo:
+        hi = None
+    if not 0 < lo <= QUANTITY_MAX or (hi is not None and hi > QUANTITY_MAX):
+        return None, None
+    return round(lo, 4), (round(hi, 4) if hi is not None else None)
 
 
 # Undo this release's schema (see the PR / README "Rolling back"). Deletes the house book and its recipes, so export

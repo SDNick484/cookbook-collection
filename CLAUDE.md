@@ -7,11 +7,11 @@ and an MCP server at `/mcp`. README.md is the user-facing guide; this file is ho
 | File | What's in it |
 |---|---|
 | `app.py` | Core: schema + `init_db`, `connect()`/`db()`, `fold()` (accent/case folding, also an SQL function), FTS (`books_fts`, `recipes_fts`), auth (`editor_required`), books/recipes/facets API, index paste import (`parse_index`, `mark_duplicates`, `index_commit`), `PUBLIC_BOOKS`, `cuisine_condition()`, `env_int`/`local_midnight` |
-| `extras.py` | Dinner Log history (pulled over HTTP into `dl_meals`, rebuilt into `cooked`; `ensure_synced()` starts background pulls under a DB lease), `cook_rank` (the one ranking behind the Cook page `/admin/api/cook`, `/admin/api/suggest`, MCP `suggest_recipes` and Dinner Log's `/admin/api/pick`; those are thin wrappers, so change modes and ordering there), stats, photo index import (Claude API, background jobs in `photo_jobs`; whole-index scans are a parent row with one child per page, `scan_state` derives the status, `merge_pages` joins them, `pages_today` enforces `PHOTO_DAILY_LIMIT`), MCP server (`TOOLS`, `WRITE_TOOLS`, `handle_rpc`, `run_tool`), `messages_api` (Claude API call), wishlist |
+| `extras.py` | Dinner Log history (pulled over HTTP into `dl_meals` and `dl_photos`, rebuilt into `cooked`; `fetch_dl_photo`; `ensure_synced()` starts background pulls under a DB lease), `cook_rank` (the one ranking behind the Cook page `/admin/api/cook`, `/admin/api/suggest`, MCP `suggest_recipes` and Dinner Log's `/admin/api/pick`; those are thin wrappers, so change modes and ordering there), stats, photo index import (Claude API, background jobs in `photo_jobs`; whole-index scans are a parent row with one child per page, `scan_state` derives the status, `merge_pages` joins them, `pages_today` enforces `PHOTO_DAILY_LIMIT`), MCP server (`TOOLS`, `WRITE_TOOLS`, `handle_rpc`, `run_tool`), `messages_api` (Claude API call), wishlist |
 | `ask.py` | AI search: `POST /admin/api/ask`, `ask_log`, tool loop over `run_tool`, `show_results` hydration |
 | `ingredients.py` | Ingredient tags and search hints, CSV/zip import, `resolve()`, `ranked()` search ranking |
 | `eyb.py` | Eat Your Books import, merging garbled duplicate recipes |
-| `photos.py` | Photos of cooked dishes |
+| `photos.py` | Photos of cooked dishes; `sync_dl_photos` imports and reconciles photos shared from Dinner Log (`dl_file`, `dl_photo_skip`) |
 | `online.py` | Recipes from websites (NYT Cooking): `books.kind='online'`, editor-only |
 | `house.py` | House recipes: the one `books.kind='house'` book (`ensure_house_book`, after seeding), `books.visibility`, `recipe_details` / `recipe_ingredient_lines` / `recipe_steps`, `parse_quantity`, `parse_doc`/`save_doc`, read/write routes, `safe_return_url` (`RETURN_URL_ORIGINS`), `ROLLBACK_SQL` |
 | `importer.py` | Loads the JSON export back in (`python3 -m importer`, also `import_data(con, data, ...)`): reconcile by uid, then ISBN, then title + first author; `--replace`, `--dry-run`, `--photos`. One transaction; needs `app.connect()` for `fold()`. `SKIP_SEED=1` stops `init_db` seeding an empty DB. No routes. Export carries `version` (`EXPORT_VERSION`, bump only for breaking shape changes) |
@@ -52,6 +52,10 @@ Chromium for Playwright checks: `/opt/pw-browsers/chromium-*/chrome-linux/chrome
 - Photo jobs: never call Claude from tests (monkeypatch `call_claude` or `messages_api`). A scan page's thread waits on
   `_photo_sem` as `queued` and only becomes `running` (with `started`) when it gets a slot; stale checks use `started`.
   Finished jobs are deleted after `PHOTO_JOB_KEEP`; it must stay >= a day because `pages_today()` counts them.
+- Dinner Log photos: `sync_dl_photos` runs only from `background_pull` (network, re-encoding), never from
+  `rebuild_cooked` or a request. Removals are never capped. Never touch rows with `dl_file` NULL (uploads), never
+  send `dl_file` to a client, and keep an editor's delete a permanent `dl_photo_skip` tombstone. Tests pass a fake
+  `fetch`; pages that sync need `start_background` patched so no real pull starts.
 - Every write route uses `@editor_required`, which refuses cross-site edits (Origin check) before auth.
   LAN editing (`lan_identity()`) trusts only the socket peer, never forwarded headers.
 - Don't `pkill -f`/`pgrep -f` a server by a pattern that also matches your own shell command.

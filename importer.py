@@ -29,6 +29,7 @@ import sys
 from pathlib import Path
 
 SAFE_FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.(?:jpe?g|png|webp)", re.I)  # a bare name, never a path
+DL_FILE = re.compile(r"[0-9a-f]{32}\.jpg")  # a photo's Dinner Log source (recipe_photos.dl_file)
 TIMESTAMP = re.compile(r"\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d")
 DAY = re.compile(r"\d{4}-\d\d-\d\d")
 STATUSES = ("owned", "out", "loaned", "gone", "wanted")
@@ -466,15 +467,20 @@ def _set_photos(ctx, rid, photos, label, rep):
         day = A.clean(p.get("taken_on") if isinstance(p.get("taken_on"), str) else None)
         day = day if day and DAY.fullmatch(day) else None
         caption = A.clean(p.get("caption") if isinstance(p.get("caption"), str) else None)
-        row = con.execute("SELECT id, taken_on, caption FROM recipe_photos WHERE recipe_id=? AND file=?",
+        dl_file = p.get("dl_file") if isinstance(p.get("dl_file"), str) and DL_FILE.fullmatch(p["dl_file"]) else None
+        row = con.execute("SELECT id, taken_on, caption, dl_file FROM recipe_photos WHERE recipe_id=? AND file=?",
                           (rid, name)).fetchone()
+        if dl_file and con.execute("SELECT 1 FROM recipe_photos WHERE dl_file=? AND id IS NOT ?",
+                                   (dl_file, row["id"] if row else None)).fetchone():
+            dl_file = None  # another photo here is already that Dinner Log file's copy; it keeps the link
         if row is None:
             width, height = _known_size(ctx, "photo", name) or (None, None)
-            con.execute("INSERT INTO recipe_photos(recipe_id, file, width, height, taken_on, caption) VALUES (?,?,?,?,?,?)",
-                        (rid, name, width, height, day, caption))
+            con.execute("INSERT INTO recipe_photos(recipe_id, file, width, height, taken_on, caption, dl_file) "
+                        "VALUES (?,?,?,?,?,?,?)", (rid, name, width, height, day, caption, dl_file))
             rep.counts["photos"]["insert"] += 1
-        elif (row["taken_on"], row["caption"]) != (day, caption):
-            con.execute("UPDATE recipe_photos SET taken_on=?, caption=? WHERE id=?", (day, caption, row["id"]))
+        elif (row["taken_on"], row["caption"]) != (day, caption) or (dl_file and row["dl_file"] != dl_file):
+            con.execute("UPDATE recipe_photos SET taken_on=?, caption=?, dl_file=coalesce(?, dl_file) WHERE id=?",
+                        (day, caption, dl_file, row["id"]))
             rep.counts["photos"]["update"] += 1
         else:
             rep.counts["photos"]["skip"] += 1

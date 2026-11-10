@@ -55,12 +55,20 @@ CREATE TABLE IF NOT EXISTS dl_meals (       -- the last history pulled from Dinn
   day TEXT, name TEXT, source_type TEXT, source_title TEXT, source_detail TEXT,
   rating REAL, cookbook_book_id INTEGER, cookbook_recipe_id INTEGER,
   cookbook_book_uid TEXT, cookbook_recipe_uid TEXT);  -- this catalog's books.uid / recipes.uid, when stamped
+CREATE TABLE IF NOT EXISTS dl_photos (      -- photos Dinner Log shares, from the same pull (replaced with dl_meals)
+  dl_file TEXT PRIMARY KEY,                 -- its file name: 32 hex + .jpg
+  meal_id INTEGER NOT NULL);                -- dl_meals.id
 INSERT OR IGNORE INTO meta(key, value) VALUES ('dl_lease', '0');
 """
 
 
 def migrate(con):
+    had_dl_photos = con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dl_photos'").fetchone()
     con.executescript(MIGRATIONS)
+    if not had_dl_photos:
+        # The stored history predates the "photos" field. If Dinner Log already sends it, its ETag still
+        # matches and every pull would be a 304, so the photo lists would never arrive: forget the ETag.
+        con.execute("DELETE FROM meta WHERE key='dl_etag'")
     con.execute(WISH_SCHEMA)
     con.execute(PHOTO_SCHEMA)
     # Whole-index scans (one parent row, one child row per page). Single-page jobs leave all three NULL.
@@ -143,11 +151,21 @@ DL_MEAL_FIELDS = ("id", "day", "name", "source_type", "source_title", "source_de
                   "cookbook_book_id", "cookbook_recipe_id", "cookbook_book_uid", "cookbook_recipe_uid")
 
 
+DL_FILE_RE = re.compile(r"[0-9a-f]{32}\.jpg")  # Dinner Log's photo names; never a -t.jpg thumbnail
+
+
 def store_snapshot(con, meals, etag, now=None):
-    """Replace the stored history with `meals` (dicts as Dinner Log sends them) and record the pull."""
+    """Replace the stored history with `meals` (dicts as Dinner Log sends them) and record the pull.
+
+    Each meal's "photos" (file names it shares with this catalog) go to dl_photos. Anything that isn't a list
+    of Dinner Log photo names is ignored, not an error; a name listed twice keeps its first meal."""
     con.execute("DELETE FROM dl_meals")
     con.executemany(f"INSERT INTO dl_meals({', '.join(DL_MEAL_FIELDS)}) VALUES ({','.join('?' * len(DL_MEAL_FIELDS))})",
                     [tuple(m.get(f) for f in DL_MEAL_FIELDS) for m in meals])
+    con.execute("DELETE FROM dl_photos")
+    con.executemany("INSERT OR IGNORE INTO dl_photos(dl_file, meal_id) VALUES (?, ?)",
+                    [(f, m["id"]) for m in meals if isinstance(m.get("photos"), list)
+                     for f in m["photos"] if isinstance(f, str) and DL_FILE_RE.fullmatch(f)])
     meta_set(con, "dl_etag", etag or "")
     meta_set(con, "dl_gen", str(int(meta_get(con, "dl_gen") or 0) + 1))  # what rebuild_cooked compares
     _pulled(con, time.time() if now is None else now)
@@ -212,6 +230,34 @@ def pull_history(con, now=None):
         return _pull_failed(con, now, "Dinner Log sent a history this version doesn't understand")
     store_snapshot(con, meals, new_etag, now)
     return {"ok": True, "changed": True, "error": None}
+
+
+DL_PHOTO_TIMEOUT = 10
+DL_PHOTO_MAX_BYTES = 10 * 1024 * 1024  # Dinner Log sends a 1600 px JPEG, well under this
+
+
+class DLPhotoTooLarge(ValueError):
+    pass
+
+
+def fetch_dl_photo(name):
+    """One shared photo from Dinner Log's GET /api/photos/<name>, as bytes; None on a 404 (not shared any more).
+    Same rules as the history call: the bearer token, no redirects, no environment proxies. Other HTTP and
+    network errors are raised; an oversized body is DLPhotoTooLarge. Decoding is the caller's (photos.store)."""
+    if not DL_FILE_RE.fullmatch(name or ""):
+        raise ValueError("not a Dinner Log photo name")
+    req = urllib.request.Request(f"{DINNERLOG_API_URL}/api/photos/{name}",
+                                 headers={"Authorization": f"Bearer {DINNERLOG_TOKEN}", "Accept": "image/jpeg"})
+    try:
+        with dl_open(req, DL_PHOTO_TIMEOUT) as resp:
+            body = resp.read(DL_PHOTO_MAX_BYTES + 1)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+    if len(body) > DL_PHOTO_MAX_BYTES:
+        raise DLPhotoTooLarge(f"larger than {DL_PHOTO_MAX_BYTES} bytes")
+    return body
 
 
 def match_book(t, books, aliases):
@@ -418,11 +464,20 @@ def start_background(fn):
 
 
 def background_pull():
-    """Pull and rebuild on a connection of its own; the request that started it doesn't wait."""
+    """Pull and rebuild on a connection of its own; the request that started it doesn't wait. After a pull that
+    worked (a 304 included), bring the photos Dinner Log shares in line with it (photos.sync_dl_photos), still
+    under the lease. Never in rebuild_cooked, which also runs on the request path."""
     con = core.connect()
     try:
-        pull_history(con)
+        pulled = pull_history(con)
         rebuild_cooked(con)
+        if pulled.get("ok"):
+            import photos
+            try:
+                photos.sync_dl_photos(con, fetch_dl_photo)
+            except Exception:  # a photo problem isn't a failed pull: the history is fine, so no dl_error
+                con.rollback()
+                app.logger.exception("Dinner Log photo sync stopped")
     except Exception as e:
         app.logger.exception("Dinner Log history pull stopped")
         try:

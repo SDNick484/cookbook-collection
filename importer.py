@@ -307,6 +307,12 @@ def _find_book(ctx, src, uid, vals):
         if row:
             ctx.claimed_books.add(row[0])
             return row[0]
+        if src.get("kind") == "house":  # there is only ever one house book: the file's is this catalog's
+            row = con.execute("SELECT id FROM books WHERE kind='house'").fetchone()
+            if row and row[0] not in ctx.claimed_books:
+                con.execute("UPDATE books SET uid=? WHERE id=?", (uid, row[0]))  # keep the file's stable id
+                ctx.claimed_books.add(row[0])
+                return row[0]
         return None
     if vals.get("isbn"):
         row = con.execute("SELECT id FROM books WHERE isbn=?", (vals["isbn"],)).fetchone()
@@ -515,6 +521,27 @@ def _recipe(ctx, bid, src, label, rep):
         rep.counts["recipes"]["update" if changes or tagged else "skip"] += 1
     ctx.book_recipes.add(rid)
     _set_photos(ctx, rid, src.get("photos"), label, rep)
+    if "detail" in src:
+        _set_detail(ctx, bid, rid, src["detail"], label, rep)
+
+
+def _set_detail(ctx, bid, rid, raw, label, rep):
+    """A house recipe's details, ingredients and steps (export key `detail`), replacing what was here. Checked by
+    the same rules as the editor; one that fails is reported and left as it was. Only the house book has them."""
+    import house
+    if raw is None:
+        return
+    kind = ctx.con.execute("SELECT kind FROM books WHERE id=?", (bid,)).fetchone()[0]
+    if kind != "house":
+        rep.warnings.append(f"{label}: has ingredients and steps but isn't in the house book, so they were left out")
+        return
+    try:
+        doc = house.parse_doc(raw, need_name=False)
+    except house.DocError as e:
+        rep.warnings.append(f"{label}: ingredients and steps left as they were ({e})")
+        return
+    stamp = raw.get("updated_at") if isinstance(raw.get("updated_at"), str) and TIMESTAMP.match(raw["updated_at"]) else None
+    house.save_doc(ctx.con, rid, doc, updated_at=stamp)
 
 
 # ------------------------------------------------------------------ the import
@@ -554,6 +581,7 @@ def _replace(ctx, rep, log):
     """Make the catalog equal the file: delete the books it doesn't list, and the recipes and photo rows it doesn't
     list for the books and recipes it does. Files on disk are left alone. The list goes to `log` first."""
     A, con = ctx.A, ctx.con
+    ctx.keep.update(r[0] for r in con.execute("SELECT id FROM books WHERE kind='house'"))  # structural: never deleted
     gone = [r for r in con.execute("SELECT id, uid, title FROM books ORDER BY id") if r["id"] not in ctx.keep]
     rep.deleted_books = [(r["uid"], r["title"]) for r in gone]
     gone_ids = [r["id"] for r in gone]

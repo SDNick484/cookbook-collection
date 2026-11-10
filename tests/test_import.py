@@ -699,7 +699,8 @@ def test_cli_dry_run_prints_the_plan_and_changes_nothing(export_file, tmp_path):
     r = _cli([smaller, "--replace", "--dry-run"], target)
     assert r.returncode == 0, r.stderr
     assert "Dry run" in r.stdout and "would be deleted" in r.stdout
-    assert f"{len(data['books']) - 5} book(s)" in r.stdout
+    # everything after the first five, except the house book, which --replace never deletes
+    assert f"{sum(b.get('kind') != 'house' for b in data['books'][5:])} book(s)" in r.stdout
     assert _db_counts(target) == before
 
 

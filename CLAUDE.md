@@ -13,6 +13,7 @@ and an MCP server at `/mcp`. README.md is the user-facing guide; this file is ho
 | `eyb.py` | Eat Your Books import, merging garbled duplicate recipes |
 | `photos.py` | Photos of cooked dishes |
 | `online.py` | Recipes from websites (NYT Cooking): `books.kind='online'`, editor-only |
+| `house.py` | House recipes: the one `books.kind='house'` book (`ensure_house_book`, after seeding), `books.visibility`, `recipe_details` / `recipe_ingredient_lines` / `recipe_steps`, `parse_quantity`, `parse_doc`/`save_doc`, read/write routes, `safe_return_url` (`RETURN_URL_ORIGINS`), `ROLLBACK_SQL` |
 | `importer.py` | Loads the JSON export back in (`python3 -m importer`, also `import_data(con, data, ...)`): reconcile by uid, then ISBN, then title + first author; `--replace`, `--dry-run`, `--photos`. One transaction; needs `app.connect()` for `fold()`. `SKIP_SEED=1` stops `init_db` seeding an empty DB. No routes. Export carries `version` (`EXPORT_VERSION`, bump only for breaking shape changes) |
 | `static/` | Single-page app (`app.js`, `style.css`, `index.html`) |
 | `installer/` | `build.sh` -> `dist/setup-cookbooks.sh` (Alpine/OpenRC installer: `setup-head.sh` + base64 tarball) |
@@ -37,7 +38,11 @@ Chromium for Playwright checks: `/opt/pw-browsers/chromium-*/chrome-linux/chrome
   Long work (> ~90 s, Cloudflare's limit) goes in a background thread with a DB row the browser polls.
 - Recipe text goes through `clean()`; comparisons go through `fold()`. Write recipes only through the app,
   since the FTS triggers call `fold()`.
-- `kind='online'` books are editor-only; public queries filter with `PUBLIC_BOOKS`.
+- Anonymous reads filter with `PUBLIC_BOOKS` (SQL, alias `b`) or `book_public(row)`: an allow-list of kinds (NULL
+  cookbooks, `'house'`) AND `visibility='public'`. `kind='online'` is never public. Every new read path (route, MCP
+  tool, count) needs one of the two, and a test in `tests/test_house.py`. "How many cookbooks" counts use `COOKBOOKS`.
+- `recipe_ingredients` is the EYB tag table; a house recipe's own lines are `recipe_ingredient_lines`. Only recipes in
+  the house book carry details.
 - `books.uid` / `recipes.uid` are the stable public ids (triggers fill them on insert; `id` is a reusable rowid).
   Anything stored outside this database, or sent to Dinner Log, should carry the uid.
 - MCP tools: add to `TOOLS` in extras.py as (name, private_only, fn, description, schema); writes go in

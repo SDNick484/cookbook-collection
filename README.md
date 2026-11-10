@@ -4,7 +4,7 @@ A family cookbook catalog: Flask + SQLite, running as one small service.
 On the server it's called `cookbooks`: the service, `/opt/cookbooks`, `/var/lib/cookbooks`, `/etc/conf.d/cookbooks`, and port 8767.
 
 - **Public** `https://cookbooks.example.com/` lets visitors browse and search books and recipe names, see which shelf each book is on, and (with Dinner Log linked) how many times each recipe was made.
-- **Editors** `https://cookbooks.example.com/admin` sit behind Cloudflare Access. From there you can add books by barcode, edit them, import indexes, manage shelf locations, and see ratings, notes and the want-to-try list.
+- **Editors** `https://cookbooks.example.com/admin` sit behind Cloudflare Access. From there you can add books by barcode, edit them, import indexes, manage shelf locations, write your own recipes in the house book, and see ratings, notes and the want-to-try list.
 
 ![Cookbook Collection catalog](screenshot.jpg)
 
@@ -115,6 +115,45 @@ Recipes from sites like NYT Cooking or Serious Eats are saved the way a cookbook
 - **Where they show up:** web recipes appear in search, ingredient chips (by title), Want to try and Cook suggestions, with **Open ↗** instead of a page number. Dinner Log dinners whose source holds the recipe's link count as cooking it.
 - **Editors only:** online sources aren't shown in the public catalog, public search or the public MCP. They aren't counted as cookbooks either; Stats shows them separately.
 
+## House recipes (our own)
+Recipes you develop yourselves live in one **house book**, a book like any other with full ingredients and steps.
+It is created on first start (titled by `HOUSE_BOOK_TITLE`, default "House Recipes"; rename it in the editor
+afterwards, the setting only names a new one) and can't be deleted or shelved.
+- **Write one:** open the house book (**More → House recipes**, or `/admin#/house`) and tap **New recipe**. The editor
+  has name, description, servings, yield, prep/cook/total minutes, methods, equipment, notes and inspiration, then
+  ingredient and step rows you add, move (↑/↓) and remove. **+ Section** adds a heading ("For the sauce") that applies
+  to the rows under it. Enter in an ingredient's name moves on to the next row. Quantities are kept as typed
+  ("1 ½", "2-3", "a pinch") and read as numbers where they are numbers, for scaling.
+- **Cook from it:** the recipe page scales by servings (or ½×–3×), lets you tick off ingredients and steps, runs a
+  timer per step, and can keep the phone's screen on while it's open.
+- **Who sees it:** the house book is **members only**: only someone signed in (the editors behind Access) sees it or its
+  recipes. It is left out of every public view, the public search, the public MCP and every public count. Every book
+  has a **Visible to** setting (Everyone / Signed-in members only) on its edit page, so you can publish the house book,
+  or hide a cookbook. Recipe websites stay editor-only whatever the setting.
+- **Search:** house recipes are found by their ingredients as well as their names: catalog search, ingredient chips,
+  the Cook page, Dinner Log's Pick for tonight, the MCP and Ask. MCP `get_recipe` returns one in full.
+- **Start one from another app:** link to `/admin/recipe/new?title=<name>&return=<url>`. The editor opens with the
+  name filled in; after saving, the browser goes to `return` with `cookbook_book_uid` and `cookbook_recipe_uid` added
+  to its query, but only if `return` is a path on this site or its origin is listed in `RETURN_URL_ORIGINS`
+  (e.g. `https://dinner.example.com`). Anything else is ignored and the recipe opens here instead. (`/admin#/recipe/new?…`
+  works too; the path form keeps its query through the Access sign-in.)
+- **Read API** (for Dinner Log; under `/admin/api` with `READ_TOKEN` or a signed-in editor, and under `/api` only if the
+  house book is public):
+  ```
+  curl -H "Authorization: Bearer $READ_TOKEN" 'http://127.0.0.1:8767/admin/api/house/recipes?q=ragu&limit=50'
+  # {"book": {"id", "uid", "title"}, "count": 3, "recipes": [{"id", "uid", "title", "updated_at"}], "next_offset"?}
+  curl -H "Authorization: Bearer $READ_TOKEN" 'http://127.0.0.1:8767/admin/api/house/recipes/<uid>'
+  # {"uid", "title", "book": {...}, "updated_at", "detail": {...}, "ingredients": [...], "steps": [...]}
+  ```
+  `GET …/house` gives the house book's id and uid; `GET …/recipes/by-uid/<uid>` returns any recipe the caller may see.
+- **Backups:** the JSON export carries each house recipe's `detail` (with its ingredients and steps), and the importer
+  restores it. A restore maps the file's house book onto this catalog's own, and `--replace` never deletes it.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `HOUSE_BOOK_TITLE` | `House Recipes` | Title of the house book when it is first created |
+| `RETURN_URL_ORIGINS` | empty | Origins (`scheme://host[:port]`, comma separated) the recipe editor may return to after a save; paths on this site are always allowed |
+
 ## Family wish list (optional)
 If a companion wish list app runs on the same server, set a book's status to **Want to buy** and use **Add to a wish list…** on its page. It adds the book to the chosen person's list with a shopping link built from the ISBN (`WISHLIST_BOOK_URL`). It does this through the wish list app's own API on localhost, so the wish list itself is unchanged. Purchase status is never shown here, so there are no spoilers.
 
@@ -170,7 +209,7 @@ Where each book lives is a tree of locations of any depth: room › area › she
 - **Stats → The collection** counts the books you own by author, publisher, tag, book rating, decade published and format. Publisher spellings that differ only by case or accents are counted together. Each list shows the top 12, with the rest under **All**, and tapping an author, publisher or tag opens those books in the catalog.
 
 ## MCP (use the catalog from Claude)
-- `https://cookbooks.example.com/mcp` is public and read-only: search books and recipes, get a book with its index.
+- `https://cookbooks.example.com/mcp` is public and read-only: search books and recipes, get a book with its index, get a recipe (`get_recipe`). It sees only books visible to everyone.
 - An `Authorization: Bearer <MCP_TOKEN>` header on `/mcp`, or `https://cookbooks.example.com/mcp/<MCP_TOKEN>` for clients that can only take a URL, adds ratings, cooking history, `suggest_recipes`, `cooking_stats`, `set_want_to_try`, and `update_book` (sets a book's cuisine and adds or removes tags, nothing else).
 - The token is generated on install and lives in `/etc/conf.d/cookbooks`. Treat the private URL like a password.
 - `/mcp` must stay **outside** the Access app, which only protects `/admin`.
@@ -255,6 +294,28 @@ rc-service cookbooks start
 ```sh
 python3 app.py                      # http://localhost:8767, data in ./data
 python3 -m pytest -q tests
+```
+`.env.example` lists every setting with a placeholder; for local runs, `cp .env.example .env`, edit it, and
+`set -a; . ./.env; set +a` before `python3 app.py`. (`.env` is ignored by git; on a server the settings live in
+`/etc/conf.d/cookbooks`.)
+
+### Rolling back the house recipes release
+The previous release runs on the upgraded database as is: it ignores the new column and tables, and its own checks
+keep the house book (`kind='house'`) out of every public view. To also remove the schema, run this with the service
+stopped. It deletes the house book and its recipes, so download the JSON first. (`DROP COLUMN` needs SQLite 3.35+,
+which every supported Alpine release has.)
+```sh
+rc-service cookbooks stop
+sqlite3 /var/lib/cookbooks/cookbooks.db <<'SQL'
+PRAGMA foreign_keys=ON;
+DELETE FROM books WHERE kind = 'house';
+DROP TABLE IF EXISTS recipe_steps;
+DROP TABLE IF EXISTS recipe_ingredient_lines;
+DROP TABLE IF EXISTS recipe_details;
+DROP INDEX IF EXISTS books_one_house;
+ALTER TABLE books DROP COLUMN visibility;
+SQL
+rc-service cookbooks start
 ```
 
 ## License

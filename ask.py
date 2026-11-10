@@ -177,7 +177,9 @@ def hydrate(recipe_ids, book_ids, seen_recipes, seen_books):
     Ids no tool returned in this request are dropped; rows deleted since are skipped."""
     rids, dropped_r = _pick(recipe_ids, seen_recipes, MAX_RECIPES)
     bids, dropped_b = _pick(book_ids, seen_books, MAX_BOOKS)
-    items = [{**recipe_dict(r, True), "kind": "recipe"} for r in recipes_by_id(rids)]
+    import house
+    full = house.detail_ids(db(), rids)
+    items = [{**recipe_dict(r, True), "kind": "recipe", "has_detail": r["id"] in full} for r in recipes_by_id(rids)]
     if bids:
         got = {r["id"]: r for r in db().execute(f"SELECT * FROM books WHERE id IN ({','.join('?' * len(bids))})", bids)}
         items += [{**b, "kind": "book"} for b in book_dicts([got[i] for i in bids if i in got], True)]

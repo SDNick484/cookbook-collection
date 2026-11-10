@@ -62,7 +62,7 @@ def test_public_hides_private(c):
     rid = r.json["recipes"][0]["id"]
     bid = r.json["recipes"][0]["book_id"]
     pub = c.get(f"/api/books/{bid}").json
-    assert all(set(x) <= {"id", "uid", "book_id", "name", "heading", "page"} for x in pub["recipes"])
+    assert all(set(x) <= {"id", "uid", "book_id", "name", "heading", "page", "has_detail"} for x in pub["recipes"])
     assert "private_notes" not in pub and "location" not in pub
     priv = c.get(f"/admin/api/books/{bid}").json
     assert any(x["id"] == rid and x["want_to_try"] == 1 for x in priv["recipes"])
@@ -306,6 +306,6 @@ def test_cover_url_rejects_bad_scheme_and_disallowed_redirect():
 def test_static_assets_version_and_anonymized_meta(c):
     html = c.get("/").data.decode()
     assert 'content="A family cookbook collection"' in html
-    assert "/static/style.css?v=32" in html and "/static/app.js?v=32" in html
+    assert "/static/style.css?v=33" in html and "/static/app.js?v=33" in html
 
 

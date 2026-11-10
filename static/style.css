@@ -375,3 +375,61 @@ dialog.locmgr { width: min(560px, calc(100vw - 24px)); max-height: calc(100dvh -
 .lm-add input { flex: 1; width: auto; min-height: 40px; }
 .lm-err { color: var(--accent); margin: 6px 0; }
 .lm-note { color: var(--muted); margin: 6px 0; }
+
+/* house recipes: the house book's cover, the recipe page (cooking mode) and the editor */
+.cover.ph.house { background: var(--ok); }
+.recipe { max-width: 900px; }
+.recipe .desc { font-size: 1.02rem; }
+.facts { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 6px 0 10px; }
+.facts div { display: flex; gap: 6px; align-items: baseline; }
+.facts dt { color: var(--muted); font-size: .85rem; }
+.facts dd { margin: 0; font-weight: 600; }
+.cookctl { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin: 14px 0 6px; padding: 10px 0;
+  border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.cookctl .acts2 { margin-left: auto; display: flex; gap: 8px; }
+.scale { display: inline-flex; align-items: center; gap: 8px; }
+.scale button { min-width: 40px; min-height: 40px; justify-content: center; font-size: 1.15rem; padding: 0; }
+.scale span { min-width: 6.5em; text-align: center; font-variant-numeric: tabular-nums; }
+.rcols { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 8px 32px; }
+@media (max-width: 760px) { .rcols { grid-template-columns: 1fr; } }
+.rcols h2, .rnotes h2 { margin-top: 18px; }
+.ings, .rsteps { margin: 0; padding: 0; list-style: none; }
+.ings li { border-bottom: 1px solid var(--line); }
+.ings label { display: flex; gap: 10px; align-items: baseline; padding: 9px 2px; cursor: pointer; min-height: 44px; }
+.ings input { flex: none; width: 18px; height: 18px; transform: translateY(3px); }
+.ings .q { font-weight: 600; font-variant-numeric: tabular-nums; }
+.ings li.done, .rsteps li.done { color: var(--muted); }
+.ings li.done span, .rsteps li.done p { text-decoration: line-through; }
+.ings li.sec, .rsteps li.sec { font-family: var(--serif); font-weight: 600; padding: 14px 2px 4px; border: 0; }
+.rsteps { counter-reset: step; }
+.rsteps li[data-i] { counter-increment: step; position: relative; padding: 8px 2px 10px 2.2em; border-bottom: 1px solid var(--line); }
+.rsteps li[data-i]::before { content: counter(step); position: absolute; left: 2px; top: 8px; font-family: var(--serif);
+  font-weight: 600; color: var(--accent); }
+.rsteps li p { margin: 0; cursor: pointer; font-size: 1.02rem; }
+.timer { margin-top: 6px; padding: 4px 12px; border-radius: 999px; font-variant-numeric: tabular-nums; }
+.timer.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.rnotes p { white-space: pre-line; }
+/* editor */
+form.redit { display: grid; gap: 12px; max-width: 760px; padding-bottom: 80px; }
+form.redit h2 { margin: 12px 0 0; }
+.row3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 480px) { .row3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.erows { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+.erow { display: flex; gap: 6px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.erow .ef { flex: 1; min-width: 0; display: grid; gap: 6px; }
+.erow .ef input, .erow .ef textarea { width: 100%; }
+.erow .ef.iline { grid-template-columns: 4.5em 5.5em minmax(0, 1fr); }
+.erow .ef.iline [data-k=prep_note] { grid-column: 1 / 3; }
+.erow .ef.iline label.chk { font-size: .85rem; color: var(--muted); justify-self: start; }
+.erow .ef.step { grid-template-columns: minmax(0, 1fr) 7.5em; align-items: start; }
+.erow .ef.step textarea { min-height: 64px; }
+@media (min-width: 761px) { .erow .ef.iline { grid-template-columns: 4.5em 5.5em minmax(0, 2fr) minmax(0, 1.4fr) auto; }
+  .erow .ef.iline [data-k=prep_note] { grid-column: auto; } }
+@media (max-width: 480px) { .erow .ef.step { grid-template-columns: 1fr; } .erow .ef.step input { max-width: 9em; } }
+.erow.sec .ef input { font-family: var(--serif); font-weight: 600; }
+.ectl { display: flex; flex-direction: column; gap: 2px; }
+.ectl button { padding: 0; min-width: 36px; min-height: 30px; justify-content: center; border: 0; background: none; color: var(--muted); }
+@media (max-width: 640px) { .ectl { flex-direction: row; } .erow { flex-direction: column; align-items: stretch; } .ectl { align-self: flex-end; }
+  .ectl button { min-height: 40px; min-width: 40px; } }
+.savebar { position: sticky; bottom: 0; display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  padding: 10px 0 calc(10px + env(safe-area-inset-bottom)); background: var(--paper); border-top: 1px solid var(--line); }

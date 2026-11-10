@@ -602,3 +602,10 @@ def test_ask_finds_house_recipes_by_ingredient(c, gravy, monkeypatch):
     assert r.status_code == 200, r.json
     item = r.json["items"][0]
     assert item["id"] == gravy["id"] and item["has_detail"] is True and item["uid"] == gravy["uid"]
+
+
+def test_new_recipe_path_serves_the_app(c):
+    """Dinner Log links /admin/recipe/new?title=…&return=… (a path, so the query survives the Access sign-in); the
+    page itself has no data in it, and the app turns the address into #/recipe/new."""
+    r = c.get("/admin/recipe/new?title=Soup&return=https://dinner.example.com/new")
+    assert r.status_code == 200 and b"/static/app.js" in r.data

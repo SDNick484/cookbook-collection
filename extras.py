@@ -783,7 +783,7 @@ def cook_route():
     recipes = [{"id": r["id"], "uid": r["uid"], "name": r["name"], "heading": r["heading"], "page": r["page"],
                 "url": r["url"], "book_id": r["book_id"], "book_uid": r["book_uid"], "book_title": r["book_title"],
                 "book_status": r["status"],
-                "online": r["kind"] == "online", "starred": bool(r["want_to_try"]),
+                "online": r["kind"] == "online", "house": r["kind"] == "house", "starred": bool(r["want_to_try"]),
                 "times_made": r["times_cooked"], "last_made": r["last_cooked"], "best_rating": r["best"] or None,
                 "match": r["match"], "photo": thumbs.get(r["id"])} for r in res["recipes"]]
     return jsonify(mode=res["mode"], label=COOK_MODES[res["mode"]], include=include, title_only=res["title_only"],

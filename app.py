@@ -618,6 +618,7 @@ def reader_required(fn):
 @app.get("/")
 @app.get("/admin")
 @app.get("/admin/")
+@app.get("/admin/recipe/new")  # Dinner Log's "new house recipe" link: a path, so ?title=&return= survive the Access login
 def index():
     return send_from_directory(APP_DIR / "static", "index.html", max_age=0)
 
@@ -888,7 +889,13 @@ def search_recipes(private):
     order = ingredients.ranked(db(), base, args, ingredients.search_terms(p.get("q", ""), p.get("ingredient")),
                                by_book=True)
     rows = recipes_by_id([x["id"] for x in order[offset:offset + limit]])
-    return jsonify(recipes=[recipe_dict(r, private) for r in rows], count=len(order))
+    out = [recipe_dict(r, private) for r in rows]
+    if private or "has_detail" in PUBLIC_RECIPE_FLAGS:
+        import house
+        full = house.detail_ids(db(), [r["id"] for r in rows])
+        for r in out:
+            r["has_detail"] = r["id"] in full
+    return jsonify(recipes=out, count=len(order))
 
 
 def recipes_by_id(ids):

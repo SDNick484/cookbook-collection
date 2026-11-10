@@ -38,6 +38,7 @@ const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = se
 const SPINES = ["#7a3b2e", "#2f5d50", "#3f4e78", "#8a6a2c", "#5b3a5e", "#2d5a73", "#6b4a32", "#4a6a3a", "#8b3c4f", "#355c5c"];
 function spine(t) { let h = 0; for (const c of t || "") h = (h * 31 + c.charCodeAt(0)) >>> 0; return SPINES[h % SPINES.length]; }
 function coverHTML(b) {
+  if (b.kind === "house" && !b.cover) return `<div class="cover ph house"><span class="t">${esc(b.title)}</span><span class="a">Our recipes</span></div>`;
   if (b.kind === "online" && !b.cover) return `<div class="cover ph web"><span class="t">${esc(b.title)}</span><span class="a">🌐 ${esc(b.site || "")}</span></div>`;
   if (b.cover) return `<div class="cover"><img loading="lazy" src="/covers/${esc(b.cover)}" alt=""></div>`;
   return `<div class="cover ph" style="background:${spine(b.title)}"><span class="t">${esc(b.title)}</span><span class="a">${esc((b.authors || [])[0] || "")}</span></div>`;
@@ -97,13 +98,21 @@ const PIN_ICON = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" st
 const CHAT_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M5 4.5h14A1.5 1.5 0 0 1 20.5 6v9a1.5 1.5 0 0 1-1.5 1.5h-8.5L6 20v-3.5H5A1.5 1.5 0 0 1 3.5 15V6A1.5 1.5 0 0 1 5 4.5z"/></svg>`;
 async function route() {
   const hash = location.hash.replace(/^#\/?/, "");
-  const [path, qs] = hash.split("?");
+  const cut = hash.indexOf("?");   // everything after the first "?", so an unencoded ?return=…?x=1 stays whole
+  const path = cut < 0 ? hash : hash.slice(0, cut), qs = cut < 0 ? "" : hash.slice(cut + 1);
   renderNav(path);
+  if (S.wake) { S.wake.release().catch(() => {}); S.wake = null; }   // a recipe page's "keep screen on"
   const m = path.match(/^book\/(\d+)(?:\/(edit|index))?$/);
   const u = path.match(/^uid\/([0-9a-f]{32})(?:\/([0-9a-f]{32}))?$/);
+  const rr = path.match(/^recipe\/(new|[0-9a-f]{32})(?:\/(edit))?$/);
   window.scrollTo(0, 0);
   try {
     if (u) return await uidView(u[1], u[2]);
+    if (rr && !ADMIN && (rr[1] === "new" || rr[2])) return location.replace("/admin" + location.hash);  // editing is signed-in
+    if (rr && rr[1] === "new") return await recipeEditView(null, new URLSearchParams(qs));
+    if (rr && rr[2] === "edit") return await recipeEditView(rr[1], new URLSearchParams(qs));
+    if (rr) return await recipeView(rr[1]);
+    if (path === "house" && ADMIN) { const h = await api("house"); return location.replace(`#/book/${h.id}`); }
     if (m && m[2] === "edit" && ADMIN) return await editView(+m[1]);
     if (m && m[2] === "index" && ADMIN) return await indexView(+m[1]);
     if (m) return await bookView(+m[1], new URLSearchParams(qs || "").get("recipe"));
@@ -124,7 +133,12 @@ async function route() {
     view.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
   }
 }
-window.addEventListener("hashchange", route);
+window.addEventListener("hashchange", (e) => {
+  // The recipe editor sets S.dirty: leaving it asks first, and staying puts the old address back without a reload.
+  if (S.dirty && !confirm("Leave without saving your changes?")) { history.replaceState(null, "", e.oldURL); return; }
+  S.dirty = false; window.onbeforeunload = null;
+  route();
+});
 
 /* Deep link by stable uid: #/uid/<book uid>[/<recipe uid>] (what Dinner Log stores). Resolves through the
    by-uid API and replaces itself with #/book/<id>[?recipe=<id>], so Back skips it and bookView does the
@@ -201,7 +215,7 @@ async function homeView() {
       if (location.hash.includes("?")) history.replaceState(null, "", "#/");
       homeView();
     });
-    const recipeLine = (r) => `<li><div class="rn"><a href="#/book/${r.book_id}">${r.heading ? `<span class="rh">${esc(r.heading)} · </span>` : ""}${esc(r.name)}</a></div>
+    const recipeLine = (r) => `<li><div class="rn"><a href="${r.has_detail ? `#/recipe/${esc(r.uid)}` : `#/book/${r.book_id}`}">${r.heading ? `<span class="rh">${esc(r.heading)} · </span>` : ""}${esc(r.name)}</a></div>
         ${whereHTML(r)}</li>`;
     if (byBook) {
       const ing = esc(S.ingredient.toLowerCase());
@@ -306,6 +320,7 @@ function rateWidget(el, value, save) {
 }
 // Where to find a recipe: the page in the book, or a link for one saved from a website.
 const whereHTML = (r) => r.url ? `<a class="pg web" href="${esc(r.url)}" target="_blank" rel="noopener" title="Open the recipe on ${esc(r.book_title || S.bookTitle || "the site")}">Open ↗</a>`
+  : r.has_detail ? `<a class="pg web" href="#/recipe/${esc(r.uid)}">Recipe →</a>`   // a house recipe: its own page
   : `<span class="pg">${r.page ? "p. " + esc(r.page) : ""}</span>`;
 // Stable uids for Dinner Log to store beside the ids (ids are reused after a delete; uids never are).
 const uidParams = (r) => [["cookbook_book_uid", r.book_uid || S.bookUid], ["cookbook_recipe_uid", r.uid]]
@@ -323,7 +338,7 @@ function recipeRow(r) {
     ${extra.length ? `<div class="extra">${extra.join(" · ")}</div>` : ""}</div>
     ${whereHTML(r)}
     ${ADMIN ? `<span class="acts">${S.features && S.features.dinnerlog_url && S.bookTitle ? `<a class="log" title="Log this dinner in Dinner Log" target="_blank" rel="noopener"
-        href="${esc(S.features.dinnerlog_url)}/new?source_type=cookbook&source_title=${encodeURIComponent(S.bookTitle)}&source_detail=${encodeURIComponent(r.page || r.url || "")}&cookbook_book_id=${r.book_id}&cookbook_recipe_id=${r.id}${uidParams(r)}&name=${encodeURIComponent(r.heading && r.name[0] === r.name[0].toLowerCase() ? r.heading + ", " + r.name : r.name)}">🍽</a>` : ""}
+        href="${esc(S.features.dinnerlog_url)}/new?source_type=${r.has_detail ? "original" : "cookbook"}&source_title=${encodeURIComponent(S.bookTitle)}&source_detail=${encodeURIComponent(r.page || r.url || "")}&cookbook_book_id=${r.book_id}&cookbook_recipe_id=${r.id}${uidParams(r)}&name=${encodeURIComponent(r.heading && r.name[0] === r.name[0].toLowerCase() ? r.heading + ", " + r.name : r.name)}">🍽</a>` : ""}
       <button title="${nph ? `${nph} photo${nph > 1 ? "s" : ""}` : "Add photos"}" class="pho ${nph ? "on" : ""}">📷${nph ? `<span class="n">${nph}</span>` : ""}</button>
       <button title="Want to try" class="want ${r.want_to_try ? "on" : ""}">${r.want_to_try ? "★" : "☆"}</button>
       <button title="Edit" class="edit">✎</button></span>` : ""}</li>`;
@@ -349,6 +364,7 @@ async function bookView(id, focus) {
     b.private_notes ? `<div>${esc(b.private_notes)}</div>` : "",
     b.eyb_status ? `<div>Eat Your Books: ${esc(b.eyb_status.toLowerCase())}${b.recipe_count ? "" : " (export its recipes from EYB to fill the index)"}</div>` : "",
     b.needs_review ? `<div class="review">Needs review: ${esc(b.needs_review)}</div>` : "",
+    b.visibility === "members" ? `<div>Only signed-in members see this book; it isn't in the public catalog.</div>` : "",
   ].join("") : "";
   view.innerHTML = `
     <a class="back" href="#/">← All books</a>
@@ -357,7 +373,7 @@ async function bookView(id, focus) {
       <div>
         <h1>${esc(b.title)}</h1>
         <div class="muted">${(b.authors || []).map((a) => `<a href="#/?author=${encodeURIComponent(a)}">${esc(a)}</a>`).join(", ")}</div>
-        ${ADMIN && b.kind !== "online" ? `<div class="rate" id="rate">
+        ${ADMIN && !b.kind ? `<div class="rate" id="rate">
           <span class="stars big" role="slider" tabindex="0" aria-label="Book rating" aria-valuemin="0" aria-valuemax="5"
             aria-valuenow="${b.rating ?? 0}" aria-valuetext="${starLabel(b.rating)}"><span class="on" style="width:${(b.rating || 0) * 20}%">★★★★★</span>☆☆☆☆☆</span>
           <span class="ratev small muted">${b.rating == null ? "Not rated" : num(b.rating)}</span>
@@ -368,7 +384,9 @@ async function bookView(id, focus) {
         ${priv ? `<div class="private">${priv}</div>` : ""}
         ${ADMIN && b.kind === "online" ? `<p class="small muted">Recipes saved from this website: each one opens on the site, where you're signed in.</p>
           <div class="actions"><a class="btn primary" href="#/links">Add recipes from links</a><a class="btn" href="#/book/${id}/edit">Edit</a></div>` : ""}
-        ${ADMIN && b.kind !== "online" ? `<div class="actions"><button id="shelf" class="${b.status === "out" ? "primary" : ""}">${b.status === "out" ? "Put back on shelf" : "Pulled out"}</button>
+        ${ADMIN && b.kind === "house" ? `<p class="small muted">Recipes we've worked out ourselves, with ingredients and steps.</p>
+          <div class="actions"><a class="btn primary" href="#/recipe/new">New recipe</a><a class="btn" href="#/book/${id}/edit">Edit</a></div>` : ""}
+        ${ADMIN && !b.kind ? `<div class="actions"><button id="shelf" class="${b.status === "out" ? "primary" : ""}">${b.status === "out" ? "Put back on shelf" : "Pulled out"}</button>
           ${b.status === "wanted" ? `<button id="wish" class="primary">Add to a wish list…</button>` : ""}
           <a class="btn" href="#/book/${id}/edit">Edit book</a>
           <a class="btn" href="#/book/${id}/index">Import index</a><button id="addr">Add recipe</button></div>` : ""}
@@ -380,6 +398,7 @@ async function bookView(id, focus) {
     <div class="section-h"><h2>Recipes <span class="muted small">${b.recipes.length || ""}</span></h2>
       ${b.recipes.length > 12 ? `<input id="rf" type="search" placeholder="Filter recipes" style="max-width:240px">` : ""}</div>
     ${b.recipes.length ? `<ul class="rlist" id="rl">${b.recipes.map(recipeRow).join("")}</ul>`
+      : b.kind === "house" ? `<p class="muted">No house recipes yet.${ADMIN ? " Use <em>New recipe</em> to write one down." : ""}</p>`
       : `<p class="muted">No recipes indexed for this book yet.${ADMIN ? " Use <em>Import index</em> to add the book's index." : ""}</p>`}
     ${ADMIN ? `<div id="dinners"></div>` : ""}`;
   const rf = $("#rf");
@@ -406,7 +425,8 @@ async function bookView(id, focus) {
       r.want_to_try = !r.want_to_try; const b2 = $(".want", li);
       b2.classList.toggle("on", !!r.want_to_try); b2.textContent = r.want_to_try ? "★" : "☆";
     });
-    $(".edit", li).onclick = () => recipeDialog(r, id, () => bookView(id));
+    $(".edit", li).onclick = () => b.kind === "house" ? (location.hash = `#/recipe/${r.uid}/edit`)
+      : recipeDialog(r, id, () => bookView(id));
     $(".pho", li).onclick = () => photoDialog(r, () => bookView(id));
   });
 }
@@ -639,6 +659,247 @@ function recipeDialog(r, bookId, done) {
   d.showModal();
 }
 
+/* ---------- house recipes: the recipe page (cooking mode) and the editor ---------- */
+const MINUTES = (m) => m == null ? "" : m < 60 ? `${m} min` : `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}`;
+const FRACS = [[1 / 8, "⅛"], [1 / 4, "¼"], [1 / 3, "⅓"], [3 / 8, "⅜"], [1 / 2, "½"], [5 / 8, "⅝"], [2 / 3, "⅔"], [3 / 4, "¾"], [7 / 8, "⅞"]];
+// A scaled amount the way a cook writes it: 1.5 -> "1½", 0.333 -> "⅓", 750 -> "750", 2.4 -> "2.4".
+function fmtQty(x) {
+  if (x >= 10) return String(Math.round(x * 10) / 10);
+  const whole = Math.floor(x), frac = x - whole;
+  if (frac < 0.03) return String(whole);
+  if (frac > 0.97) return String(whole + 1);
+  const f = FRACS.find(([v]) => Math.abs(frac - v) < 0.03);
+  return f ? `${whole || ""}${f[1]}` : String(Math.round(x * 100) / 100);
+}
+// The quantity to show: as typed at 1×, scaled from quantity_num (and quantity_max for "2-3") otherwise.
+const qtyText = (l, k) => k === 1 || l.quantity_num == null ? (l.quantity_text || "")
+  : fmtQty(l.quantity_num * k) + (l.quantity_max != null ? `–${fmtQty(l.quantity_max * k)}` : "");
+const sectioned = (list, li) => { let sec = null; return list.map((x, i) => {
+  const head = x.section && x.section !== sec ? `<li class="sec">${esc(x.section)}</li>` : "";
+  sec = x.section; return head + li(x, i);
+}).join(""); };
+
+async function recipeView(uid) {
+  let r;
+  try { r = await api("recipes/by-uid/" + uid); }
+  catch (e) {
+    if (e.status !== 404) throw e;
+    throw new Error(ADMIN ? "That recipe isn't in this catalog."
+      : "That recipe isn't in the public catalog. House recipes are for signed-in members: try the same link under /admin.");
+  }
+  const d = r.detail || {}, base = d.servings || null, st = { k: 1, servings: base };
+  const scalable = r.ingredients.some((l) => l.quantity_num != null);
+  const facts = [d.yield_text && ["Makes", esc(d.yield_text)], base && ["Serves", base],
+    d.prep_minutes != null && ["Prep", MINUTES(d.prep_minutes)], d.cook_minutes != null && ["Cook", MINUTES(d.cook_minutes)],
+    d.total_minutes != null && ["Total", MINUTES(d.total_minutes)]].filter(Boolean);
+  const chips = [...(d.methods || []), ...(d.equipment || [])];
+  const log = ADMIN && S.features && S.features.dinnerlog_url ? `${esc(S.features.dinnerlog_url)}/new?source_type=original&source_title=${encodeURIComponent(r.book.title)}`
+    + `&name=${encodeURIComponent(r.name)}&cookbook_book_id=${r.book.id}&cookbook_recipe_id=${r.id}`
+    + `&cookbook_book_uid=${r.book.uid}&cookbook_recipe_uid=${r.uid}` : "";
+  if (!r.detail && !r.ingredients.length && !r.steps.length && r.book.kind !== "house") return location.replace(`#/book/${r.book.id}`);
+  view.innerHTML = `<a class="back" href="#/book/${r.book.id}">← ${esc(r.book.title)}</a>
+    <article class="recipe">
+      <h1>${esc(r.name)}</h1>
+      ${facts.length ? `<dl class="facts">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("")}</dl>` : ""}
+      ${d.description ? `<p class="desc">${esc(d.description)}</p>` : ""}
+      ${chips.length ? `<div class="tags">${chips.map((c) => `<span class="chip">${esc(c)}</span>`).join("")}</div>` : ""}
+      <div class="cookctl">
+        ${scalable ? (base ? `<div class="scale" role="group" aria-label="Servings"><button type="button" data-d="-1" aria-label="Fewer servings">−</button>
+            <span id="sv" aria-live="polite">Serves ${base}</span><button type="button" data-d="1" aria-label="More servings">+</button></div>`
+          : `<div class="seg" role="group" aria-label="Scale the recipe">${[0.5, 1, 2, 3].map((k) =>
+            `<button type="button" data-k="${k}" class="${k === 1 ? "on" : ""}" aria-pressed="${k === 1}">${k === 0.5 ? "½" : k}×</button>`).join("")}</div>`) : ""}
+        ${"wakeLock" in navigator ? `<label class="chk"><input type="checkbox" id="wake"> Keep screen on</label>` : ""}
+        ${ADMIN ? `<span class="acts2">${log ? `<a class="btn" href="${log}" target="_blank" rel="noopener" title="Log this dinner in Dinner Log">🍽 Log</a>` : ""}
+          <a class="btn" href="#/recipe/${r.uid}/edit">Edit</a></span>` : ""}
+      </div>
+      <div class="rcols">
+        <section><h2>Ingredients</h2>${r.ingredients.length ? `<ul class="ings" id="ings"></ul>` : `<p class="muted">None listed.</p>`}</section>
+        <section><h2>Steps</h2>${r.steps.length ? `<ol class="rsteps">${sectioned(r.steps, (x, i) => `<li data-i="${i}"><p>${esc(x.text)}</p>
+          ${x.timer_minutes ? `<button type="button" class="timer" data-m="${x.timer_minutes}">⏱ ${MINUTES(x.timer_minutes)}</button>` : ""}</li>`)}</ol>`
+          : `<p class="muted">None yet.</p>`}</section>
+      </div>
+      ${d.notes ? `<section class="rnotes"><h2>Notes</h2><p>${esc(d.notes)}</p></section>` : ""}
+      ${d.inspiration ? `<p class="small muted">Inspired by ${esc(d.inspiration)}</p>` : ""}
+      ${ADMIN && r.notes ? `<div class="private">${esc(r.notes)}</div>` : ""}
+    </article>`;
+  const drawIngs = () => {
+    const ul = $("#ings"); if (!ul) return;
+    const done = new Set($$("#ings input:checked").map((x) => +x.dataset.i));
+    ul.innerHTML = sectioned(r.ingredients, (l, i) => `<li class="${done.has(i) ? "done" : ""}"><label><input type="checkbox" data-i="${i}" ${done.has(i) ? "checked" : ""}>
+      <span><span class="q">${esc([qtyText(l, st.k), l.unit].filter(Boolean).join(" "))}</span> ${esc(l.item)}${l.prep_note ? `<span class="muted">, ${esc(l.prep_note)}</span>` : ""}${l.optional ? ` <span class="muted small">(optional)</span>` : ""}</span></label></li>`);
+    $$("#ings input").forEach((x) => x.onchange = () => x.closest("li").classList.toggle("done", x.checked));
+  };
+  drawIngs();
+  $$(".scale button").forEach((b) => b.onclick = () => {
+    st.servings = Math.max(1, Math.min(99, st.servings + +b.dataset.d));
+    st.k = st.servings / base; $("#sv").textContent = `Serves ${st.servings}`; drawIngs();
+  });
+  $$(".cookctl .seg button").forEach((b) => b.onclick = () => {
+    st.k = +b.dataset.k; drawIngs();
+    $$(".cookctl .seg button").forEach((x) => { x.classList.toggle("on", x === b); x.setAttribute("aria-pressed", x === b); });
+  });
+  $$(".rsteps li[data-i] p").forEach((p) => p.onclick = () => p.closest("li").classList.toggle("done"));
+  $$(".timer").forEach((b) => b.onclick = () => stepTimer(b));
+  const wake = $("#wake");
+  if (wake) {
+    const lock = async () => { try { S.wake = await navigator.wakeLock.request("screen"); } catch { wake.checked = false; } };
+    wake.onchange = () => { if (wake.checked) lock(); else if (S.wake) { S.wake.release().catch(() => {}); S.wake = null; } };
+    document.addEventListener("visibilitychange", () => {   // the browser drops the lock when the tab is hidden
+      if (document.visibilityState === "visible" && wake.isConnected && wake.checked && !S.wake) lock();
+    });
+  }
+}
+// A step's countdown: tap to start, tap again to stop. Lives in the page only (nothing is saved).
+function stepTimer(b) {
+  if (b._t) { clearInterval(b._t); b._t = null; b.classList.remove("on"); b.textContent = `⏱ ${MINUTES(+b.dataset.m)}`; return; }
+  const end = Date.now() + +b.dataset.m * 60e3;
+  b.classList.add("on");
+  const tick = () => {
+    const left = Math.max(0, Math.round((end - Date.now()) / 1000));
+    b.textContent = `⏱ ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
+    if (!left) {
+      clearInterval(b._t); b._t = null; b.classList.remove("on"); b.textContent = "⏱ Done";
+      toast("Timer done"); if (navigator.vibrate) navigator.vibrate([300, 150, 300]);
+    }
+  };
+  tick(); b._t = setInterval(tick, 1000);
+}
+
+// The editor's rows: section headings are rows of their own here, and become each line's `section` when saved.
+function toRows(list) {
+  const rows = []; let sec = null;
+  for (const x of list) { if (x.section && x.section !== sec) rows.push({ sec: x.section }); sec = x.section; rows.push({ ...x }); }
+  return rows;
+}
+function fromRows(rows) {
+  let sec = null; const out = [];
+  for (const x of rows) { if ("sec" in x) sec = (x.sec || "").trim() || null; else out.push({ ...x, section: sec }); }
+  return out;
+}
+const UNITS = ["g", "kg", "ml", "l", "tsp", "tbsp", "cup", "cups", "oz", "lb", "pinch", "clove", "cloves", "can", "bunch", "slice", "slices"];
+const blankLine = () => ({ quantity_text: "", unit: "", item: "", prep_note: "", optional: false });
+const blankStep = () => ({ text: "", timer_minutes: "" });
+
+async function recipeEditView(uid, params) {
+  const r = uid ? await api("recipes/by-uid/" + uid) : null;
+  if (r && r.book.kind !== "house") throw new Error("Only house recipes have ingredients and steps. Edit this one from its book.");
+  const house = r ? r.book : await api("house");
+  const d = (r && r.detail) || {};
+  const ret = params.get("return") || "";
+  const rows = { ing: toRows(r ? r.ingredients : []), step: toRows(r ? r.steps : []) };
+  if (!rows.ing.length) rows.ing.push(blankLine());
+  if (!rows.step.length) rows.step.push(blankStep());
+  const cancelTo = r ? `#/recipe/${r.uid}` : `#/book/${house.id}`;
+  const v = (k) => esc(d[k] ?? "");
+  view.innerHTML = `<a class="back" href="${cancelTo}">← ${esc(r ? r.name : house.title)}</a>
+    <h1>${r ? "Edit recipe" : "New recipe"}</h1>
+    <form id="rf-edit" class="redit" autocomplete="off">
+      <label class="f">Name<input name="name" required maxlength="200" value="${esc(r ? r.name : (params.get("title") || "").slice(0, 200))}"></label>
+      <label class="f">Description<textarea name="description" rows="2">${v("description")}</textarea></label>
+      <div class="row3">
+        <label class="f">Serves<input name="servings" inputmode="numeric" value="${v("servings")}"></label>
+        <label class="f">Makes<input name="yield_text" placeholder="e.g. 1 loaf" value="${v("yield_text")}"></label></div>
+      <div class="row3">
+        <label class="f">Prep (min)<input name="prep_minutes" inputmode="numeric" value="${v("prep_minutes")}"></label>
+        <label class="f">Cook (min)<input name="cook_minutes" inputmode="numeric" value="${v("cook_minutes")}"></label>
+        <label class="f">Total (min)<input name="total_minutes" inputmode="numeric" value="${v("total_minutes")}"></label></div>
+      <label class="f">Methods <span class="small">(comma separated)</span><input name="methods" placeholder="braise, grill" value="${esc((d.methods || []).join(", "))}"></label>
+      <label class="f">Equipment <span class="small">(comma separated)</span><input name="equipment" placeholder="Dutch oven" value="${esc((d.equipment || []).join(", "))}"></label>
+      <h2>Ingredients</h2>
+      <ul class="erows" id="ing-rows"></ul>
+      <div class="actions"><button type="button" data-add="ing">+ Ingredient</button><button type="button" data-add="ing-sec">+ Section</button></div>
+      <h2>Steps</h2>
+      <ol class="erows steps-e" id="step-rows"></ol>
+      <div class="actions"><button type="button" data-add="step">+ Step</button><button type="button" data-add="step-sec">+ Section</button></div>
+      <label class="f">Notes<textarea name="notes" rows="3">${v("notes")}</textarea></label>
+      <label class="f">Inspiration <span class="small">(where the idea came from)</span><input name="inspiration" value="${v("inspiration")}"></label>
+      <p class="small muted" id="ret-note"></p>
+      <div class="savebar">
+        ${r ? `<button type="button" class="danger" id="rdel">Delete</button>` : "<span></span>"}
+        <span class="actions" style="margin:0"><a class="btn" href="${cancelTo}">Cancel</a><button class="primary" id="rsave">Save</button></span>
+      </div>
+      <datalist id="dl-units">${UNITS.map((u) => `<option value="${u}">`).join("")}</datalist>
+    </form>`;
+  const form = $("#rf-edit");
+  form.addEventListener("keydown", (e) => {   // a phone's Go key in a one-line field must not save half a recipe
+    if (e.key === "Enter" && e.target.tagName === "INPUT") e.preventDefault();
+  });
+  const ctl = (i, n) => `<div class="ectl"><button type="button" data-a="up" aria-label="Move up" ${i ? "" : "disabled"}>↑</button>
+    <button type="button" data-a="down" aria-label="Move down" ${i < n - 1 ? "" : "disabled"}>↓</button><button type="button" data-a="del" aria-label="Remove">✕</button></div>`;
+  const rowHTML = {
+    ing: (x, i, n) => "sec" in x ? `<li class="erow sec" data-i="${i}"><div class="ef"><input data-k="sec" placeholder="Section, e.g. For the sauce" value="${esc(x.sec)}"></div>${ctl(i, n)}</li>`
+      : `<li class="erow" data-i="${i}"><div class="ef iline">
+          <input data-k="quantity_text" placeholder="Qty" aria-label="Quantity" value="${esc(x.quantity_text)}">
+          <input data-k="unit" placeholder="Unit" aria-label="Unit" list="dl-units" value="${esc(x.unit)}">
+          <input data-k="item" placeholder="Ingredient" aria-label="Ingredient" enterkeyhint="next" value="${esc(x.item)}">
+          <input data-k="prep_note" placeholder="Note, e.g. finely chopped" aria-label="Note" value="${esc(x.prep_note)}">
+          <label class="chk"><input type="checkbox" data-k="optional" ${x.optional ? "checked" : ""}> optional</label></div>${ctl(i, n)}</li>`,
+    step: (x, i, n) => "sec" in x ? `<li class="erow sec" data-i="${i}"><div class="ef"><input data-k="sec" placeholder="Section, e.g. The day before" value="${esc(x.sec)}"></div>${ctl(i, n)}</li>`
+      : `<li class="erow" data-i="${i}"><div class="ef step"><textarea data-k="text" rows="2" placeholder="What to do" aria-label="Step">${esc(x.text)}</textarea>
+          <input data-k="timer_minutes" inputmode="numeric" placeholder="Timer (min)" aria-label="Timer in minutes" value="${esc(x.timer_minutes ?? "")}"></div>${ctl(i, n)}</li>`,
+  };
+  const dirty = () => { S.dirty = true; window.onbeforeunload = () => true; };
+  const draw = (kind, focus) => {
+    const ul = $(kind === "ing" ? "#ing-rows" : "#step-rows"), list = rows[kind];
+    ul.innerHTML = list.map((x, i) => rowHTML[kind](x, i, list.length)).join("");
+    $$(".erow", ul).forEach((li) => {
+      const i = +li.dataset.i;
+      $$("[data-k]", li).forEach((el) => el.addEventListener(el.type === "checkbox" ? "change" : "input", () => {
+        list[i][el.dataset.k] = el.type === "checkbox" ? el.checked : el.value; dirty();
+      }));
+      $$(".ectl button", li).forEach((b) => b.onclick = () => {
+        const a = b.dataset.a, j = a === "up" ? i - 1 : i + 1;
+        if (a === "del") list.splice(i, 1);
+        else [list[i], list[j]] = [list[j], list[i]];
+        if (!list.length) list.push(kind === "ing" ? blankLine() : blankStep());
+        dirty(); draw(kind, a === "del" ? null : j);
+      });
+      // Enter in the last ingredient's name adds the next row, so a list can be typed without the mouse
+      const item = $("[data-k=item]", li);
+      if (item) item.onkeydown = (e) => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        if (i === list.length - 1) { list.push(blankLine()); draw(kind, list.length - 1); }
+        else { const nx = $(`.erow[data-i="${i + 1}"] input`, ul); if (nx) nx.focus(); }
+      };
+    });
+    if (focus != null) { const el = $(`.erow[data-i="${focus}"] [data-k]`, ul); if (el) el.focus(); }
+  };
+  draw("ing"); draw("step");
+  $$("[data-add]", form).forEach((b) => b.onclick = () => {
+    const [kind, sec] = b.dataset.add.split("-");
+    rows[kind].push(sec ? { sec: "" } : kind === "ing" ? blankLine() : blankStep());
+    dirty(); draw(kind, rows[kind].length - 1);
+  });
+  $$("input[name], textarea[name]", form).forEach((el) => el.addEventListener("input", dirty));
+  if (ret) {   // the server decides whether the return link may be followed; this only labels the button
+    try {
+      const c = await api("house/return-check?url=" + encodeURIComponent(ret));
+      if (c.ok) $("#rsave").textContent = c.host ? `Save and return to ${c.host}` : "Save and go back";
+      else $("#ret-note").textContent = "The link to return to isn't on the allowed list (RETURN_URL_ORIGINS), so saving opens the recipe here.";
+    } catch { /* the label stays "Save" */ }
+  }
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    busy($("#rsave"), async () => {
+      const f = Object.fromEntries(new FormData(form));
+      const body = { ...f, methods: f.methods.split(","), equipment: f.equipment.split(","),
+        ingredients: fromRows(rows.ing), steps: fromRows(rows.step), ...(ret ? { return: ret } : {}) };
+      const saved = await api(r ? `house/recipes/${r.id}` : "house/recipes", { method: r ? "PUT" : "POST", body });
+      S.dirty = false; window.onbeforeunload = null;
+      if (saved.return_url) { location.assign(saved.return_url); return; }
+      toast(saved.return_refused ? "Saved. That return link isn't allowed, so here's the recipe." : "Saved");
+      location.hash = `#/recipe/${saved.uid}`;
+    });
+  };
+  const del = $("#rdel");
+  if (del) del.onclick = () => busy(del, async () => {
+    if (!confirm(`Delete “${r.name}”? Its ingredients, steps and photos go too.`)) return;
+    await api("recipes/" + r.id, { method: "DELETE" });
+    S.dirty = false; window.onbeforeunload = null; toast("Deleted"); location.hash = `#/book/${house.id}`;
+  });
+}
+
 /* ---------- shelf locations (editor) ---------- */
 // <option>s for a location <select>: the full path is the label ("Kitchen › Pantry › Shelf 2"); `skip` is a Set of ids to leave out.
 function locationOptions(list, selected, { none = "(none)", skip = null } = {}) {
@@ -779,7 +1040,10 @@ function bookForm(b = {}) {
     <label class="f">Loaned to<input name="loaned_to" value="${esc(b.loaned_to)}"></label>
     <label class="f">Rating<select name="rating"><option value="">Not rated</option>${[0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5].map((v) =>
       `<option value="${v}" ${b.rating === v ? "selected" : ""}>${starLabel(v)}</option>`).join("")}</select></label>
-    ${b.kind === "online" ? "" : `<div class="fld full"><label for="loc-pick">Location <span class="small">(shown on the public catalog)</span></label>
+    ${b.kind === "online" ? "" : `<label class="f">Visible to<select name="visibility">
+      <option value="public" ${(b.visibility || "public") === "public" ? "selected" : ""}>Everyone (public catalog)</option>
+      <option value="members" ${b.visibility === "members" ? "selected" : ""}>Signed-in members only</option></select></label>`}
+    ${b.kind ? "" : `<div class="fld full"><label for="loc-pick">Location <span class="small">(shown on the public catalog)</span></label>
       <div class="locpick"><select id="loc-pick" name="location_id">${locationOptions(f.locations || [], b.location_id)}</select>
         <button type="button" id="loc-manage">Manage</button></div></div>`}
     <label class="chk" style="align-self:end"><input type="checkbox" name="signed" ${b.signed ? "checked" : ""}> Signed copy</label>
@@ -1131,6 +1395,9 @@ async function moreView() {
     <div class="panel"><h3>Import from Eat Your Books</h3>
       <p class="small muted" style="margin-top:0">Bring in your EYB Bookshelf (ISBNs, formats) and indexed recipes, then fetch covers.</p>
       <a class="btn primary" href="#/eyb">Open importer</a></div>
+    <div class="panel"><h3>House recipes</h3>
+      <p class="small muted" style="margin-top:0">Our own recipes, with ingredients and steps, in one house book. Only signed-in members see them unless you make the book public.</p>
+      <div class="actions" style="margin:0"><a class="btn primary" href="#/recipe/new">New recipe</a><a class="btn" href="#/house">Open the house book</a></div></div>
     <div class="panel"><h3>Recipes from websites</h3>
       <p class="small muted" style="margin-top:0">Save recipes from NYT Cooking and other sites by their links: your whole Recipe Box at once, or one at a time from your phone's share sheet.</p>
       <a class="btn primary" href="#/links">Add from links</a></div>
@@ -1470,7 +1737,7 @@ async function cookView() {
     <p class="small muted" id="cook-note"></p>
     <ul class="cooklist" id="cook-list"></ul>
     <div class="actions hidden" id="cook-more"><button type="button" id="cook-more-btn">Show more</button></div>`;
-  const card = (x) => `<li><a class="idea cook" href="#/book/${x.book_id}?recipe=${x.id}">
+  const card = (x) => `<li><a class="idea cook" href="${x.house ? `#/recipe/${esc(x.uid)}` : `#/book/${x.book_id}?recipe=${x.id}`}">
       ${x.photo ? `<img class="cthumb" loading="lazy" src="${esc(x.photo)}" alt="">` : ""}
       <div class="cbody">
         <div class="ib">${esc(x.book_title)}${x.page ? ` · p. ${esc(x.page)}` : x.url ? " · website" : ""}</div>
@@ -1659,6 +1926,7 @@ if (ADMIN) {
   }
 }
 (async () => {
+  if (location.pathname.replace(/\/$/, "") === "/admin/recipe/new") history.replaceState(null, "", "/admin#/recipe/new" + location.search);
   if (!ADMIN) {
     const hit = cachedEditor();
     if (hit) applyEditor(hit);

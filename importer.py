@@ -521,6 +521,27 @@ def _recipe(ctx, bid, src, label, rep):
         rep.counts["recipes"]["update" if changes or tagged else "skip"] += 1
     ctx.book_recipes.add(rid)
     _set_photos(ctx, rid, src.get("photos"), label, rep)
+    if "detail" in src:
+        _set_detail(ctx, bid, rid, src["detail"], label, rep)
+
+
+def _set_detail(ctx, bid, rid, raw, label, rep):
+    """A house recipe's details, ingredients and steps (export key `detail`), replacing what was here. Checked by
+    the same rules as the editor; one that fails is reported and left as it was. Only the house book has them."""
+    import house
+    if raw is None:
+        return
+    kind = ctx.con.execute("SELECT kind FROM books WHERE id=?", (bid,)).fetchone()[0]
+    if kind != "house":
+        rep.warnings.append(f"{label}: has ingredients and steps but isn't in the house book, so they were left out")
+        return
+    try:
+        doc = house.parse_doc(raw, need_name=False)
+    except house.DocError as e:
+        rep.warnings.append(f"{label}: ingredients and steps left as they were ({e})")
+        return
+    stamp = raw.get("updated_at") if isinstance(raw.get("updated_at"), str) and TIMESTAMP.match(raw["updated_at"]) else None
+    house.save_doc(ctx.con, rid, doc, updated_at=stamp)
 
 
 # ------------------------------------------------------------------ the import

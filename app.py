@@ -401,6 +401,8 @@ PUBLIC_BOOK = ("id", "uid", "title", "subtitle", "isbn", "publisher", "year", "c
 PUBLIC_RECIPE = ("id", "uid", "book_id", "name", "heading", "page")
 # Dinner Log history on the public book page: how often a recipe was made, never when or how it was rated.
 PUBLIC_RECIPE_COOKED = ("cooked_count",)
+# Derived flags on a recipe row: has_detail = a house recipe with its own page (ingredients and steps).
+PUBLIC_RECIPE_FLAGS = ("has_detail",)
 # Who may read a book without signing in. An allow-list of kinds: cookbooks (kind NULL) and the house book
 # (kind 'house', house.py) can be public; recipe websites (kind 'online') are for editors only, whatever their
 # visibility. Every anonymous read path (pages, JSON API, MCP, search, counts) filters with this or book_public().
@@ -801,6 +803,11 @@ def get_book(book_id, private):
     recs = db().execute("SELECT * FROM recipes WHERE book_id=? ORDER BY page_sort IS NULL, page_sort, name",
                         (book_id,)).fetchall()
     book["recipes"] = [recipe_dict(r, private) for r in recs]
+    import house
+    with_detail = house.detail_ids(db(), [r["id"] for r in recs])
+    for r in book["recipes"]:  # a full recipe (ingredients, steps) has a page of its own: #/recipe/<uid>
+        if private or "has_detail" in PUBLIC_RECIPE_FLAGS:
+            r["has_detail"] = r["id"] in with_detail
     import extras
     # Public pages sync too, so their counts stay current; a pull is leased, at most one a minute (with
     # backoff after a failure), and nothing from the request reaches Dinner Log.
@@ -1564,6 +1571,7 @@ EXPORT_VERSION = 1
 @app.get("/admin/api/export.json")
 @editor_required
 def export_json():
+    import house
     rows = db().execute("SELECT * FROM books ORDER BY id").fetchall()
     books = book_dicts(rows, True)
     for b in books:  # the shelf travels as the `location` path; ids belong to this database only (see importer._shelf)
@@ -1579,6 +1587,9 @@ def export_json():
                                                       (b["id"],))]
         for r in b["recipes"]:
             r["ingredients"] = tags.get(r["id"], [])
+            doc = house.export_detail(db(), r["id"])  # ingredients and steps of a house recipe; absent otherwise
+            if doc:
+                r["detail"] = doc
         photos = {}  # file names in DATA_DIR/photos
         for p in db().execute("SELECT p.recipe_id, p.file, p.taken_on, p.caption FROM recipe_photos p "
                               "JOIN recipes r ON r.id=p.recipe_id WHERE r.book_id=?", (b["id"],)):

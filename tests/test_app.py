@@ -62,7 +62,7 @@ def test_public_hides_private(c):
     rid = r.json["recipes"][0]["id"]
     bid = r.json["recipes"][0]["book_id"]
     pub = c.get(f"/api/books/{bid}").json
-    assert all(set(x) <= {"id", "uid", "book_id", "name", "heading", "page"} for x in pub["recipes"])
+    assert all(set(x) <= {"id", "uid", "book_id", "name", "heading", "page", "has_detail"} for x in pub["recipes"])
     assert "private_notes" not in pub and "location" not in pub
     priv = c.get(f"/admin/api/books/{bid}").json
     assert any(x["id"] == rid and x["want_to_try"] == 1 for x in priv["recipes"])

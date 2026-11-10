@@ -1,6 +1,6 @@
 """Cooking history on a book's recipe rows: editors get count, last date and rating; the public gets the count.
 
-PUBLIC_RECIPE and PUBLIC_RECIPE_COOKED are the whole public contract for a recipe row.
+PUBLIC_RECIPE, PUBLIC_RECIPE_COOKED and PUBLIC_RECIPE_FLAGS are the whole public contract for a recipe row.
 """
 from datetime import date
 
@@ -47,7 +47,7 @@ def test_editor_row_has_count_last_and_rating(c, cooked_book):
 def test_public_row_has_only_the_count(c, cooked_book, path):
     bid, uid, rid = cooked_book
     book = c.get(path.format(bid=bid, uid=uid), headers=CF).json
-    allowed = set(A.PUBLIC_RECIPE) | set(A.PUBLIC_RECIPE_COOKED)
+    allowed = set(A.PUBLIC_RECIPE) | set(A.PUBLIC_RECIPE_COOKED) | set(A.PUBLIC_RECIPE_FLAGS)
     assert row(book, rid)["cooked_count"] == 2
     assert set(row(book, rid)) == allowed                           # exactly the public lists, nothing more
     for r in book["recipes"]:
@@ -81,7 +81,7 @@ def test_public_view_keeps_history_fresh(c, cooked_book, monkeypatch):
 def test_public_view_without_dinnerlog(c, monkeypatch):
     monkeypatch.setattr(X, "DINNERLOG_API_URL", "")
     r = c.get("/api/books/1", headers=CF)
-    assert r.status_code == 200 and all(set(x) <= set(A.PUBLIC_RECIPE) | set(A.PUBLIC_RECIPE_COOKED)
+    assert r.status_code == 200 and all(set(x) <= set(A.PUBLIC_RECIPE) | set(A.PUBLIC_RECIPE_COOKED) | set(A.PUBLIC_RECIPE_FLAGS)
                                         for x in r.json["recipes"])
 
 

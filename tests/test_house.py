@@ -301,3 +301,218 @@ def test_parse_quantity(text, expected):
 ])
 def test_parse_quantity_leaves_text_alone(text):
     assert H.parse_quantity(text) == (None, None)
+
+
+# ------------------------------------------------------------------ write API
+DOC = {"name": "Weeknight Ragù", "description": "Our Tuesday sauce.", "yield_text": "about 1 litre", "servings": "4",
+       "prep_minutes": 15, "cook_minutes": "90", "methods": ["braise", "Braise", "simmer"], "equipment": "Dutch oven, ",
+       "inspiration": "a trattoria near the market", "notes": "Better the next day.",
+       "ingredients": [
+           {"section": "Soffritto", "quantity": "1 ½", "unit": "tbsp", "item": "olive oil"},
+           {"section": "Soffritto", "quantity": "2-3", "item": "carrots", "prep_note": "finely diced"},
+           {"quantity": "a pinch", "item": "nutmeg", "optional": True},
+           {"quantity": "", "unit": "", "item": "", "prep_note": ""},  # the editor's empty last row
+           {"quantity": "500", "unit": "g", "item": "ground beef"}],
+       "steps": [{"section": "Soffritto", "text": "Sweat the vegetables.", "timer_minutes": "10"},
+                 "Add the beef and brown it.", {"text": "  "},
+                 {"text": "Simmer, covered.", "timer_minutes": 90}]}
+
+
+def test_create_and_read_a_house_recipe(c):
+    r = c.post("/admin/api/house/recipes", json=DOC)
+    assert r.status_code == 201, r.json
+    j = r.json
+    assert j["title"] == j["name"] == "Weeknight Ragù" and j["book"]["kind"] == "house" and len(j["uid"]) == 32
+    d = j["detail"]
+    assert d["servings"] == 4 and d["cook_minutes"] == 90 and d["methods"] == ["braise", "simmer"]
+    assert d["equipment"] == ["Dutch oven"] and d["updated_at"]
+    assert [(x["quantity_text"], x["quantity_num"], x["quantity_max"], x["item"]) for x in j["ingredients"]] == [
+        ("1 ½", 1.5, None, "olive oil"), ("2-3", 2, 3, "carrots"), ("a pinch", None, None, "nutmeg"),
+        ("500", 500, None, "ground beef")]
+    assert j["ingredients"][2]["optional"] is True and j["ingredients"][1]["prep_note"] == "finely diced"
+    assert [(s["text"], s["timer_minutes"]) for s in j["steps"]] == [
+        ("Sweat the vegetables.", 10), ("Add the beef and brown it.", None), ("Simmer, covered.", 90)]
+    assert c.get(f"/admin/api/recipes/by-uid/{j['uid']}").json["ingredients"] == j["ingredients"]
+    book = c.get(f"/admin/api/books/{house_id()}").json
+    assert next(x for x in book["recipes"] if x["id"] == j["id"])["has_detail"] is True
+
+
+def test_update_replaces_reorders_and_removes(c):
+    j = c.post("/admin/api/house/recipes", json=DOC).json
+    new = {**DOC, "name": "Sunday Ragù", "servings": None, "methods": [],
+           "ingredients": [DOC["ingredients"][4], DOC["ingredients"][0]], "steps": ["Only step."]}
+    r = c.put(f"/admin/api/house/recipes/{j['id']}", json=new)
+    assert r.status_code == 200, r.json
+    assert r.json["name"] == "Sunday Ragù" and r.json["detail"]["servings"] is None and r.json["detail"]["methods"] == []
+    assert [x["item"] for x in r.json["ingredients"]] == ["ground beef", "olive oil"]
+    assert [s["text"] for s in r.json["steps"]] == ["Only step."]
+    rows = q("SELECT position, item FROM recipe_ingredient_lines WHERE recipe_id=? ORDER BY position", j["id"])
+    assert [tuple(x) for x in rows] == [(0, "ground beef"), (1, "olive oil")]
+    assert c.delete(f"/admin/api/recipes/{j['id']}").status_code == 200  # the existing delete; details cascade
+    for t in ("recipe_details", "recipe_ingredient_lines", "recipe_steps"):
+        assert q(f"SELECT count(*) FROM {t} WHERE recipe_id=?", j["id"])[0][0] == 0
+
+
+@pytest.mark.parametrize("bad,msg", [
+    ({**DOC, "name": "  "}, "needs a name"),
+    ({**DOC, "servings": 0}, "Servings"),
+    ({**DOC, "prep_minutes": "soon"}, "Prep minutes"),
+    ({**DOC, "ingredients": [{"quantity": "2", "unit": "cups"}]}, "needs an ingredient name"),
+    ({**DOC, "ingredients": "flour"}, "must be lists"),
+    ({**DOC, "steps": [{"text": "", "timer_minutes": 5}]}, "timer but no text"),
+    ({**DOC, "steps": [{"text": "x", "timer_minutes": 99999}]}, "timer"),
+    ({**DOC, "description": "x" * 4001}, "too long"),
+    ({**DOC, "ingredients": [{"item": "salt"}] * 201}, "At most"),
+    ([1, 2], "JSON object"),
+])
+def test_bad_documents_are_refused_with_a_reason(c, bad, msg):
+    before = q("SELECT count(*) FROM recipes")[0][0]
+    r = c.post("/admin/api/house/recipes", json=bad)
+    assert r.status_code == 400 and msg in r.json["error"]
+    assert q("SELECT count(*) FROM recipes")[0][0] == before
+
+
+def test_details_only_on_house_recipes(c):
+    rid = q("SELECT r.id FROM recipes r JOIN books b ON b.id=r.book_id WHERE b.kind IS NULL LIMIT 1")[0][0]
+    assert c.put(f"/admin/api/house/recipes/{rid}", json=DOC).status_code == 400
+    assert c.put("/admin/api/house/recipes/99999999", json=DOC).status_code == 404
+
+
+def test_writes_need_an_editor(c, monkeypatch):
+    j = c.post("/admin/api/house/recipes", json=DOC).json
+    assert c.post("/admin/api/house/recipes", json=DOC, environ_base=ANON).status_code == 401
+    assert c.put(f"/admin/api/house/recipes/{j['id']}", json=DOC, environ_base=ANON).status_code == 401
+    assert c.post("/api/house/recipes", json=DOC).status_code == 405  # no public write route at all
+    evil = {"Origin": "https://evil.example"}
+    assert c.post("/admin/api/house/recipes", json=DOC, headers=evil).status_code == 403  # the CSRF check
+    monkeypatch.setattr(A, "READ_TOKEN", "s3cret")
+    bearer = {"Authorization": "Bearer s3cret"}
+    assert c.post("/admin/api/house/recipes", json=DOC, headers=bearer, environ_base=ANON).status_code == 401
+    assert c.get("/admin/api/house/recipes", headers=bearer, environ_base=ANON).status_code == 200
+
+
+# ------------------------------------------------------------------ return URLs
+ORIGINS = H.parse_origins("https://dinner.example.com, http://192.168.1.5:8000/, https://Other.Example:443, "
+                          "ftp://x.example, https://bad.example/path, https://u:p@cred.example")
+
+
+def test_parse_origins_keeps_only_bare_origins():
+    assert ORIGINS == {"https://dinner.example.com", "http://192.168.1.5:8000", "https://other.example"}
+
+
+@pytest.mark.parametrize("url,expected", [
+    ("https://dinner.example.com/new?name=Rag%C3%B9", "https://dinner.example.com/new?name=Rag%C3%B9"),
+    ("https://dinner.example.com", "https://dinner.example.com/"),
+    ("https://DINNER.example.com:443/meals/3#top", "https://dinner.example.com/meals/3#top"),
+    ("http://192.168.1.5:8000/new", "http://192.168.1.5:8000/new"),
+    ("https://other.example/x", "https://other.example/x"),
+    ("/admin#/book/3", "/admin#/book/3"),
+    ("/", "/"),
+])
+def test_return_urls_allowed(url, expected):
+    assert H.safe_return_url(url, ORIGINS) == expected
+
+
+@pytest.mark.parametrize("url", [
+    "https://evil.example/", "http://dinner.example.com/new",  # wrong scheme for that origin
+    "https://dinner.example.com.evil.example/", "https://evil.example/?https://dinner.example.com",
+    "https://dinner.example.com@evil.example/", "https://user:pw@dinner.example.com/",
+    "https://dinner.example.com:8443/", "http://192.168.1.5/new",
+    "//evil.example/x", "///evil.example", "/\\evil.example", "\\\\evil.example", "https:\\\\dinner.example.com",
+    "javascript:alert(1)", "data:text/html,hi", "JaVaScRiPt:alert(1)", "dinner.example.com/new", "new",
+    "https://dinner.example.com/a\nb", "https://dinner.example.com/a b", "https://dinner.example.com/\x00",
+    " https://dinner.example.com/", "https://dinner.example.com:99999/", "https://[::1/", "",
+    None, 42, "https://dinner.example.com/" + "a" * 2048,
+])
+def test_return_urls_refused(url):
+    assert H.safe_return_url(url, ORIGINS) is None
+
+
+def test_save_follows_only_an_allowed_return_url(c, monkeypatch):
+    monkeypatch.setattr(H, "RETURN_URL_ORIGINS", {"https://dinner.example.com"})
+    j = c.post("/admin/api/house/recipes", json={**DOC, "return": "https://dinner.example.com/new?day=2026-11-09"}).json
+    assert j["return_refused"] is False
+    assert j["return_url"] == (f"https://dinner.example.com/new?day=2026-11-09&cookbook_book_uid={j['book']['uid']}"
+                               f"&cookbook_recipe_uid={j['uid']}")
+    j = c.post("/admin/api/house/recipes", json={**DOC, "return": "https://evil.example/"}).json
+    assert j["return_url"] is None and j["return_refused"] is True  # saved anyway; just not redirected
+    assert "return_url" not in c.post("/admin/api/house/recipes", json=DOC).json
+    assert c.get("/admin/api/house/return-check?url=https://dinner.example.com/new").json == \
+        {"ok": True, "host": "dinner.example.com"}
+    assert c.get("/admin/api/house/return-check?url=//evil.example").json == {"ok": False, "host": None}
+    assert c.get("/admin/api/house/return-check?url=/x", environ_base=ANON).status_code == 401
+
+
+# ------------------------------------------------------------------ read API for Dinner Log
+def test_house_read_api_is_members_only(c, monkeypatch):
+    j = c.post("/admin/api/house/recipes", json={**DOC, "name": "Lemon Pasta Our Way"}).json
+    assert c.get("/api/house").status_code == 404
+    assert c.get("/api/house/recipes").status_code == 404
+    assert c.get(f"/api/house/recipes/{j['uid']}").status_code == 404
+    assert c.get(f"/api/recipes/by-uid/{j['uid']}").status_code == 404
+    assert c.get("/admin/api/house/recipes", environ_base=ANON).status_code == 401
+    monkeypatch.setattr(A, "READ_TOKEN", "s3cret")
+    hdr = {"Authorization": "Bearer s3cret"}
+    lst = c.get("/admin/api/house/recipes?limit=500", headers=hdr, environ_base=ANON).json
+    mine = next(x for x in lst["recipes"] if x["uid"] == j["uid"])
+    assert set(mine) == {"id", "uid", "title", "updated_at"} and mine["title"] == "Lemon Pasta Our Way"
+    assert lst["book"]["uid"] == q("SELECT uid FROM books WHERE kind='house'")[0][0]
+    one = c.get(f"/admin/api/house/recipes/{j['uid']}", headers=hdr, environ_base=ANON).json
+    assert one["uid"] == j["uid"] and one["ingredients"] and one["steps"]
+    assert c.get("/admin/api/house/recipes/" + "0" * 32, headers=hdr, environ_base=ANON).status_code == 404
+    assert c.get("/admin/api/house/recipes/not-a-uid", headers=hdr, environ_base=ANON).status_code == 404
+    cookbook_recipe = q("SELECT r.uid FROM recipes r JOIN books b ON b.id=r.book_id WHERE b.kind IS NULL LIMIT 1")[0][0]
+    assert c.get(f"/admin/api/house/recipes/{cookbook_recipe}", headers=hdr, environ_base=ANON).status_code == 404
+    assert c.get(f"/api/recipes/by-uid/{cookbook_recipe}").status_code == 200  # public cookbook recipe: readable
+    assert c.get(f"/api/recipes/by-uid/{cookbook_recipe}").json["ingredients"] == []
+    assert c.get(f"/admin/api/house/recipes?q=lemon", headers=hdr, environ_base=ANON).json["recipes"][0]["uid"] == j["uid"]
+    set_visibility(house_id(), "public")
+    try:
+        assert c.get(f"/api/house/recipes/{j['uid']}").status_code == 200
+        assert "rating" not in c.get(f"/api/house/recipes/{j['uid']}").json  # private recipe fields stay private
+        assert any(x["uid"] == j["uid"] for x in c.get("/api/house/recipes?limit=500").json["recipes"])
+        assert "visibility" not in c.get("/api/house").json
+    finally:
+        set_visibility(house_id(), "members")
+
+
+def test_house_list_pages(c):
+    for n in range(3):
+        c.post("/admin/api/house/recipes", json={"name": f"Paging test {n}"})
+    first = c.get("/admin/api/house/recipes?limit=2").json
+    assert len(first["recipes"]) == 2 and first["next_offset"] == 2 and first["count"] >= 3
+    assert c.get("/admin/api/house/recipes?limit=x").status_code == 400
+
+
+# ------------------------------------------------------------------ export / import of details
+def test_export_and_import_carry_ingredients_and_steps(c, monkeypatch, tmp_path):
+    import importer
+    j = c.post("/admin/api/house/recipes", json={**DOC, "name": "Round Trip Soup"}).json
+    data = json.loads(c.get("/admin/api/export.json").data)
+    house = next(b for b in data["books"] if b.get("kind") == "house")
+    rec = next(r for r in house["recipes"] if r["uid"] == j["uid"])
+    assert [x["item"] for x in rec["detail"]["ingredients"]] == ["olive oil", "carrots", "nutmeg", "ground beef"]
+    plain = next(r for b in data["books"] if not b.get("kind") for r in b["recipes"])
+    assert "detail" not in plain
+    monkeypatch.setenv("SKIP_SEED", "1")
+    monkeypatch.setattr(A, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(A, "DB_PATH", tmp_path / "cookbooks.db")
+    monkeypatch.setattr(A, "COVER_DIR", tmp_path / "covers")
+    A.init_db()
+    con = A.connect()
+    assert con.execute("SELECT count(*) FROM books").fetchone()[0] == 0  # a restore target starts empty
+    bad = {**rec, "uid": "a" * 32, "name": "Broken", "detail": {"ingredients": [{"quantity": "1"}]}}
+    misplaced = {**plain, "uid": "b" * 32, "detail": rec["detail"]}
+    rep = importer.import_data(con, {"version": A.EXPORT_VERSION,
+                                     "books": [{**house, "recipes": [rec, bad]}, {**data["books"][0], "recipes": [misplaced]}]})
+    rid = con.execute("SELECT id FROM recipes WHERE uid=?", (j["uid"],)).fetchone()[0]
+    assert con.execute("SELECT uid FROM books WHERE kind='house'").fetchone()[0] == house["uid"]
+    assert [r[0] for r in con.execute("SELECT item FROM recipe_ingredient_lines WHERE recipe_id=? ORDER BY position",
+                                      (rid,))] == ["olive oil", "carrots", "nutmeg", "ground beef"]
+    assert con.execute("SELECT quantity_num, quantity_max FROM recipe_ingredient_lines WHERE recipe_id=? AND position=1",
+                       (rid,)).fetchone()[:] == (2, 3)
+    assert con.execute("SELECT updated_at FROM recipe_details WHERE recipe_id=?", (rid,)).fetchone()[0] == \
+        rec["detail"]["updated_at"]
+    assert any("Broken" in w and "ingredient name" in w for w in rep.warnings)
+    assert any("isn't in the house book" in w for w in rep.warnings)
+    con.close()

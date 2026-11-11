@@ -21,7 +21,7 @@ def tools(c, url="/mcp", headers=None):
 
 
 def private_tools(r):
-    return "set_want_to_try" in {t["name"] for t in r.json["result"]["tools"]}
+    return "cooking_stats" in {t["name"] for t in r.json["result"]["tools"]}
 
 
 # ------------------------------------------------------------ accepted forms

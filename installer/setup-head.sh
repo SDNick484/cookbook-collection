@@ -75,6 +75,7 @@ add_setting() {  # add_setting FILE KEY VALUE COMMENT — only if KEY isn't ther
   printf '\n# %s\n%s="%s"\n' "$4" "$2" "$3" >> "$1"
   ADDED="${ADDED:-} $2"
 }
+UPGRADE=0; [ -f "$CONF" ] && UPGRADE=1  # an existing config means an upgrade
 if [ ! -f "$CONF" ]; then
   echo "==> Writing $CONF"
   cat > "$CONF" <<EOF
@@ -101,8 +102,10 @@ add_setting "$CONF" ANTHROPIC_SEARCH_KEY "" "Claude API key for AI search (Ask);
 add_setting "$CONF" ANTHROPIC_SEARCH_MODEL claude-haiku-5-5 "Model used for AI search (Ask)"
 add_setting "$CONF" ASK_DAILY_LIMIT 200 "Most Ask questions per day, all editors together"
 add_setting "$CONF" MCP_TOKEN "$(head -c 24 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')" \
-  "Secret for private MCP tools: send Authorization: Bearer <MCP_TOKEN> to /mcp (or use /mcp/<MCP_TOKEN>)"
+  "Secret for private MCP tools: send Authorization: Bearer <MCP_TOKEN> to /mcp. Several, comma separated, while rotating"
 add_setting "$CONF" MCP_PUBLIC 1 "1 = /mcp without a token serves public search (books, recipes, pages)"
+add_setting "$CONF" MCP_WRITE 0 "1 = the MCP write tools (set_want_to_try, update_book), only for a token sent as a Bearer header"
+add_setting "$CONF" MCP_URL_TOKEN 1 "1 = also accept the token in the URL, /mcp/<MCP_TOKEN> (always read-only); 0 = header only"
 add_setting "$CONF" WISHLIST_URL http://127.0.0.1:8766 "Family wish list app (local) for 'Add to a wish list'"
 add_setting "$CONF" WISHLIST_BOOK_URL "https://www.amazon.com/s?k={q}" "Shopping link put on wish list items; {q} = ISBN (or title + author)"
 add_setting "$CONF" DINNERLOG_URL "" "Dinner Log's public address, e.g. https://dinners.example.com — turns on 'Log this dinner' links"
@@ -129,7 +132,7 @@ description="Cookbook Collection"
 : ${PORT:=8767}
 : ${DATA_DIR:=/var/lib/cookbooks}
 : ${BIND:=0.0.0.0}
-export DATA_DIR CF_TEAM_DOMAIN CF_AUD ADMIN_EMAILS LAN_EDIT LAN_CIDRS LAN_HOSTS ALLOWED_ORIGINS DINNERLOG_API_URL DINNERLOG_TOKEN ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_EFFORT ANTHROPIC_SEARCH_KEY ANTHROPIC_SEARCH_MODEL ASK_DAILY_LIMIT PHOTO_DAILY_LIMIT MCP_TOKEN MCP_PUBLIC WISHLIST_URL WISHLIST_BOOK_URL DINNERLOG_URL READ_TOKEN HOUSE_BOOK_TITLE RETURN_URL_ORIGINS
+export DATA_DIR CF_TEAM_DOMAIN CF_AUD ADMIN_EMAILS LAN_EDIT LAN_CIDRS LAN_HOSTS ALLOWED_ORIGINS DINNERLOG_API_URL DINNERLOG_TOKEN ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_EFFORT ANTHROPIC_SEARCH_KEY ANTHROPIC_SEARCH_MODEL ASK_DAILY_LIMIT PHOTO_DAILY_LIMIT MCP_TOKEN MCP_PUBLIC MCP_WRITE MCP_URL_TOKEN WISHLIST_URL WISHLIST_BOOK_URL DINNERLOG_URL READ_TOKEN HOUSE_BOOK_TITLE RETURN_URL_ORIGINS
 # TZ is exported only when set: an empty TZ would mean UTC and override /etc/localtime
 if [ -n "${TZ:-}" ]; then export TZ; else unset TZ; fi
 supervisor="supervise-daemon"
@@ -226,7 +229,10 @@ grep -q '^DINNERLOG_URL=\(""\|'\'''\''\)\?$' "$CONF" && echo "  - 'Log this dinn
 # same wording as the nightly warning (app-backup prints it, or nothing when images are covered or absent)
 if msg=$(/usr/local/bin/app-backup --check-images); then echo "  - Warning: $msg"; fi
 echo "  - Private MCP: https://<your public address>/mcp with header 'Authorization: Bearer <MCP_TOKEN>'"
-echo "    (or /mcp/<MCP_TOKEN> for clients that can't send headers); the token is MCP_TOKEN in $CONF"
+echo "    (or read-only /mcp/<MCP_TOKEN> for clients that can't send headers); the token is MCP_TOKEN in $CONF"
+case " ${ADDED:-} " in
+  *" MCP_WRITE "*) if [ "$UPGRADE" = 1 ]; then echo "  - The private MCP is now read-only until you set MCP_WRITE=1 in $CONF (write tools need the Bearer header)"; fi ;;
+esac
 echo "Config: $CONF, $OPS_CONF   Backups: /var/backups/apps   Logs: /var/log/cookbooks.log, /var/log/app-ops.log (rotated by logrotate: $LOGROTATE_CONF)"
 echo "Restore the database from a backup: app-restore --list, then app-restore --dry-run <snapshot>, then app-restore <snapshot>"
 if grep -Eq "^LAN_EDIT=[\"']?1[\"']?[[:space:]]*(#.*)?$" "$CONF"; then

@@ -1412,8 +1412,9 @@ async function moreView() {
       <a class="btn" href="#/stats">Dinner Log matching</a></div></div>
     <div class="panel"><h3>Use with Claude (MCP)</h3>
       <p class="small muted">Add as a custom connector in Claude: <code>${esc(mcpUrl)}</code> gives public search (books, recipes, pages).
-      ${feat.mcp_private ? `For ratings, cooking history, suggestions and starring, use <code>${esc(mcpUrl)}/&lt;MCP_TOKEN&gt;</code>, or send the token as a Bearer header. The token is in <code>/etc/conf.d/cookbooks</code>; keep that URL private.`
-        : `Set <code>MCP_TOKEN</code> in <code>/etc/conf.d/cookbooks</code> to unlock private tools (suggestions, stats, starring).`}</p></div>
+      ${feat.mcp_private ? `For ratings, cooking history and suggestions, send <code>MCP_TOKEN</code> as a Bearer header${feat.mcp_url_token ? `, or use the read-only <code>${esc(mcpUrl)}/&lt;MCP_TOKEN&gt;</code> (keep that URL private)` : ""}. The token is in <code>/etc/conf.d/cookbooks</code>.
+        ${feat.mcp_write ? "Starring and book fixes are on for the header token." : "Starring and book fixes are off: set <code>MCP_WRITE=1</code> to allow them for the header token."}`
+        : `Set <code>MCP_TOKEN</code> in <code>/etc/conf.d/cookbooks</code> to unlock private tools (suggestions, stats; starring with <code>MCP_WRITE=1</code>).`}</p></div>
     <div class="panel"><h3>Export</h3><p class="small muted">Full backup including recipes, ratings and private notes.</p>
       <div class="actions"><a class="btn" href="/admin/api/export.json">Download JSON</a><a class="btn" href="/admin/api/export.csv">Books as CSV</a></div></div>
     <div class="panel"><h3>Public view</h3><p class="small muted">See what visitors see (no ratings, notes or loan details; shelf locations are shown).</p>

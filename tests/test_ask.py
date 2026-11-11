@@ -390,6 +390,19 @@ def test_write_tools_refused_if_called(c, model):
     assert db_one("SELECT want_to_try FROM recipes WHERE id=?", rid)[0] == 0
 
 
+def test_write_tools_never_offered_or_run_with_mcp_write_on(c, model, monkeypatch):
+    """MCP_WRITE opens the write tools to a header-token MCP client; Ask still gets none of them."""
+    monkeypatch.setattr(X, "MCP_WRITE", True)
+    rid = db_one("SELECT id FROM recipes WHERE want_to_try=0 LIMIT 1")[0]
+    fake = model(resp(tool_use("set_want_to_try", {"recipe_id": rid, "want": True})), show())
+    assert c.post("/admin/api/ask", json=OK).status_code == 200
+    assert not {t["name"] for t in fake.bodies[0]["tools"]} & set(X.WRITE_TOOLS)
+    assert fake.bodies[1]["messages"][-1]["content"][0]["content"] == "Unknown tool: set_want_to_try"
+    assert db_one("SELECT want_to_try FROM recipes WHERE id=?", rid)[0] == 0
+    with pytest.raises(X.UnknownTool):  # run_tool's own default: write=False
+        X.run_tool("set_want_to_try", {"recipe_id": rid}, True)
+
+
 GENERIC = {"error": "AI search is unavailable right now, try again"}
 
 
@@ -534,7 +547,7 @@ def test_collect_ids_books_without_title():
 
 
 def test_rpc_empty_tool_error_unchanged(monkeypatch):
-    monkeypatch.setattr(X, "run_tool", lambda name, args, private: (None, ""))
+    monkeypatch.setattr(X, "run_tool", lambda name, args, private, write=False: (None, ""))
     with A.app.test_request_context():
         out = X.handle_rpc({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                             "params": {"name": "search_books", "arguments": {}}}, True)

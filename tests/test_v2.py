@@ -352,10 +352,11 @@ def test_mcp_public(c):
 
 def test_mcp_private(c, monkeypatch):
     monkeypatch.setattr(X, "MCP_TOKEN", "s3cret-token")
+    monkeypatch.setattr(X, "MCP_WRITE", True)
     names = {t["name"] for t in rpc(c, "tools/list", url="/mcp/s3cret-token").json["result"]["tools"]}
-    assert {"suggest_recipes", "cooking_stats", "set_want_to_try"} <= names
+    assert {"suggest_recipes", "cooking_stats"} <= names and not names & set(X.WRITE_TOOLS)  # path: read-only
     hdr = {"Authorization": "Bearer s3cret-token"}
-    assert len(rpc(c, "tools/list", headers=hdr).json["result"]["tools"]) == len(names)
+    assert {t["name"] for t in rpc(c, "tools/list", headers=hdr).json["result"]["tools"]} == names | set(X.WRITE_TOOLS)
     assert rpc(c, "tools/list", url="/mcp/wrong").status_code == 404
     res = json.loads(rpc(c, "tools/call", {"name": "suggest_recipes", "arguments": {"mode": "want", "count": 3}},
                          headers=hdr).json["result"]["content"][0]["text"])
@@ -370,6 +371,7 @@ def test_mcp_private(c, monkeypatch):
 
 def test_mcp_update_book(c, monkeypatch):
     monkeypatch.setattr(X, "MCP_TOKEN", "s3cret-token")
+    monkeypatch.setattr(X, "MCP_WRITE", True)
     hdr = {"Authorization": "Bearer s3cret-token"}
     a = c.post("/admin/api/books", json={"title": "Fix Me Pozole", "cuisine": "Mexican", "tags": ["Caucasus"]}).json
     b = c.post("/admin/api/books", json={"title": "Fix Me Too", "tags": ["Caucasus", "Soup"]}).json

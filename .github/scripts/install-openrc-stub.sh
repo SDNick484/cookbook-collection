@@ -57,6 +57,8 @@ if [ "$SVC" = "cookbooks" ]; then
       export ANTHROPIC_EFFORT="${ANTHROPIC_EFFORT:-low}"
       export MCP_TOKEN="${MCP_TOKEN:-}"
       export MCP_PUBLIC="${MCP_PUBLIC:-1}"
+      export MCP_WRITE="${MCP_WRITE:-0}"
+      export MCP_URL_TOKEN="${MCP_URL_TOKEN:-1}"
       export WISHLIST_URL="${WISHLIST_URL:-http://127.0.0.1:8766}"
       export WISHLIST_BOOK_URL="${WISHLIST_BOOK_URL:-https://www.amazon.com/s?k={q}}"
       export DINNERLOG_URL="${DINNERLOG_URL:-}"

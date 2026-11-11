@@ -220,10 +220,15 @@ Where each book lives is a tree of locations of any depth: room › area › she
 
 ## MCP (use the catalog from Claude)
 - `https://cookbooks.example.com/mcp` is public and read-only: search books and recipes, get a book with its index, get a recipe (`get_recipe`). It sees only books visible to everyone.
-- An `Authorization: Bearer <MCP_TOKEN>` header on `/mcp`, or `https://cookbooks.example.com/mcp/<MCP_TOKEN>` for clients that can only take a URL, adds ratings, cooking history, `suggest_recipes`, `cooking_stats`, `set_want_to_try`, and `update_book` (sets a book's cuisine and adds or removes tags, nothing else).
-- The token is generated on install and lives in `/etc/conf.d/cookbooks`. Treat the private URL like a password.
+- An `Authorization: Bearer <MCP_TOKEN>` header on `/mcp` adds the private read tools: ratings, cooking history, `suggest_recipes` and `cooking_stats`. Clients that can only take a URL can use `https://cookbooks.example.com/mcp/<MCP_TOKEN>` for the same read-only view.
+- The write tools, `set_want_to_try` and `update_book` (sets a book's cuisine and adds or removes tags, nothing else), are **off** by default. `MCP_WRITE=1` turns them on, and only for a token sent in the header; a token in the URL is always read-only, whatever `MCP_WRITE` says. Ask never gets the write tools either way.
+- `MCP_URL_TOKEN=0` refuses the URL form altogether (404), so the token only works in the header. The default, `1`, keeps it for clients that need it.
+- The token is generated on install and lives in `/etc/conf.d/cookbooks` as `MCP_TOKEN`; the installer doesn't print it. Treat it like a password.
+- **Rotating the token without downtime:** `MCP_TOKEN` may hold several tokens, comma separated. Add the new one (`MCP_TOKEN="old,new"`), restart, move each client to the new one, then remove the old one and restart again. Each is checked in constant time.
+- A wrong token is refused (401 in the header, 404 in the URL), never treated as the public view.
 - `/mcp` must stay **outside** the Access app, which only protects `/admin`.
-- Prefer the header. The app keeps the token out of its own access log (`/mcp/<redacted>`), but a token in the URL still shows up in Cloudflare's request logs and anywhere the URL is pasted. The token is `MCP_TOKEN` in `/etc/conf.d/cookbooks`; the installer no longer prints it.
+- Prefer the header. The app keeps the token out of its own access log (`/mcp/<redacted>`), but a token in the URL still shows up in Cloudflare's request logs and anywhere the URL is pasted. That's why it can't write.
+- Upgrading from a version before `MCP_WRITE`: the installer adds `MCP_WRITE=0` and says so, so existing private MCP clients lose `set_want_to_try` and `update_book` until you set `MCP_WRITE=1` (then `rc-service cookbooks restart`) and send the token in the header. Nothing in the database changes.
 - `get_book` returns up to 200 recipes per call (`limit` up to 500) with `recipe_count` and `next_offset`, so a long index is read in pages. A JSON-RPC batch may hold at most 20 requests.
 - `search_recipes` returns the best matches first, the `total`, and `next_offset` when there are more; each recipe's `match` is "title" when every word is in its title, or says per word where it came from: "chicken: title, leek: tag", "chicken: may be only chicken stock", or "chicken: only as “chicken stock” in the title". The server's instructions tell Claude that some books have no page numbers and that the recipe and book title are enough.
 

@@ -235,3 +235,16 @@ def test_write_tool_log_line_has_no_token(c, monkeypatch, rid, caplog):
             headers={"Authorization": f"Bearer {TOKEN}"})
     assert any("MCP write set_want_to_try" in r.getMessage() for r in caplog.records)
     assert not any(TOKEN in r.getMessage() for r in caplog.records)
+
+
+# ------------------------------------------------------------ settings reach the service
+def test_settings_are_installed_exported_and_documented():
+    head = (A.APP_DIR / "installer" / "setup-head.sh").read_text()
+    export = head.split("export DATA_DIR", 1)[1].split("\n")[0]
+    env_example = (A.APP_DIR / ".env.example").read_text()
+    readme = (A.APP_DIR / "README.md").read_text()
+    for var in ("MCP_WRITE", "MCP_URL_TOKEN"):
+        assert f'add_setting "$CONF" {var} ' in head
+        assert f" {var}" in export
+        assert f"\n{var}=" in env_example
+        assert f"`{var}" in readme

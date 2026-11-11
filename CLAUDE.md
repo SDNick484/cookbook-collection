@@ -47,7 +47,12 @@ Chromium for Playwright checks: `/opt/pw-browsers/chromium-*/chrome-linux/chrome
   Anything stored outside this database, or sent to Dinner Log, should carry the uid.
 - MCP tools: add to `TOOLS` in extras.py as (name, private_only, fn, description, schema); writes go in
   `WRITE_TOOLS` and are private-only. Keep tool output compact: it stays in the assistant's context.
-- Ask (`ask.py`) reuses `run_tool()`; it must never be offered `WRITE_TOOLS`.
+- MCP access (`mcp_auth`): public, `private` (read tools) or `write`. `WRITE_TOOLS` need `MCP_WRITE=1` *and* a Bearer
+  header token; a `/mcp/<token>` path token is never more than `private`, and `MCP_URL_TOKEN=0` refuses it.
+  `MCP_TOKEN` is comma-separated (rotation); `token_ok()` compares every candidate with no early exit. A wrong token
+  is refused, never downgraded to public. Never log a token. `tests/test_mcp_access.py` holds the full matrix.
+- Ask (`ask.py`) reuses `run_tool()`; it must never be offered `WRITE_TOOLS`. `run_tool`/`handle_rpc` take
+  `write=False` by default, and Ask never passes it.
 - Tests: commit the test's own connection before calling the app, or SQLite reports "database is locked".
 - Photo jobs: never call Claude from tests (monkeypatch `call_claude` or `messages_api`). A scan page's thread waits on
   `_photo_sem` as `queued` and only becomes `running` (with `started`) when it gets a slot; stale checks use `started`.

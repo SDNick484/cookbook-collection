@@ -5,7 +5,7 @@ import logging
 import pytest
 
 import app as A
-import extras as X
+import mcp as MC
 
 TOKEN = "errors-test-token"
 PRIVATE = {"Authorization": f"Bearer {TOKEN}"}
@@ -13,9 +13,9 @@ PRIVATE = {"Authorization": f"Bearer {TOKEN}"}
 
 @pytest.fixture()
 def c(monkeypatch):
-    monkeypatch.setattr(X, "MCP_TOKEN", TOKEN)
-    monkeypatch.setattr(X, "MCP_PUBLIC", True)
-    monkeypatch.setattr(X, "MCP_WRITE", True)  # PRIVATE is a header token, so it gets the write tools
+    monkeypatch.setattr(MC, "MCP_TOKEN", TOKEN)
+    monkeypatch.setattr(MC, "MCP_PUBLIC", True)
+    monkeypatch.setattr(MC, "MCP_WRITE", True)  # PRIVATE is a header token, so it gets the write tools
     return A.app.test_client()
 
 
@@ -94,8 +94,8 @@ def test_internal_error_is_logged_not_shown(c, monkeypatch, caplog):
     def boom(a, private):
         raise RuntimeError("no such column: secret_internal_col")
 
-    monkeypatch.setattr(X, "TOOLS", [t if t[0] != "search_books" else (t[0], t[1], boom, t[3], t[4])
-                                     for t in X.TOOLS])
+    monkeypatch.setattr(MC, "TOOLS", [t if t[0] != "search_books" else (t[0], t[1], boom, t[3], t[4])
+                                     for t in MC.TOOLS])
     with caplog.at_level(logging.ERROR, logger=A.app.logger.name):
         res = call(c, "search_books", {"query": "zuni"})
     assert res["isError"]
@@ -170,19 +170,19 @@ def test_get_book_ambiguous_title_lists_matches_instead_of_guessing(c):
 
 def test_run_tool_success_and_errors(monkeypatch):
     with A.app.app_context():  # tools reach the DB through flask.g
-        res, err = X.run_tool("list_categories", {}, True)
+        res, err = MC.run_tool("list_categories", {}, True)
         assert err is None and "cuisines" in res
-        res, err = X.run_tool("get_book", {}, True)
+        res, err = MC.run_tool("get_book", {}, True)
         assert res is None and err == "book_id or title is required"
 
     def boom(a, p): raise RuntimeError("SELECT secret FROM internals")
-    monkeypatch.setattr(X, "TOOLS", [("boom", False, boom, "d", X._S())])
-    res, err = X.run_tool("boom", {}, True)
+    monkeypatch.setattr(MC, "TOOLS", [("boom", False, boom, "d", MC._S())])
+    res, err = MC.run_tool("boom", {}, True)
     assert res is None and "internal error (ref " in err and "secret" not in err
 
 
 def test_run_tool_unknown_and_private_only():
-    with pytest.raises(X.UnknownTool):
-        X.run_tool("nope", {}, True)
-    with pytest.raises(X.UnknownTool):
-        X.run_tool("cooking_stats", {}, False)
+    with pytest.raises(MC.UnknownTool):
+        MC.run_tool("nope", {}, True)
+    with pytest.raises(MC.UnknownTool):
+        MC.run_tool("cooking_stats", {}, False)

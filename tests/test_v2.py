@@ -2,6 +2,7 @@
 import io, json, os, sys, tempfile, time, urllib.error
 from datetime import date, timedelta
 from pathlib import Path
+import urllib.request
 
 import pytest
 
@@ -11,7 +12,11 @@ os.environ.setdefault("DATA_DIR", tempfile.mkdtemp())
 os.environ.setdefault("CF_TEAM_DOMAIN", "team.example.com")
 os.environ.setdefault("CF_AUD", "aud123")
 import app as A  # noqa: E402
-import extras as X  # noqa: E402
+import mcp as MC  # noqa: E402
+import wishlist as WL  # noqa: E402
+import scan as SC  # noqa: E402
+import cook as CK  # noqa: E402
+import dinnerlog as DL  # noqa: E402
 from dl_history import History  # noqa: E402
 
 CF = {"Cf-Ray": "abc", "Cf-Connecting-Ip": "203.0.113.9"}
@@ -81,7 +86,7 @@ def test_dinnerlog_matching(c, dl):
 
 
 def test_dinnerlog_missing_is_harmless(c, monkeypatch):
-    monkeypatch.setattr(X, "DINNERLOG_API_URL", "")
+    monkeypatch.setattr(DL, "DINNERLOG_API_URL", "")
     assert c.get("/admin/api/dinnerlog").json["available"] is False
     assert c.get("/admin/api/books/1").status_code == 200
 
@@ -89,17 +94,17 @@ def test_dinnerlog_missing_is_harmless(c, monkeypatch):
 def test_match_recipe_unit():
     recs = [(1, "roast, with bread salad", "Chicken", 342, "342–344"), (2, "Braised fennel", None, 255, "255"),
             (3, "Rosemary-Roasted Potatoes", None, 235, "235"), (4, "Salt Roasties", None, 237, "237")]
-    assert X.match_recipe(recs, "343", "chicken") == 1          # inside a page range
-    assert X.match_recipe(recs, "p255", "anything") == 2        # single recipe on page
-    assert X.match_recipe(recs, "", "rosemary roasted potatoes") == 3
-    assert X.match_recipe(recs, "", "pizza") is None
+    assert DL.match_recipe(recs, "343", "chicken") == 1          # inside a page range
+    assert DL.match_recipe(recs, "p255", "anything") == 2        # single recipe on page
+    assert DL.match_recipe(recs, "", "rosemary roasted potatoes") == 3
+    assert DL.match_recipe(recs, "", "pizza") is None
 
 
 # ------------------------------------------------------------ suggestions / stats / shelf
 def test_suggest_modes(c, dl):
     old = (date.today() - timedelta(days=200)).isoformat()
     dl(old, "Leeks", title="Downtime", detail="80", rating=9)
-    for mode in X.SUGGEST_MODES:
+    for mode in CK.SUGGEST_MODES:
         r = c.get(f"/admin/api/suggest?mode={mode}&n=4").json
         assert r["mode"] == mode and len(r["recipes"]) <= 4
     want = c.get("/admin/api/suggest?mode=want&n=20").json
@@ -179,9 +184,9 @@ def photo_job(c, bid, timeout=10):
 
 def test_photo_import(c, monkeypatch):
     bid = c.post("/admin/api/books", json={"title": "Photo Book"}).json["id"]
-    monkeypatch.setattr(X, "ANTHROPIC_API_KEY", "")
+    monkeypatch.setattr(SC, "ANTHROPIC_API_KEY", "")
     assert photo_job(c, bid)[0] == 503
-    monkeypatch.setattr(X, "ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(SC, "ANTHROPIC_API_KEY", "sk-test")
     seen = {}
 
     def fake(img, media_type="image/jpeg"):
@@ -192,7 +197,7 @@ def test_photo_import(c, monkeypatch):
                 "| Braised Fennel | 255\n"
                 "Ají amarillo | Causa limeña | 51 ,88\n"
                 " | See also Potatoes | \n"), "end_turn"
-    monkeypatch.setattr(X, "call_claude", fake)
+    monkeypatch.setattr(SC, "call_claude", fake)
     _, j = photo_job(c, bid)
     rows = j["rows"]
     assert max(seen["size"]) == 2576 and j["warning"] is None
@@ -202,17 +207,17 @@ def test_photo_import(c, monkeypatch):
     assert rows[3]["page"] == "51, 88" and len(rows) == 4
 
     # an answer cut off at the output limit keeps every complete line, and says so
-    monkeypatch.setattr(X, "call_claude", lambda *a, **k: ("Anticuchos | de corazón | 101\nCeviche | clásico | 4", "max_tokens"))
+    monkeypatch.setattr(SC, "call_claude", lambda *a, **k: ("Anticuchos | de corazón | 101\nCeviche | clásico | 4", "max_tokens"))
     _, j = photo_job(c, bid)
     assert [r["name"] for r in j["rows"]] == ["de corazón"] and "cut off after 1 entries" in j["warning"]
 
-    monkeypatch.setattr(X, "call_claude", lambda *a, **k: ("sorry, can't read that", "end_turn"))
+    monkeypatch.setattr(SC, "call_claude", lambda *a, **k: ("sorry, can't read that", "end_turn"))
     _, j = photo_job(c, bid)
     assert j["status"] == "error" and "no entries" in j["error"]
 
     def boom(*a, **k):
         raise RuntimeError("Claude API error 529: overloaded")
-    monkeypatch.setattr(X, "call_claude", boom)
+    monkeypatch.setattr(SC, "call_claude", boom)
     _, j = photo_job(c, bid)
     assert j["status"] == "error" and "529" in j["error"]
     assert c.get("/admin/api/index/photo/nope").status_code == 404
@@ -220,10 +225,10 @@ def test_photo_import(c, monkeypatch):
 
 def test_photo_rows_formats():
     # the JSON the earlier prompt asked for still reads
-    rows = X.parse_claude_rows('```json\n{"entries": [{"heading": null, "name": "Lomo saltado", "page": "212"}]}\n```')
+    rows = SC.parse_claude_rows('```json\n{"entries": [{"heading": null, "name": "Lomo saltado", "page": "212"}]}\n```')
     assert rows == [{"heading": None, "name": "Lomo saltado", "page": "212"}]
     # a markdown table, with its header and divider lines
-    rows = X.parse_claude_rows("| heading | name | page |\n|---|---|---|\n| Potatoes | Papa a la huancaína | 66 |\n")
+    rows = SC.parse_claude_rows("| heading | name | page |\n|---|---|---|\n| Potatoes | Papa a la huancaína | 66 |\n")
     assert rows == [{"heading": "Potatoes", "name": "Papa a la huancaína", "page": "66"}]
 
 
@@ -231,7 +236,7 @@ def test_photo_job_left_running(c):
     """A job whose worker died (a restart mid-read) reports an error instead of waiting forever."""
     con = A.connect()
     con.execute("INSERT INTO photo_jobs (id, book_id, status, created) VALUES ('stale', 1, 'running', ?)",
-                (time.time() - X.PHOTO_JOB_LIMIT - 5,))
+                (time.time() - SC.PHOTO_JOB_LIMIT - 5,))
     con.commit()
     con.close()
     j = c.get("/admin/api/index/photo/stale").json
@@ -255,8 +260,8 @@ def test_effort_falls_back(monkeypatch):
         if "output_config" in body:
             raise urllib.error.HTTPError(req.full_url, 400, "bad", {}, io.BytesIO(b'{"error": "output_config.effort: not supported"}'))
         return Resp(json.dumps({"content": [{"type": "text", "text": "A | b | 1"}], "stop_reason": "end_turn"}).encode())
-    monkeypatch.setattr(X.urllib.request, "urlopen", urlopen)
-    assert X.call_claude(b"jpeg") == ("A | b | 1", "end_turn")
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert SC.call_claude(b"jpeg") == ("A | b | 1", "end_turn")
     assert sent == [{"effort": "low"}, None]
 
 
@@ -274,8 +279,8 @@ def test_messages_api_returns_json_and_sends_key(monkeypatch):
     def urlopen(req, timeout):
         seen["req"], seen["timeout"] = req, timeout
         return _Resp(b'{"content": []}')
-    monkeypatch.setattr(X.urllib.request, "urlopen", urlopen)
-    assert X.messages_api({"model": "m"}, "k", 12.5) == {"content": []}
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert SC.messages_api({"model": "m"}, "k", 12.5) == {"content": []}
     assert seen["req"].get_header("X-api-key") == "k"
     assert seen["req"].full_url.endswith("/v1/messages")
     assert json.loads(seen["req"].data) == {"model": "m"}
@@ -285,18 +290,18 @@ def test_messages_api_returns_json_and_sends_key(monkeypatch):
 def test_messages_api_http_error(monkeypatch):
     def urlopen(req, timeout):
         raise urllib.error.HTTPError(req.full_url, 529, "x", {}, io.BytesIO(b"overloaded"))
-    monkeypatch.setattr(X.urllib.request, "urlopen", urlopen)
-    with pytest.raises(X.ClaudeAPIError) as ei:
-        X.messages_api({}, "k", 5)
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    with pytest.raises(SC.ClaudeAPIError) as ei:
+        SC.messages_api({}, "k", 5)
     assert ei.value.status == 529 and "overloaded" in ei.value.detail
 
 
 def test_messages_api_timeout_propagates(monkeypatch):
     def urlopen(req, timeout):
         raise TimeoutError("slow")
-    monkeypatch.setattr(X.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     with pytest.raises(TimeoutError):
-        X.messages_api({}, "k", 5)
+        SC.messages_api({}, "k", 5)
 
 
 def test_call_claude_effort_fallback_and_error_text(monkeypatch):
@@ -308,15 +313,15 @@ def test_call_claude_effort_fallback_and_error_text(monkeypatch):
         if "output_config" in body:
             raise urllib.error.HTTPError(req.full_url, 400, "bad", {}, io.BytesIO(b'{"error": "output_config not supported"}'))
         return _Resp(json.dumps({"content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn"}).encode())
-    monkeypatch.setattr(X.urllib.request, "urlopen", urlopen)
-    assert X.call_claude(b"jpeg") == ("ok", "end_turn")
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert SC.call_claude(b"jpeg") == ("ok", "end_turn")
     assert len(calls) == 2 and "output_config" not in calls[1]
 
     def boom(req, timeout):
         raise urllib.error.HTTPError(req.full_url, 500, "x", {}, io.BytesIO(b"kaput"))
-    monkeypatch.setattr(X.urllib.request, "urlopen", boom)
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
     with pytest.raises(RuntimeError) as ei:
-        X.call_claude(b"jpeg")
+        SC.call_claude(b"jpeg")
     assert str(ei.value) == "Claude API error 500: kaput"
 
 
@@ -351,12 +356,12 @@ def test_mcp_public(c):
 
 
 def test_mcp_private(c, monkeypatch):
-    monkeypatch.setattr(X, "MCP_TOKEN", "s3cret-token")
-    monkeypatch.setattr(X, "MCP_WRITE", True)
+    monkeypatch.setattr(MC, "MCP_TOKEN", "s3cret-token")
+    monkeypatch.setattr(MC, "MCP_WRITE", True)
     names = {t["name"] for t in rpc(c, "tools/list", url="/mcp/s3cret-token").json["result"]["tools"]}
-    assert {"suggest_recipes", "cooking_stats"} <= names and not names & set(X.WRITE_TOOLS)  # path: read-only
+    assert {"suggest_recipes", "cooking_stats"} <= names and not names & set(MC.WRITE_TOOLS)  # path: read-only
     hdr = {"Authorization": "Bearer s3cret-token"}
-    assert {t["name"] for t in rpc(c, "tools/list", headers=hdr).json["result"]["tools"]} == names | set(X.WRITE_TOOLS)
+    assert {t["name"] for t in rpc(c, "tools/list", headers=hdr).json["result"]["tools"]} == names | set(MC.WRITE_TOOLS)
     assert rpc(c, "tools/list", url="/mcp/wrong").status_code == 404
     res = json.loads(rpc(c, "tools/call", {"name": "suggest_recipes", "arguments": {"mode": "want", "count": 3}},
                          headers=hdr).json["result"]["content"][0]["text"])
@@ -364,14 +369,14 @@ def test_mcp_private(c, monkeypatch):
     rid = res["recipes"][0]["id"]
     rpc(c, "tools/call", {"name": "set_want_to_try", "arguments": {"recipe_id": rid, "want": False}}, headers=hdr)
     assert all(r["id"] != rid for r in c.get("/admin/api/recipes?want=1&limit=500").json["recipes"])
-    monkeypatch.setattr(X, "MCP_PUBLIC", False)
+    monkeypatch.setattr(MC, "MCP_PUBLIC", False)
     assert rpc(c, "tools/list").status_code == 401
     assert rpc(c, "tools/list", headers=hdr).status_code == 200
 
 
 def test_mcp_update_book(c, monkeypatch):
-    monkeypatch.setattr(X, "MCP_TOKEN", "s3cret-token")
-    monkeypatch.setattr(X, "MCP_WRITE", True)
+    monkeypatch.setattr(MC, "MCP_TOKEN", "s3cret-token")
+    monkeypatch.setattr(MC, "MCP_WRITE", True)
     hdr = {"Authorization": "Bearer s3cret-token"}
     a = c.post("/admin/api/books", json={"title": "Fix Me Pozole", "cuisine": "Mexican", "tags": ["Caucasus"]}).json
     b = c.post("/admin/api/books", json={"title": "Fix Me Too", "tags": ["Caucasus", "Soup"]}).json
@@ -403,14 +408,14 @@ def test_mcp_update_book(c, monkeypatch):
 
 
 def test_match_book_prefers_word_overlap():
-    books = [(1, X.norm_title("Simple"), X.tokens("Simple")),
-             (2, X.norm_title("Ottolenghi Simple"), X.tokens("Ottolenghi Simple")),
-             (3, X.norm_title("The Zuni Cafe Cookbook"), X.tokens("The Zuni Cafe Cookbook"))]
-    assert X.match_book("Simple (Ottolenghi)", books, {}) == 2
-    assert X.match_book("Simple", books, {}) == 1
-    assert X.match_book("Zuni", books, {}) == 3
-    assert X.match_book("zuni cafe", books, {}) == 3
-    assert X.match_book("Grandma's binder", books, {}) is None
+    books = [(1, DL.norm_title("Simple"), DL.tokens("Simple")),
+             (2, DL.norm_title("Ottolenghi Simple"), DL.tokens("Ottolenghi Simple")),
+             (3, DL.norm_title("The Zuni Cafe Cookbook"), DL.tokens("The Zuni Cafe Cookbook"))]
+    assert DL.match_book("Simple (Ottolenghi)", books, {}) == 2
+    assert DL.match_book("Simple", books, {}) == 1
+    assert DL.match_book("Zuni", books, {}) == 3
+    assert DL.match_book("zuni cafe", books, {}) == 3
+    assert DL.match_book("Grandma's binder", books, {}) is None
 
 
 # ------------------------------------------------------------ wish list (against the real app)
@@ -433,7 +438,7 @@ def test_wishlist_integration(c, monkeypatch, tmp_path):
         if r.status_code >= 400:
             raise RuntimeError((r.get_json() or {}).get("error") or f"wish list answered {r.status_code}")
         return r.get_json()
-    monkeypatch.setattr(X, "wishlist_call", via_test_client)
+    monkeypatch.setattr(WL, "wishlist_call", via_test_client)
 
     people = c.get("/admin/api/wishlist/people").json["people"]
     assert [p["name"] for p in people] == ["Alice", "Bob"]
@@ -446,7 +451,7 @@ def test_wishlist_integration(c, monkeypatch, tmp_path):
     assert "9780131103627" in items[0]["url"] and "ISBN 9780131103627" in items[0]["notes"]
     assert c.get(f"/admin/api/books/{bid}").json["wishes"][0]["person_name"] == "Bob"
     assert c.post(f"/admin/api/books/{bid}/wishlist", json={"person_id": 999}).status_code == 400
-    monkeypatch.setattr(X, "wishlist_call", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
+    monkeypatch.setattr(WL, "wishlist_call", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
     assert c.get("/admin/api/wishlist/people").status_code == 502
 
 
@@ -507,7 +512,7 @@ def test_suggest_favorites_multi_cooked_and_parse_truncation(c, dl):
     assert all(r["name"] != "Zuni Roast Chicken with Bread Salad" for r in favs)
 
     # Truncation before first '|' on trailing line keeps the preceding complete line
-    rows = X.parse_claude_rows("Chicken | braised | 350\nPork", truncated=True)
+    rows = SC.parse_claude_rows("Chicken | braised | 350\nPork", truncated=True)
     assert rows == [{"heading": "Chicken", "name": "braised", "page": "350"}]
 
 
@@ -526,7 +531,7 @@ def test_dinnerlog_resyncs_when_local_recipe_added(c, dl):
 
 
 def test_mcp_bad_bearer_rejected_and_online_hidden_from_public(c, monkeypatch):
-    monkeypatch.setattr(X, "MCP_TOKEN", "s3cret-token")
+    monkeypatch.setattr(MC, "MCP_TOKEN", "s3cret-token")
     # Bad Bearer header on /mcp must return 401, not downgrade to public
     assert rpc(c, "tools/list", headers={"Authorization": "Bearer wrong-token"}).status_code == 401
 
@@ -563,7 +568,7 @@ def test_wishlist_endpoints_mocked(c, monkeypatch):
             return {"id": 55, "name": body["name"], "price": body.get("price")}
         raise RuntimeError("unexpected call")
 
-    monkeypatch.setattr(X, "wishlist_call", fake_wishlist)
+    monkeypatch.setattr(WL, "wishlist_call", fake_wishlist)
     people = c.get("/admin/api/wishlist/people").json["people"]
     assert [p["name"] for p in people] == ["Alice", "Bob"]
     bid = c.post("/admin/api/books", json={"title": "Mocked Wish Book", "authors": ["Author A"],
@@ -650,8 +655,8 @@ def _start_photo_job(c, bid):
 
 @pytest.fixture()
 def photo_book(c, monkeypatch):
-    monkeypatch.setattr(X, "ANTHROPIC_API_KEY", "test-key")
-    monkeypatch.setattr(X, "run_photo_job", lambda *a, **k: None)  # never call Claude from tests
+    monkeypatch.setattr(SC, "ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(SC, "run_photo_job", lambda *a, **k: None)  # never call Claude from tests
     con = A.connect()  # jobs left running by earlier tests would count against the cap
     con.execute("DELETE FROM photo_jobs")
     con.commit()
@@ -669,21 +674,21 @@ def _insert_job(job_id, book_id, status, created):
 
 def test_photo_jobs_are_capped_while_running(c, photo_book):
     now = time.time()
-    for i in range(getattr(X, "PHOTO_JOBS_MAX", 3)):
+    for i in range(getattr(SC, "PHOTO_JOBS_MAX", 3)):
         _insert_job(f"busy-{i}", photo_book, "running", now)
     r = _start_photo_job(c, photo_book)
     assert r.status_code == 429 and r.headers.get("Retry-After")
 
 
 def test_stale_running_jobs_do_not_block_new_ones(c, photo_book):
-    old = time.time() - X.PHOTO_JOB_LIMIT - 60
-    for i in range(getattr(X, "PHOTO_JOBS_MAX", 3)):
+    old = time.time() - SC.PHOTO_JOB_LIMIT - 60
+    for i in range(getattr(SC, "PHOTO_JOBS_MAX", 3)):
         _insert_job(f"dead-{i}", photo_book, "running", old)
     assert _start_photo_job(c, photo_book).status_code == 202
 
 
 def test_timed_out_photo_job_is_saved_as_error(c, photo_book):
-    _insert_job("timed-out", photo_book, "running", time.time() - X.PHOTO_JOB_LIMIT - 30)
+    _insert_job("timed-out", photo_book, "running", time.time() - SC.PHOTO_JOB_LIMIT - 30)
     assert c.get("/admin/api/index/photo/timed-out").json["status"] == "error"
     row = A.connect().execute("SELECT status, error FROM photo_jobs WHERE id='timed-out'").fetchone()
     assert row["status"] == "error" and row["error"]
@@ -716,9 +721,9 @@ def test_delete_book_removes_its_cover_and_dish_photos(c):
 # ------------------------------------------------------------ wish list availability
 def test_wishlist_flag_is_off_when_nothing_answers(c, monkeypatch):
     """A configured URL with no wish list app behind it must not show the 'Add to a wish list' button."""
-    monkeypatch.setattr(X, "WISHLIST_URL", "http://127.0.0.1:1")  # port 1: nothing listens
+    monkeypatch.setattr(WL, "WISHLIST_URL", "http://127.0.0.1:1")  # port 1: nothing listens
     assert c.get("/admin/api/features").json["wishlist"] is False
-    monkeypatch.setattr(X, "WISHLIST_URL", "")
+    monkeypatch.setattr(WL, "WISHLIST_URL", "")
     assert c.get("/admin/api/features").json["wishlist"] is False
 
 
@@ -741,7 +746,7 @@ def test_wishlist_flag_is_on_when_app_answers(c, monkeypatch):
     srv = HTTPServer(("127.0.0.1", 0), People)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
-        monkeypatch.setattr(X, "WISHLIST_URL", f"http://127.0.0.1:{srv.server_port}")
+        monkeypatch.setattr(WL, "WISHLIST_URL", f"http://127.0.0.1:{srv.server_port}")
         assert c.get("/admin/api/features").json["wishlist"] is True
     finally:
         srv.shutdown()

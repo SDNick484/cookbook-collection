@@ -22,7 +22,7 @@ Environment:
                   in it. Unset = the machine's zone, which on a stock Alpine install is UTC
   PUBLIC_INDEXING 1 = search engines may index the public catalog (default); 0 = noindex everywhere
 """
-import csv, fcntl, io, ipaddress, json, os, re, sqlite3, threading, time, unicodedata, urllib.parse, urllib.request, uuid
+import csv, fcntl, hashlib, io, ipaddress, json, os, re, sqlite3, threading, time, unicodedata, urllib.parse, urllib.request, uuid
 from functools import wraps
 from pathlib import Path
 
@@ -240,10 +240,13 @@ def _init_db_locked():
     global HAS_FTS
     con = connect()
     con.executescript(SCHEMA)
-    import extras, eyb, ingredients, photos, online, ask, house
+    import dinnerlog, cook, wishlist, scan, eyb, ingredients, photos, online, ask, house
     online.migrate(con)
     house.migrate(con)  # after online: books.kind must exist
-    extras.migrate(con)
+    dinnerlog.migrate(con)
+    cook.migrate(con)
+    wishlist.migrate(con)
+    scan.migrate(con)
     eyb.migrate(con)
     ingredients.migrate(con)
     photos.migrate(con)
@@ -725,17 +728,51 @@ def robots_txt():
 
 
 # ------------------------------------------------------------------- pages
+ASSET_FILES = ("app.js", "style.css")
+
+
+def asset_hashes(static_dir):
+    """A short content hash per asset: the same bytes give the same value in every worker and on every host."""
+    return {n: hashlib.sha256((static_dir / n).read_bytes()).hexdigest()[:10] for n in ASSET_FILES}
+
+
+def render_index(static_dir):
+    """index.html with `?v=<hash>` added to its asset links, and its ETag. Computed once at startup."""
+    hashes = asset_hashes(static_dir)
+    html = (static_dir / "index.html").read_text(encoding="utf-8")
+    for name, h in hashes.items():
+        link = f"/static/{name}"
+        assert html.count(f'"{link}"') == 1, f"index.html must link {link} once, without a version"
+        html = html.replace(f'"{link}"', f'"{link}?v={h}"')
+    body = html.encode("utf-8")
+    return body, hashlib.sha256(body).hexdigest()[:16], hashes
+
+
+_INDEX_BODY, _INDEX_ETAG, _ASSET_HASHES = render_index(APP_DIR / "static")
+_INDEX = (_INDEX_BODY, _INDEX_ETAG)
+
+
 @app.get("/")
 @app.get("/admin")
 @app.get("/admin/")
 @app.get("/admin/recipe/new")  # Dinner Log's "new house recipe" link: a path, so ?title=&return= survive the Access login
 def index():
-    return send_from_directory(APP_DIR / "static", "index.html", max_age=0)
+    html, etag = _INDEX
+    resp = Response(html, mimetype="text/html")
+    resp.set_etag(etag)
+    resp.cache_control.no_cache = True  # revalidated on every visit: it names the current asset URLs
+    return resp.make_conditional(request)
 
 
 @app.get("/static/<path:p>")
 def static_files(p):
-    return send_from_directory(APP_DIR / "static", p, max_age=300)
+    # A URL carrying the file's current content hash can never change meaning, so it may be cached for good.
+    # Any other URL (no hash, or an old one from a page cached before a deploy) keeps the short lifetime.
+    hashed = p in _ASSET_HASHES and request.args.get("v") == _ASSET_HASHES[p]
+    resp = send_from_directory(APP_DIR / "static", p, max_age=31536000 if hashed else 300)
+    if hashed:
+        resp.cache_control.immutable = True
+    return resp
 
 
 @app.get("/covers/<path:p>")
@@ -930,9 +967,9 @@ def list_books(private):
     rows = db().execute(sql, args).fetchall()
     books = book_dicts(rows, private)
     if private:
-        import extras
-        extras.ensure_synced()
-        cb = extras.cooked_by_book([b["id"] for b in books])
+        import dinnerlog
+        dinnerlog.ensure_synced()
+        cb = dinnerlog.cooked_by_book([b["id"] for b in books])
         for b in books:
             b.update(cb.get(b["id"], {}))
     if sort == "title":
@@ -965,17 +1002,17 @@ def get_book(book_id, private):
     for r in book["recipes"]:  # a full recipe (ingredients, steps) has a page of its own: #/recipe/<uid>
         if private or "has_detail" in PUBLIC_RECIPE_FLAGS:
             r["has_detail"] = r["id"] in with_detail
-    import extras
+    import dinnerlog, wishlist
     # Public pages sync too, so their counts stay current; a pull is leased, at most one a minute (with
     # backoff after a failure), and nothing from the request reaches Dinner Log.
-    extras.ensure_synced()
-    cr = extras.cooked_by_recipe(book_id)
+    dinnerlog.ensure_synced()
+    cr = dinnerlog.cooked_by_recipe(book_id)
     for r in book["recipes"]:
         stats = cr.get(r["id"], {})
         r.update(stats if private else {k: stats[k] for k in PUBLIC_RECIPE_COOKED if k in stats})
     if private:
-        book.update(extras.cooked_by_book([book_id]).get(book_id, {}))
-        book["wishes"] = extras.wishes_for_book(book_id)
+        book.update(dinnerlog.cooked_by_book([book_id]).get(book_id, {}))
+        book["wishes"] = wishlist.wishes_for_book(book_id)
         import photos
         book["photos"] = photos.for_book(book_id)
     return jsonify(book)
@@ -1791,10 +1828,14 @@ def export_csv():
 
 
 if __name__ == "__main__":
-    import app as _real  # import as a module so extras.py registers onto the same app
+    import app as _real  # import as a module so the feature modules register onto the same app
     _real.app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8767)), debug=False)
 else:
-    import extras  # noqa: E402,F401 — registers v2 routes
+    import dinnerlog  # noqa: E402,F401 — Dinner Log history
+    import cook  # noqa: E402,F401 — what to cook, stats, shelf
+    import scan  # noqa: E402,F401 — photo index import
+    import mcp  # noqa: E402,F401 — features and the MCP server
+    import wishlist  # noqa: E402,F401 — wish list link
     import eyb  # noqa: E402,F401 — Eat Your Books import
     import ingredients  # noqa: E402,F401 — ingredient tags
     import photos  # noqa: E402,F401 — photos of dishes cooked from the books

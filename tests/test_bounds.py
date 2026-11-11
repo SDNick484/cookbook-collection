@@ -8,14 +8,15 @@ from PIL import Image
 
 import app as A
 import ask
-import extras as X
+import mcp as MC
+import scan as SC
 
 LAN = dict(base_url="http://127.0.0.1:8767", environ_base={"REMOTE_ADDR": "127.0.0.1"})
 
 
 @pytest.fixture()
 def c(monkeypatch):
-    monkeypatch.setattr(X, "MCP_PUBLIC", True)
+    monkeypatch.setattr(MC, "MCP_PUBLIC", True)
     return A.app.test_client()
 
 
@@ -56,8 +57,8 @@ def test_cover_and_photo_uploads_use_the_allow_list(c):
 
 def test_index_photo_uses_the_allow_list(monkeypatch):
     with pytest.raises(ValueError):
-        X.prepare_photo(image_bytes("BMP"))
-    assert X.prepare_photo(image_bytes("JPEG", (400, 600)))[:2] == b"\xff\xd8"
+        SC.prepare_photo(image_bytes("BMP"))
+    assert SC.prepare_photo(image_bytes("JPEG", (400, 600)))[:2] == b"\xff\xd8"
 
 
 # ------------------------------------------------------------------ get_book paging
@@ -86,14 +87,14 @@ def big_book():
 
 def test_get_book_pages_recipes(c, big_book):
     first = call(c, "get_book", {"book_id": big_book})
-    assert first["recipe_count"] == 450 and len(first["recipes"]) == X.GET_BOOK_LIMIT == 200
+    assert first["recipe_count"] == 450 and len(first["recipes"]) == MC.GET_BOOK_LIMIT == 200
     assert first["recipes"][0]["name"] == "Recipe 0001" and first["next_offset"] == 200 and "offset" not in first
     second = call(c, "get_book", {"book_id": big_book, "offset": first["next_offset"]})
     assert second["offset"] == 200 and second["recipes"][0]["name"] == "Recipe 0201" and second["next_offset"] == 400
     last = call(c, "get_book", {"book_id": big_book, "offset": 400})
     assert len(last["recipes"]) == 50 and "next_offset" not in last
     clamped = call(c, "get_book", {"book_id": big_book, "limit": 10_000})  # limit clamps to GET_BOOK_MAX (500)
-    assert X.GET_BOOK_MAX == 500 and len(clamped["recipes"]) == 450 and "next_offset" not in clamped
+    assert MC.GET_BOOK_MAX == 500 and len(clamped["recipes"]) == 450 and "next_offset" not in clamped
     small = call(c, "get_book", {"book_id": big_book, "limit": 5, "offset": 3})
     assert [r["name"] for r in small["recipes"]] == [f"Recipe {i:04}" for i in range(4, 9)] and small["next_offset"] == 8
 
@@ -107,18 +108,18 @@ def test_get_book_on_a_small_book_is_unchanged(c):
 def test_get_book_schema_declares_paging(c):
     tools = {t["name"]: t for t in rpc(c, "tools/list", {})["result"]["tools"]}
     props = tools["get_book"]["inputSchema"]["properties"]
-    assert props["limit"]["maximum"] == X.GET_BOOK_MAX and props["limit"]["default"] == X.GET_BOOK_LIMIT
+    assert props["limit"]["maximum"] == MC.GET_BOOK_MAX and props["limit"]["default"] == MC.GET_BOOK_LIMIT
     assert props["offset"]["minimum"] == 0 and "next_offset" in tools["get_book"]["description"]
 
 
 # ------------------------------------------------------------------ batch cap
 def test_batch_cap(c):
     one = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
-    ok = c.post("/mcp", json=[dict(one, id=i) for i in range(X.MCP_BATCH_MAX)])
-    assert ok.status_code == 200 and len(ok.json) == X.MCP_BATCH_MAX
-    too_many = c.post("/mcp", json=[dict(one, id=i) for i in range(X.MCP_BATCH_MAX + 1)])
+    ok = c.post("/mcp", json=[dict(one, id=i) for i in range(MC.MCP_BATCH_MAX)])
+    assert ok.status_code == 200 and len(ok.json) == MC.MCP_BATCH_MAX
+    too_many = c.post("/mcp", json=[dict(one, id=i) for i in range(MC.MCP_BATCH_MAX + 1)])
     assert too_many.status_code == 400
-    assert too_many.json["error"]["code"] == -32600 and str(X.MCP_BATCH_MAX) in too_many.json["error"]["message"]
+    assert too_many.json["error"]["code"] == -32600 and str(MC.MCP_BATCH_MAX) in too_many.json["error"]["message"]
 
 
 # ------------------------------------------------------------------ Ask: structural truncation

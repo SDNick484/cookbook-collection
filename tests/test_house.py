@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("DATA_DIR", tempfile.mkdtemp())
 import app as A  # noqa: E402
-import extras as X  # noqa: E402
+import mcp as MC  # noqa: E402
+import scan as SC  # noqa: E402
 import house as H  # noqa: E402
 
 ANON = {"REMOTE_ADDR": "203.0.113.9"}  # not in LAN_CIDRS and no Access token: not an editor
@@ -555,7 +556,7 @@ def test_ranking_explains_an_ingredient_list_match(gravy):
 
 
 def test_mcp_finds_house_recipes_privately_and_only_privately(c, gravy, monkeypatch):
-    monkeypatch.setattr(X, "MCP_TOKEN", "tok")
+    monkeypatch.setattr(MC, "MCP_TOKEN", "tok")
     res = mcp(c, "search_recipes", {"query": "marzano"}, token="tok")["structuredContent"]
     hit = next(r for r in res["recipes"] if r["id"] == gravy["id"])
     assert hit["full"] is True and "ingredients" in hit["match"]
@@ -594,7 +595,7 @@ def test_ask_finds_house_recipes_by_ingredient(c, gravy, monkeypatch):
         assert any(r["id"] == gravy["id"] and r["full"] for r in found["recipes"])
         return {"content": [{"type": "tool_use", "id": "t2", "name": "show_results",
                              "input": {"answer": "Your gravy.", "recipe_ids": [gravy["id"]]}}], "usage": {}}
-    monkeypatch.setattr(X, "messages_api", Script([
+    monkeypatch.setattr(SC, "messages_api", Script([
         {"content": [{"type": "tool_use", "id": "t1", "name": "search_recipes", "input": {"ingredient": "pork"}}],
          "usage": {}}, finish]))
     r = c.post("/admin/api/ask", json={"thread": [{"q": "what uses pork neck?"}]})

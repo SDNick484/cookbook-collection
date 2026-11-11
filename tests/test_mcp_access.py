@@ -6,22 +6,22 @@ import pytest
 from werkzeug.test import EnvironBuilder
 
 import app as A
-import extras as X
+import mcp as MC
 
 TOKEN = "access-test-token_Q1"
 OLD, NEW = "old-rotating-token", "new-rotating-token"
 
 PUBLIC_TOOLS = {"search_recipes", "search_books", "get_book", "get_recipe", "list_categories"}
 READ_TOOLS = PUBLIC_TOOLS | {"suggest_recipes", "cooking_stats"}  # private, read-only
-WRITE = set(X.WRITE_TOOLS)
+WRITE = set(MC.WRITE_TOOLS)
 
 
 @pytest.fixture()
 def c(monkeypatch):
-    monkeypatch.setattr(X, "MCP_TOKEN", TOKEN)
-    monkeypatch.setattr(X, "MCP_PUBLIC", True)
-    monkeypatch.setattr(X, "MCP_WRITE", False)
-    monkeypatch.setattr(X, "MCP_URL_TOKEN", True)
+    monkeypatch.setattr(MC, "MCP_TOKEN", TOKEN)
+    monkeypatch.setattr(MC, "MCP_PUBLIC", True)
+    monkeypatch.setattr(MC, "MCP_WRITE", False)
+    monkeypatch.setattr(MC, "MCP_URL_TOKEN", True)
     return A.app.test_client()
 
 
@@ -78,8 +78,8 @@ IDS = [f"{caller}-write{int(w)}-url{int(u)}" for caller, w, u, *_ in MATRIX]
 
 @pytest.mark.parametrize("caller,write,url_token,status,expected", MATRIX, ids=IDS)
 def test_tools_list(c, monkeypatch, caller, write, url_token, status, expected):
-    monkeypatch.setattr(X, "MCP_WRITE", write)
-    monkeypatch.setattr(X, "MCP_URL_TOKEN", url_token)
+    monkeypatch.setattr(MC, "MCP_WRITE", write)
+    monkeypatch.setattr(MC, "MCP_URL_TOKEN", url_token)
     url, headers = request_for(caller)
     r = rpc(c, "tools/list", url=url, headers=headers)
     assert r.status_code == status
@@ -91,8 +91,8 @@ def test_tools_list(c, monkeypatch, caller, write, url_token, status, expected):
 
 @pytest.mark.parametrize("caller,write,url_token,status,expected", MATRIX, ids=IDS)
 def test_tools_call(c, monkeypatch, rid, caller, write, url_token, status, expected):
-    monkeypatch.setattr(X, "MCP_WRITE", write)
-    monkeypatch.setattr(X, "MCP_URL_TOKEN", url_token)
+    monkeypatch.setattr(MC, "MCP_WRITE", write)
+    monkeypatch.setattr(MC, "MCP_URL_TOKEN", url_token)
     url, headers = request_for(caller)
 
     # a public read tool
@@ -119,7 +119,7 @@ def test_tools_call(c, monkeypatch, rid, caller, write, url_token, status, expec
 
 
 def test_path_token_cannot_write_through_a_batch(c, monkeypatch, rid):
-    monkeypatch.setattr(X, "MCP_WRITE", True)
+    monkeypatch.setattr(MC, "MCP_WRITE", True)
     batch = [{"jsonrpc": "2.0", "id": i, "method": "tools/call",
               "params": {"name": n, "arguments": {"recipe_id": rid, "want": True}}}
              for i, n in enumerate(["set_want_to_try", "update_book"])]
@@ -129,7 +129,7 @@ def test_path_token_cannot_write_through_a_batch(c, monkeypatch, rid):
 
 def test_path_token_wins_over_a_header(c, monkeypatch):
     """Both supplied: the path decides, so a valid header can't lift a path request to write."""
-    monkeypatch.setattr(X, "MCP_WRITE", True)
+    monkeypatch.setattr(MC, "MCP_WRITE", True)
     r = rpc(c, "tools/list", url=f"/mcp/{TOKEN}", headers={"Authorization": f"Bearer {TOKEN}"})
     assert {t["name"] for t in r.json["result"]["tools"]} == READ_TOOLS
 
@@ -138,16 +138,16 @@ def test_path_token_wins_over_a_header(c, monkeypatch):
 @pytest.mark.parametrize("write", [False, True])
 @pytest.mark.parametrize("url_token", [False, True])
 def test_wrong_token_is_refused_not_public(c, monkeypatch, write, url_token):
-    monkeypatch.setattr(X, "MCP_WRITE", write)
-    monkeypatch.setattr(X, "MCP_URL_TOKEN", url_token)
+    monkeypatch.setattr(MC, "MCP_WRITE", write)
+    monkeypatch.setattr(MC, "MCP_URL_TOKEN", url_token)
     assert rpc(c, "tools/list", headers={"Authorization": "Bearer wrong"}).status_code == 401
     assert rpc(c, "tools/list", url="/mcp/wrong").status_code == 404
 
 
 def test_url_token_off_refuses_before_comparing(c, monkeypatch):
-    monkeypatch.setattr(X, "MCP_URL_TOKEN", False)
+    monkeypatch.setattr(MC, "MCP_URL_TOKEN", False)
     calls = []
-    monkeypatch.setattr(X, "token_ok", lambda s: calls.append(s) or True)
+    monkeypatch.setattr(MC, "token_ok", lambda s: calls.append(s) or True)
     assert rpc(c, "tools/list", url=f"/mcp/{TOKEN}").status_code == 404 and calls == []
 
 
@@ -155,7 +155,7 @@ def test_url_token_off_refuses_before_comparing(c, monkeypatch):
 @pytest.mark.parametrize("configured", [f"{OLD},{NEW}", f" {OLD} , {NEW} ", f",{OLD},,{NEW},"])
 @pytest.mark.parametrize("caller", ["header", "path"])
 def test_each_listed_token_is_accepted(c, monkeypatch, configured, caller):
-    monkeypatch.setattr(X, "MCP_TOKEN", configured)
+    monkeypatch.setattr(MC, "MCP_TOKEN", configured)
     for tok in (OLD, NEW):
         url, headers = request_for(caller, tok)
         r = rpc(c, "tools/list", url=url, headers=headers)
@@ -164,46 +164,46 @@ def test_each_listed_token_is_accepted(c, monkeypatch, configured, caller):
 
 @pytest.mark.parametrize("bad", [f"{OLD},{NEW}", OLD + NEW, OLD[:-1], ",", " "])
 def test_the_list_itself_or_a_fragment_is_not_a_token(c, monkeypatch, bad):
-    monkeypatch.setattr(X, "MCP_TOKEN", f"{OLD},{NEW}")
-    monkeypatch.setattr(X, "MCP_PUBLIC", False)
+    monkeypatch.setattr(MC, "MCP_TOKEN", f"{OLD},{NEW}")
+    monkeypatch.setattr(MC, "MCP_PUBLIC", False)
     r = rpc(c, "tools/list", headers={"Authorization": f"Bearer {bad}"})
     assert r.status_code == 401
 
 
 def test_rotation_add_move_remove(c, monkeypatch):
     hdr = lambda t: {"Authorization": f"Bearer {t}"}
-    monkeypatch.setattr(X, "MCP_TOKEN", OLD)
+    monkeypatch.setattr(MC, "MCP_TOKEN", OLD)
     assert rpc(c, "tools/list", headers=hdr(NEW)).status_code == 401
-    monkeypatch.setattr(X, "MCP_TOKEN", f"{OLD},{NEW}")  # add the new one
+    monkeypatch.setattr(MC, "MCP_TOKEN", f"{OLD},{NEW}")  # add the new one
     assert rpc(c, "tools/list", headers=hdr(OLD)).status_code == 200
     assert rpc(c, "tools/list", headers=hdr(NEW)).status_code == 200
-    monkeypatch.setattr(X, "MCP_TOKEN", NEW)  # clients moved: remove the old one
+    monkeypatch.setattr(MC, "MCP_TOKEN", NEW)  # clients moved: remove the old one
     assert rpc(c, "tools/list", headers=hdr(OLD)).status_code == 401
     assert rpc(c, "tools/list", headers=hdr(NEW)).status_code == 200
 
 
 def test_mcp_tokens_parsing(monkeypatch):
-    monkeypatch.setattr(X, "MCP_TOKEN", " a ,, b ,")
-    assert X.mcp_tokens() == ["a", "b"]
-    monkeypatch.setattr(X, "MCP_TOKEN", "")
-    assert X.mcp_tokens() == [] and X.token_ok("") is False and X.token_ok("anything") is False
+    monkeypatch.setattr(MC, "MCP_TOKEN", " a ,, b ,")
+    assert MC.mcp_tokens() == ["a", "b"]
+    monkeypatch.setattr(MC, "MCP_TOKEN", "")
+    assert MC.mcp_tokens() == [] and MC.token_ok("") is False and MC.token_ok("anything") is False
 
 
 @pytest.mark.parametrize("supplied", ["t1", "t2", "t3", "nope"])
 def test_every_candidate_is_compared(monkeypatch, supplied):
     """No early exit on a match: the time doesn't say which token matched or how many there are."""
-    monkeypatch.setattr(X, "MCP_TOKEN", "t1,t2,t3")
+    monkeypatch.setattr(MC, "MCP_TOKEN", "t1,t2,t3")
     seen = []
     real = hmac.compare_digest
-    monkeypatch.setattr(X.hmac, "compare_digest", lambda a, b: seen.append(b) or real(a, b))
-    assert X.token_ok(supplied) is (supplied != "nope")
+    monkeypatch.setattr(hmac, "compare_digest", lambda a, b: seen.append(b) or real(a, b))
+    assert MC.token_ok(supplied) is (supplied != "nope")
     assert seen == [b"t1", b"t2", b"t3"]
 
 
 def test_non_ascii_token_is_refused_not_500(c, monkeypatch):
-    monkeypatch.setattr(X, "MCP_TOKEN", f"{OLD},トークン")
-    assert X.token_ok("トークン") is True
-    monkeypatch.setattr(X, "MCP_PUBLIC", False)
+    monkeypatch.setattr(MC, "MCP_TOKEN", f"{OLD},トークン")
+    assert MC.token_ok("トークン") is True
+    monkeypatch.setattr(MC, "MCP_PUBLIC", False)
     assert rpc(c, "tools/list", headers={"Authorization": "Bearer é"}).status_code == 401
 
 
@@ -219,17 +219,17 @@ def run_wsgi(path):
 
 @pytest.mark.parametrize("url_token", [True, False])
 def test_path_token_is_redacted_whether_accepted_or_refused(monkeypatch, url_token):
-    monkeypatch.setattr(X, "MCP_TOKEN", f"{OLD},{NEW}")
-    monkeypatch.setattr(X, "MCP_URL_TOKEN", url_token)
+    monkeypatch.setattr(MC, "MCP_TOKEN", f"{OLD},{NEW}")
+    monkeypatch.setattr(MC, "MCP_URL_TOKEN", url_token)
     env, status = run_wsgi(f"/mcp/{NEW}")
     assert status.startswith("200" if url_token else "404")
-    assert env["RAW_URI"] == "/mcp/<redacted>" and X.MCP_TOKEN_KEY not in env
+    assert env["RAW_URI"] == "/mcp/<redacted>" and MC.MCP_TOKEN_KEY not in env
     assert not any(NEW in v for v in env.values() if isinstance(v, str))
 
 
 def test_write_tool_log_line_has_no_token(c, monkeypatch, rid, caplog):
     import logging
-    monkeypatch.setattr(X, "MCP_WRITE", True)
+    monkeypatch.setattr(MC, "MCP_WRITE", True)
     with caplog.at_level(logging.DEBUG):
         rpc(c, "tools/call", {"name": "set_want_to_try", "arguments": {"recipe_id": rid, "want": True}},
             headers={"Authorization": f"Bearer {TOKEN}"})

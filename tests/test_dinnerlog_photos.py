@@ -9,7 +9,7 @@ import pytest
 from PIL import Image
 
 import app as A
-import extras as X
+import dinnerlog as DL
 import photos as P
 
 TOKEN = "dl-token-for-tests"
@@ -29,7 +29,7 @@ def jpeg(color=(200, 80, 30), size=(1600, 1200), gps=False):
 
 
 class Fetch:
-    """Stands in for extras.fetch_dl_photo: bytes per name, an exception to raise, or None (a 404)."""
+    """Stands in for dinnerlog.fetch_dl_photo: bytes per name, an exception to raise, or None (a 404)."""
 
     def __init__(self, answers=None, default=None):
         self.answers, self.calls = dict(answers or {}), []
@@ -45,9 +45,9 @@ class Fetch:
 
 @pytest.fixture()
 def con(monkeypatch):
-    monkeypatch.setattr(X, "DINNERLOG_API_URL", URL)
-    monkeypatch.setattr(X, "DINNERLOG_TOKEN", TOKEN)
-    monkeypatch.setattr(X, "start_background", lambda fn: None)   # pages never start a real pull here
+    monkeypatch.setattr(DL, "DINNERLOG_API_URL", URL)
+    monkeypatch.setattr(DL, "DINNERLOG_TOKEN", TOKEN)
+    monkeypatch.setattr(DL, "start_background", lambda fn: None)   # pages never start a real pull here
     c = A.connect()
     for t in ("dl_meals", "dl_photos", "cooked", "dl_link", "dl_photo_skip"):
         c.execute(f"DELETE FROM {t}")
@@ -93,8 +93,8 @@ def meal(id_, recipe_uid=None, photos=None, day="2026-10-01", name="Dinner", **k
 
 
 def snapshot(con, meals, etag='"v"'):
-    X.store_snapshot(con, meals, etag)
-    X.rebuild_cooked(con, force=True)
+    DL.store_snapshot(con, meals, etag)
+    DL.rebuild_cooked(con, force=True)
 
 
 def imported(con):
@@ -110,16 +110,16 @@ def skips(con):
 
 def test_upgrade_adds_tables_columns_and_forgets_the_etag(con):
     con.execute("DROP TABLE dl_photos")
-    X.meta_set(con, "dl_etag", '"from-before"')
+    DL.meta_set(con, "dl_etag", '"from-before"')
     con.commit()
-    X.migrate(con)
+    DL.migrate(con)
     con.commit()
-    assert X.meta_get(con, "dl_etag") is None          # else a 304 would keep the photo lists from ever arriving
+    assert DL.meta_get(con, "dl_etag") is None          # else a 304 would keep the photo lists from ever arriving
     assert con.execute("SELECT count(*) FROM dl_photos").fetchone()[0] == 0
-    X.meta_set(con, "dl_etag", '"kept"')
+    DL.meta_set(con, "dl_etag", '"kept"')
     con.commit()
-    X.migrate(con)                                      # only the first time
-    assert X.meta_get(con, "dl_etag") == '"kept"'
+    DL.migrate(con)                                      # only the first time
+    assert DL.meta_get(con, "dl_etag") == '"kept"'
 
 
 def test_upgrade_adds_dl_file_to_existing_photos(con, recipes):
@@ -140,17 +140,17 @@ def test_upgrade_adds_dl_file_to_existing_photos(con, recipes):
 # ------------------------------------------------------------------ the stored list
 
 def test_snapshot_stores_valid_photo_names_only(con):
-    X.store_snapshot(con, [meal(1, photos=[F1, F2, "../x.jpg", F1[:-4] + "-t.jpg", 7, F1.upper()]),
+    DL.store_snapshot(con, [meal(1, photos=[F1, F2, "../x.jpg", F1[:-4] + "-t.jpg", 7, F1.upper()]),
                            meal(2, photos=[F2, F3]),        # a name listed twice keeps its first meal
                            meal(3, photos="nope"), meal(4)], '"a"')
     assert dict(con.execute("SELECT dl_file, meal_id FROM dl_photos").fetchall()) == {F1: 1, F2: 1, F3: 2}
-    X.store_snapshot(con, [meal(1)], '"b"')                 # replaced with the history
+    DL.store_snapshot(con, [meal(1)], '"b"')                 # replaced with the history
     assert con.execute("SELECT count(*) FROM dl_photos").fetchone()[0] == 0
 
 
 def test_history_without_photos_field_still_valid(con):
     body = json.dumps({"version": 1, "meals": [meal(1, photos=None)]}).encode()
-    assert X._valid_history(body) is not None
+    assert DL._valid_history(body) is not None
 
 
 # ------------------------------------------------------------------ fetch_dl_photo
@@ -175,10 +175,10 @@ def test_fetch_sends_token_through_the_no_redirect_opener(con, monkeypatch):
     def fake(req, timeout):
         seen.append((req, timeout))
         return Resp(b"jpegbytes")
-    monkeypatch.setattr(X, "dl_open", fake)
-    assert X.fetch_dl_photo(F1) == b"jpegbytes"
+    monkeypatch.setattr(DL, "dl_open", fake)
+    assert DL.fetch_dl_photo(F1) == b"jpegbytes"
     req, timeout = seen[0]
-    assert req.full_url == f"{URL}/api/photos/{F1}" and timeout == X.DL_PHOTO_TIMEOUT
+    assert req.full_url == f"{URL}/api/photos/{F1}" and timeout == DL.DL_PHOTO_TIMEOUT
     assert req.get_header("Authorization") == f"Bearer {TOKEN}"
 
 
@@ -187,28 +187,28 @@ def test_fetch_404_is_none_and_other_errors_raise(con, monkeypatch):
         def fake(req, timeout):
             raise urllib.error.HTTPError(req.full_url, code, "x", {}, io.BytesIO(b""))
         return fake
-    monkeypatch.setattr(X, "dl_open", answer(404))
-    assert X.fetch_dl_photo(F1) is None
+    monkeypatch.setattr(DL, "dl_open", answer(404))
+    assert DL.fetch_dl_photo(F1) is None
     for code in (302, 401, 500):                            # _NoRedirect turns a redirect into an HTTPError
-        monkeypatch.setattr(X, "dl_open", answer(code))
+        monkeypatch.setattr(DL, "dl_open", answer(code))
         with pytest.raises(urllib.error.HTTPError):
-            X.fetch_dl_photo(F1)
+            DL.fetch_dl_photo(F1)
 
 
 def test_fetch_caps_the_size(con, monkeypatch):
-    monkeypatch.setattr(X, "DL_PHOTO_MAX_BYTES", 100)
-    monkeypatch.setattr(X, "dl_open", lambda req, timeout: Resp(b"x" * 101))
-    with pytest.raises(X.DLPhotoTooLarge):
-        X.fetch_dl_photo(F1)
-    monkeypatch.setattr(X, "dl_open", lambda req, timeout: Resp(b"x" * 100))
-    assert len(X.fetch_dl_photo(F1)) == 100
+    monkeypatch.setattr(DL, "DL_PHOTO_MAX_BYTES", 100)
+    monkeypatch.setattr(DL, "dl_open", lambda req, timeout: Resp(b"x" * 101))
+    with pytest.raises(DL.DLPhotoTooLarge):
+        DL.fetch_dl_photo(F1)
+    monkeypatch.setattr(DL, "dl_open", lambda req, timeout: Resp(b"x" * 100))
+    assert len(DL.fetch_dl_photo(F1)) == 100
 
 
 def test_fetch_refuses_odd_names(con, monkeypatch):
-    monkeypatch.setattr(X, "dl_open", lambda req, timeout: pytest.fail("no request for a bad name"))
+    monkeypatch.setattr(DL, "dl_open", lambda req, timeout: pytest.fail("no request for a bad name"))
     for name in ("../meals.db", F1[:-4] + "-t.jpg", "x"):
         with pytest.raises(ValueError):
-            X.fetch_dl_photo(name)
+            DL.fetch_dl_photo(name)
 
 
 # ------------------------------------------------------------------ sync: import
@@ -278,7 +278,7 @@ def test_404_skips_for_now(con, recipes):
 
 def test_unreadable_is_remembered(con, recipes):
     snapshot(con, [meal(1, recipes["Pan sauce chicken"][1], [F1, F2])])
-    fetch = Fetch({F1: b"not an image", F2: X.DLPhotoTooLarge("too big")})
+    fetch = Fetch({F1: b"not an image", F2: DL.DLPhotoTooLarge("too big")})
     P.sync_dl_photos(con, fetch)
     assert imported(con) == {} and skips(con) == {F1: "unreadable", F2: "unreadable"}
     P.sync_dl_photos(con, fetch)
@@ -389,14 +389,14 @@ def test_background_pull_syncs_after_200_and_304(con, recipes, monkeypatch):
     ruid = recipes["Pan sauce chicken"][1]
     calls = []
     monkeypatch.setattr(P, "sync_dl_photos", lambda c, fetch: calls.append(fetch) or {})
-    monkeypatch.setattr(X, "dl_open", lambda req, timeout: history_resp([meal(1, ruid, [F1])]))
-    X.background_pull()
-    assert calls == [X.fetch_dl_photo]
+    monkeypatch.setattr(DL, "dl_open", lambda req, timeout: history_resp([meal(1, ruid, [F1])]))
+    DL.background_pull()
+    assert calls == [DL.fetch_dl_photo]
 
     def not_modified(req, timeout):
         raise urllib.error.HTTPError(req.full_url, 304, "x", {}, io.BytesIO(b""))
-    monkeypatch.setattr(X, "dl_open", not_modified)
-    X.background_pull()
+    monkeypatch.setattr(DL, "dl_open", not_modified)
+    DL.background_pull()
     assert len(calls) == 2                                     # a capped backlog keeps going on a 304
 
 
@@ -406,8 +406,8 @@ def test_background_pull_skips_sync_after_a_failed_pull(con, monkeypatch):
 
     def down(req, timeout):
         raise urllib.error.URLError("connection refused")
-    monkeypatch.setattr(X, "dl_open", down)
-    X.background_pull()
+    monkeypatch.setattr(DL, "dl_open", down)
+    DL.background_pull()
     assert calls == []
 
 
@@ -415,9 +415,9 @@ def test_sync_crash_doesnt_look_like_a_failed_pull(con, recipes, monkeypatch):
     def boom(c, fetch):
         raise RuntimeError("bug")
     monkeypatch.setattr(P, "sync_dl_photos", boom)
-    monkeypatch.setattr(X, "dl_open", lambda req, timeout: history_resp([meal(1)]))
-    X.background_pull()
-    assert X.meta_get(con, "dl_error") is None and X.meta_get(con, "dl_lease") == "0"
+    monkeypatch.setattr(DL, "dl_open", lambda req, timeout: history_resp([meal(1)]))
+    DL.background_pull()
+    assert DL.meta_get(con, "dl_error") is None and DL.meta_get(con, "dl_lease") == "0"
 
 
 # ------------------------------------------------------------------ what visitors and editors see

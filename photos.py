@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS dl_photo_skip (      -- Dinner Log files never to imp
   at TEXT DEFAULT CURRENT_TIMESTAMP);
 """
 DL_PHOTO_BATCH = 8       # imports per pull, so a first sync with many photos doesn't hold the lease too long
-DL_PHOTO_BUDGET = 45     # seconds of importing per pull (the lease is extras.LEASE_TTL, 120)
+DL_PHOTO_BUDGET = 45     # seconds of importing per pull (the lease is dinnerlog.LEASE_TTL, 120)
 DL_PHOTO_MAX_AGE = 600   # cache lifetime of an imported photo's files, so an unshare doesn't linger for a day
 _clock = time.monotonic
 
@@ -238,7 +238,7 @@ def delete_photo(pid):
 
 # ======================================================== photos shared from Dinner Log
 def sync_dl_photos(con, fetch, batch=None, budget=None):
-    """Make the imported copies match what Dinner Log shares, after a history pull (extras.background_pull, under
+    """Make the imported copies match what Dinner Log shares, after a history pull (dinnerlog.background_pull, under
     its lease). `fetch(name)` returns the photo's bytes, None if it isn't shared any more, or raises.
 
     Wanted: each file in dl_photos whose dinner `cooked` resolves to a recipe here, at that recipe, unless it is
@@ -251,7 +251,7 @@ def sync_dl_photos(con, fetch, batch=None, budget=None):
               EXIF) with taken_on = the dinner's day. Unreadable or oversized: skipped for good. A 404: skipped
               for now (it was unshared since the pull). Any other error ends this pull's imports.
     No transaction stays open across a fetch. Uploaded photos (dl_file NULL) are never touched."""
-    from extras import DLPhotoTooLarge
+    from dinnerlog import DLPhotoTooLarge
     batch = DL_PHOTO_BATCH if batch is None else batch
     budget = DL_PHOTO_BUDGET if budget is None else budget
     st = dict.fromkeys(("imported", "moved", "removed", "skipped", "pending"), 0)

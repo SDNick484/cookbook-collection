@@ -9,7 +9,7 @@ import logging
 import pytest
 
 import app as A
-import extras as X
+import dinnerlog as DL
 from test_dinnerlog_http import ZUNI, DINING_IN, book_id, configured, cooked, lone_recipes, meal  # noqa: F401
 
 
@@ -18,8 +18,8 @@ def uid_of(con, table, id_):
 
 
 def rebuild(con, meals):
-    X.store_snapshot(con, meals, '"t"')
-    res = X.rebuild_cooked(con, force=True)
+    DL.store_snapshot(con, meals, '"t"')
+    res = DL.rebuild_cooked(con, force=True)
     assert res["rebuilt"] is True
     return res["resolved"]
 
@@ -111,7 +111,7 @@ def test_manual_link_still_first(configured):
     zuni = book_id(con, ZUNI)
     (r1, n1, p1), (r2, _, _) = lone_recipes(con, zuni)
     m = meal(1, n1, ZUNI, str(p1), cookbook_recipe_uid=uid_of(con, "recipes", r1))
-    con.execute("INSERT INTO dl_link VALUES (1, ?, ?)", (r2, X.meal_key("2026-10-01", n1)))
+    con.execute("INSERT INTO dl_link VALUES (1, ?, ?)", (r2, DL.meal_key("2026-10-01", n1)))
     con.commit()
     counts = rebuild(con, [m])
     assert cooked(con) == {1: (zuni, r2, "manual")} and counts["manual"] == 1
@@ -143,9 +143,9 @@ def test_counts_logged_stored_and_reported(configured, caplog, monkeypatch):
     assert line == ("Dinner Log history matched: 5 meals; manual=0 recipe_uid=1 book_uid=1 int=1 web=0 text=1 "
                     "skipped=1 uid_missed=0")
     assert n1 not in line and "Taqueria" not in line                # counts, never rows
-    stored = json.loads(X.meta_get(con, "dl_resolved"))
+    stored = json.loads(DL.meta_get(con, "dl_resolved"))
     assert stored["recipe_uid"] == 1 and stored["skipped"] == 1
-    monkeypatch.setattr(X, "pull_history", lambda con: {"ok": True})
+    monkeypatch.setattr(DL, "pull_history", lambda con: {"ok": True})
     r = A.app.test_client().get("/admin/api/dinnerlog", environ_base={"REMOTE_ADDR": "127.0.0.1"})
     assert r.status_code == 200 and r.json["resolved"] == stored
 
@@ -159,22 +159,22 @@ def test_migration_adds_uid_columns_and_forgets_etag(configured):
         CREATE TABLE dl_meals (id INTEGER PRIMARY KEY, day TEXT, name TEXT, source_type TEXT, source_title TEXT,
           source_detail TEXT, rating REAL, cookbook_book_id INTEGER, cookbook_recipe_id INTEGER);
         INSERT INTO dl_meals(id, day, name) VALUES (1, '2026-10-01', 'Kept');""")
-    X.meta_set(con, "dl_etag", '"same-body"')
+    DL.meta_set(con, "dl_etag", '"same-body"')
     con.commit()
-    X.migrate(con)
+    DL.migrate(con)
     con.commit()
     cols = [r[1] for r in con.execute("PRAGMA table_info(dl_meals)")]
     assert cols[-2:] == ["cookbook_book_uid", "cookbook_recipe_uid"]
     assert [tuple(r) for r in con.execute("SELECT name, cookbook_recipe_uid FROM dl_meals")] == [("Kept", None)]
-    assert X.meta_get(con, "dl_etag") is None
-    X.meta_set(con, "dl_etag", '"later"')
+    assert DL.meta_get(con, "dl_etag") is None
+    DL.meta_set(con, "dl_etag", '"later"')
     con.commit()
-    X.migrate(con)                                                   # a second start leaves the ETag alone
-    assert X.meta_get(con, "dl_etag") == '"later"'
+    DL.migrate(con)                                                   # a second start leaves the ETag alone
+    assert DL.meta_get(con, "dl_etag") == '"later"'
 
 
 def test_snapshot_keeps_uids_and_tolerates_their_absence(configured):
     con = configured
-    X.store_snapshot(con, [meal(1, "a", cookbook_recipe_uid="a" * 32), meal(2, "b")], '"t"')
+    DL.store_snapshot(con, [meal(1, "a", cookbook_recipe_uid="a" * 32), meal(2, "b")], '"t"')
     rows = con.execute("SELECT id, cookbook_book_uid, cookbook_recipe_uid FROM dl_meals ORDER BY id")
     assert [tuple(r) for r in rows] == [(1, None, "a" * 32), (2, None, None)]

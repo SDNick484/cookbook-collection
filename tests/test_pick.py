@@ -11,7 +11,7 @@ os.environ.setdefault("DATA_DIR", tempfile.mkdtemp())
 os.environ.setdefault("CF_TEAM_DOMAIN", "team.example.com")
 os.environ.setdefault("CF_AUD", "aud123")
 import app as A  # noqa: E402
-import extras as X  # noqa: E402
+import cook as CK  # noqa: E402
 from dl_history import History  # noqa: E402
 
 CF = {"Cf-Ray": "abc", "Cf-Connecting-Ip": "203.0.113.9"}  # looks like it came through Cloudflare, no Access JWT
@@ -114,9 +114,9 @@ def test_auth_and_validation(c, dl, monkeypatch):
 
 
 def test_pick_terms():
-    assert X.pick_terms(" Chicken, leeks ,,chicken, LEEKS ") == ["Chicken", "leeks"]
-    assert len(X.pick_terms(",".join(f"i{n}" for n in range(9)))) == X.PICK_MAX_TERMS
-    assert X.pick_terms(None) == []
+    assert CK.pick_terms(" Chicken, leeks ,,chicken, LEEKS ") == ["Chicken", "leeks"]
+    assert len(CK.pick_terms(",".join(f"i{n}" for n in range(9)))) == CK.PICK_MAX_TERMS
+    assert CK.pick_terms(None) == []
 
 
 def test_pick_and_cook_send_uids(c):

@@ -256,6 +256,47 @@ def test_a_public_house_book_is_readable_and_a_members_cookbook_is_not(c):
         set_visibility(cookbook, "public")
 
 
+def test_cooking_insights_are_editor_only(c, monkeypatch):
+    """Progress ("made 12 of 140"), Shelf check and the neglected Cook mode are cooking history: the public site
+    and the public MCP get none of it, even for a book that is public."""
+    from datetime import date
+    from dl_history import History
+    row = q("SELECT b.id, b.uid, b.title, r.id, r.page, r.name FROM books b JOIN recipes r ON r.book_id=b.id "
+            f"WHERE {A.COOKBOOKS} AND b.visibility='public' AND r.page IS NOT NULL ORDER BY b.id, r.id LIMIT 1")[0]
+    bid, buid, title, rid_, page, name = row
+    History(monkeypatch).add(date.today().isoformat(), name, "cookbook", title, page, 9)
+    # the editor sees it (this is what must not leak)
+    mine = c.get(f"/admin/api/books/{bid}").json
+    assert mine["made_count"] >= 1 and any(r["made"] for r in mine["recipes"])
+    assert next(b for b in c.get("/admin/api/books?limit=1000").json["books"] if b["id"] == bid)["made_count"] >= 1
+    assert "shelf_check" in c.get("/admin/api/stats").json
+    # public JSON API: no progress anywhere, and a recipe carries only the public fields plus the made count
+    public = c.get(f"/api/books/{bid}")
+    assert public.status_code == 200
+    pub = public.json
+    assert "made_count" not in pub and "cooked_last" not in pub and "cooked_count" not in pub
+    allowed = set(A.PUBLIC_RECIPE) | set(A.PUBLIC_RECIPE_COOKED) | set(A.PUBLIC_RECIPE_FLAGS)
+    assert all(set(r) <= allowed for r in pub["recipes"])
+    assert c.get(f"/api/books/by-uid/{buid}").json.get("made_count") is None
+    assert all("made_count" not in b for b in c.get("/api/books").json["books"])
+    assert all("made_count" not in b for b in c.get("/api/books?q=" + title.split()[0]).json["books"])
+    # editor routes refuse an anonymous caller
+    for path in ("/admin/api/stats", "/admin/api/cook?mode=neglected", "/admin/api/suggest?mode=neglected",
+                 "/admin/api/pick?mode=neglected", f"/admin/api/books/{bid}", "/admin/api/books?unindexed=1"):
+        assert c.get(path, environ_base=ANON).status_code == 401, path
+    # the public MCP: the private tools don't exist for it, and the tools it has show no cooking history
+    listed = c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).json["result"]["tools"]
+    assert not {"cooking_stats", "suggest_recipes"} & {t["name"] for t in listed}
+    for tool, args in (("cooking_stats", {}), ("suggest_recipes", {"mode": "neglected"})):
+        r = c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                 "params": {"name": tool, "arguments": args}}).json
+        assert "result" not in r and "Unknown tool" in r["error"]["message"], tool
+    seen = json.dumps([mcp(c, "get_book", {"book_id": bid}), mcp(c, "search_books", {"query": title.split()[0]}),
+                       mcp(c, "search_recipes", {"query": name.split()[0]}), mcp(c, "list_categories", {})])
+    for word in ("made_count", "shelf_check", "cooked_count", "cooked_last", "lapsed"):
+        assert word not in seen, word
+
+
 # ------------------------------------------------------------------ export / import of the house book
 def test_restore_maps_the_house_book_onto_this_catalogs_own(c, monkeypatch, tmp_path):
     """A merge import into a catalog that already has a house book (with another uid) updates that one instead of

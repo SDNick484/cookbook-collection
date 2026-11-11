@@ -973,8 +973,11 @@ def list_books(private):
         import dinnerlog
         dinnerlog.ensure_synced()
         cb = dinnerlog.cooked_by_book([b["id"] for b in books])
+        mb = dinnerlog.made_by_book([b["id"] for b in books if b["kind"] is None])
         for b in books:
             b.update(cb.get(b["id"], {}))
+            if b["kind"] is None:  # editors' "made 12 of 140": cookbooks only, never on the public list
+                b["made_count"] = mb.get(b["id"], 0)
     if sort == "title":
         books.sort(key=lambda b: fold(re.sub(r"^(the|a|an)\s+", "", b["title"], flags=re.I)))
     elif sort == "cooked" and private:
@@ -1015,6 +1018,10 @@ def get_book(book_id, private):
         r.update(stats if private else {k: stats[k] for k in PUBLIC_RECIPE_COOKED if k in stats})
     if private:
         book.update(dinnerlog.cooked_by_book([book_id]).get(book_id, {}))
+        if book["kind"] is None:  # editors only: how far through the book we are, and which recipes count
+            book["made_count"] = dinnerlog.made_by_book([book_id]).get(book_id, 0)
+            for r in book["recipes"]:
+                r["made"] = bool(cr.get(r["id"], {}).get("cooked_count") or r["last_made"])
         book["wishes"] = wishlist.wishes_for_book(book_id)
         import photos
         book["photos"] = photos.for_book(book_id)

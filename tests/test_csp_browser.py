@@ -343,3 +343,34 @@ def test_recent_changes_and_undo(w, server, book):
     names = [r["name"] for r in c.get(f"/admin/api/books/{book}").json["recipes"]]
     assert "Batch one" not in names and "Batch two" not in names
     w.assert_clean("recent changes")
+
+
+def test_editor_insights_screens(w, server, book):
+    """Progress on the card and book page, the made filter, Stats -> Shelf check and the neglected Cook mode render
+    for an editor with no CSP violation or script error."""
+    c = A.app.test_client()
+    rid = c.get(f"/admin/api/books/{book}").json["recipes"][0]["id"]
+    assert c.put(f"/admin/api/recipes/{rid}", json={"last_made": "2026-01-05"}).status_code == 200   # one of two made
+    w.goto(f"{server}/admin#/")
+    card = w.page.locator("a.card", has_text="CSP Test Kitchen")
+    card.locator(".prog .pt", has_text="made 1 of 2").wait_for()
+    w.page.goto(f"{server}/admin#/book/{book}")
+    w.page.locator(".book .prog .pt", has_text="made 1 of 2").wait_for()
+    shown = lambda: w.page.locator("#rl li:not(.hidden)")
+    assert shown().count() == 2
+    w.page.locator(".mf button", has_text="Not yet made").click()
+    assert shown().count() == 1 and "Lemon Tart" in shown().inner_text()     # the first recipe is the made one
+    w.page.locator(".mf button", has_text="Made").first.click()
+    assert shown().count() == 1 and "Roast Chicken" in shown().inner_text()
+    w.page.locator(".mf button", has_text="All").click()
+    assert shown().count() == 2
+    w.page.goto(f"{server}/admin#/stats")
+    w.page.get_by_role("heading", name="Shelf check").wait_for()
+    for panel in ("Never cooked from", "Not cooked from in 12 months", "Cooked a lot, never rated", "Index coverage"):
+        assert w.page.get_by_role("heading", name=panel).count() == 1, panel
+    w.page.goto(f"{server}/admin#/cook")
+    w.page.locator(".cookbar .seg button", has_text="From a neglected book").click()
+    w.page.locator("#cook-list li").first.wait_for()
+    w.page.wait_for_load_state("networkidle")
+    assert w.page.locator(".cookbar .seg button.on").inner_text() == "From a neglected book"
+    w.assert_clean("insights screens")

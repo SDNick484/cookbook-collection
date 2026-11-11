@@ -240,12 +240,12 @@ def _init_db_locked():
     global HAS_FTS
     con = connect()
     con.executescript(SCHEMA)
-    import dinnerlog, cook, extras, scan, eyb, ingredients, photos, online, ask, house
+    import dinnerlog, cook, wishlist, scan, eyb, ingredients, photos, online, ask, house
     online.migrate(con)
     house.migrate(con)  # after online: books.kind must exist
     dinnerlog.migrate(con)
     cook.migrate(con)
-    extras.migrate(con)
+    wishlist.migrate(con)
     scan.migrate(con)
     eyb.migrate(con)
     ingredients.migrate(con)
@@ -968,7 +968,7 @@ def get_book(book_id, private):
     for r in book["recipes"]:  # a full recipe (ingredients, steps) has a page of its own: #/recipe/<uid>
         if private or "has_detail" in PUBLIC_RECIPE_FLAGS:
             r["has_detail"] = r["id"] in with_detail
-    import dinnerlog, extras
+    import dinnerlog, wishlist
     # Public pages sync too, so their counts stay current; a pull is leased, at most one a minute (with
     # backoff after a failure), and nothing from the request reaches Dinner Log.
     dinnerlog.ensure_synced()
@@ -978,7 +978,7 @@ def get_book(book_id, private):
         r.update(stats if private else {k: stats[k] for k in PUBLIC_RECIPE_COOKED if k in stats})
     if private:
         book.update(dinnerlog.cooked_by_book([book_id]).get(book_id, {}))
-        book["wishes"] = extras.wishes_for_book(book_id)
+        book["wishes"] = wishlist.wishes_for_book(book_id)
         import photos
         book["photos"] = photos.for_book(book_id)
     return jsonify(book)
@@ -1800,7 +1800,8 @@ else:
     import dinnerlog  # noqa: E402,F401 — Dinner Log history
     import cook  # noqa: E402,F401 — what to cook, stats, shelf
     import scan  # noqa: E402,F401 — photo index import
-    import extras  # noqa: E402,F401 — the remaining v2 routes
+    import extras  # noqa: E402,F401 — features and the MCP server
+    import wishlist  # noqa: E402,F401 — wish list link
     import eyb  # noqa: E402,F401 — Eat Your Books import
     import ingredients  # noqa: E402,F401 — ingredient tags
     import photos  # noqa: E402,F401 — photos of dishes cooked from the books

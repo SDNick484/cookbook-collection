@@ -13,6 +13,7 @@ os.environ.setdefault("CF_TEAM_DOMAIN", "team.example.com")
 os.environ.setdefault("CF_AUD", "aud123")
 import app as A  # noqa: E402
 import extras as X  # noqa: E402
+import wishlist as WL  # noqa: E402
 import scan as SC  # noqa: E402
 import cook as CK  # noqa: E402
 import dinnerlog as DL  # noqa: E402
@@ -437,7 +438,7 @@ def test_wishlist_integration(c, monkeypatch, tmp_path):
         if r.status_code >= 400:
             raise RuntimeError((r.get_json() or {}).get("error") or f"wish list answered {r.status_code}")
         return r.get_json()
-    monkeypatch.setattr(X, "wishlist_call", via_test_client)
+    monkeypatch.setattr(WL, "wishlist_call", via_test_client)
 
     people = c.get("/admin/api/wishlist/people").json["people"]
     assert [p["name"] for p in people] == ["Alice", "Bob"]
@@ -450,7 +451,7 @@ def test_wishlist_integration(c, monkeypatch, tmp_path):
     assert "9780131103627" in items[0]["url"] and "ISBN 9780131103627" in items[0]["notes"]
     assert c.get(f"/admin/api/books/{bid}").json["wishes"][0]["person_name"] == "Bob"
     assert c.post(f"/admin/api/books/{bid}/wishlist", json={"person_id": 999}).status_code == 400
-    monkeypatch.setattr(X, "wishlist_call", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
+    monkeypatch.setattr(WL, "wishlist_call", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
     assert c.get("/admin/api/wishlist/people").status_code == 502
 
 
@@ -567,7 +568,7 @@ def test_wishlist_endpoints_mocked(c, monkeypatch):
             return {"id": 55, "name": body["name"], "price": body.get("price")}
         raise RuntimeError("unexpected call")
 
-    monkeypatch.setattr(X, "wishlist_call", fake_wishlist)
+    monkeypatch.setattr(WL, "wishlist_call", fake_wishlist)
     people = c.get("/admin/api/wishlist/people").json["people"]
     assert [p["name"] for p in people] == ["Alice", "Bob"]
     bid = c.post("/admin/api/books", json={"title": "Mocked Wish Book", "authors": ["Author A"],
@@ -720,9 +721,9 @@ def test_delete_book_removes_its_cover_and_dish_photos(c):
 # ------------------------------------------------------------ wish list availability
 def test_wishlist_flag_is_off_when_nothing_answers(c, monkeypatch):
     """A configured URL with no wish list app behind it must not show the 'Add to a wish list' button."""
-    monkeypatch.setattr(X, "WISHLIST_URL", "http://127.0.0.1:1")  # port 1: nothing listens
+    monkeypatch.setattr(WL, "WISHLIST_URL", "http://127.0.0.1:1")  # port 1: nothing listens
     assert c.get("/admin/api/features").json["wishlist"] is False
-    monkeypatch.setattr(X, "WISHLIST_URL", "")
+    monkeypatch.setattr(WL, "WISHLIST_URL", "")
     assert c.get("/admin/api/features").json["wishlist"] is False
 
 
@@ -745,7 +746,7 @@ def test_wishlist_flag_is_on_when_app_answers(c, monkeypatch):
     srv = HTTPServer(("127.0.0.1", 0), People)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
-        monkeypatch.setattr(X, "WISHLIST_URL", f"http://127.0.0.1:{srv.server_port}")
+        monkeypatch.setattr(WL, "WISHLIST_URL", f"http://127.0.0.1:{srv.server_port}")
         assert c.get("/admin/api/features").json["wishlist"] is True
     finally:
         srv.shutdown()

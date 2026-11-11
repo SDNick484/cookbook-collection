@@ -297,3 +297,54 @@ jobs:
 
       - name: Upgrade an old database
         run: python .github/scripts/upgrade_path.py
+
+  seam-contract:
+    # Dinner Log's cross-app contract tests (tests/contract/ in SDNick484/dinner-log), run against THIS checkout of
+    # the catalog, the way dinner-log's own contract.yml runs them: both apps on loopback with fresh data and
+    # generated tokens, wired together as docs/seam.md describes. Dinner Log's main is used as is, so a change
+    # there can turn this job red without this PR being at fault.
+    name: seam contract (with dinner-log main)
+    runs-on: ubuntu-latest
+    env:
+      CI_STRICT: "1"   # dinner-log's tests/strict_skips.py: a skipped contract test fails the run
+
+    steps:
+      - name: Checkout cookbook-collection
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: cookbook-collection
+          persist-credentials: false
+
+      - name: Checkout dinner-log (main)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: SDNick484/dinner-log
+          ref: main
+          path: dinner-log
+          persist-credentials: false
+
+      - name: Show which dinner-log commit is tested
+        run: git -C dinner-log log -1 --format='dinner-log main is %h (%cs) %s'
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+
+      - name: Install each app in its own venv, from its own requirements
+        run: |
+          python -m venv "$RUNNER_TEMP/catalog-venv"
+          "$RUNNER_TEMP/catalog-venv/bin/pip" install -q -r cookbook-collection/requirements-dev.txt
+          python -m venv "$RUNNER_TEMP/dinner-venv"
+          "$RUNNER_TEMP/dinner-venv/bin/pip" install -q -r dinner-log/requirements.txt pytest
+
+      - name: Start both apps on loopback (fresh data, generated tokens)
+        run: sh dinner-log/.github/scripts/start-seam.sh cookbook-collection "$RUNNER_TEMP/catalog-venv" "$RUNNER_TEMP/dinner-venv"
+
+      - name: Contract tests
+        working-directory: dinner-log
+        run: '"$RUNNER_TEMP/dinner-venv/bin/python" -m pytest -q tests/contract'
+
+      - name: Server logs
+        if: failure()
+        run: tail -n 60 "$SEAM_DIR/catalog.log" "$SEAM_DIR/dinner.log"

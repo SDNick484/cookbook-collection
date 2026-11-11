@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # Actions are pinned to commit SHAs; this keeps the SHAs (and their version comments) current.
+  # One PR a week for all of them.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # requirements-dev.txt and requirements-ui.txt. Both are CI-only: production on Alpine installs apk packages,
+  # not pip, so a bump here changes what CI tests, never what a deployment runs. One PR a week for all of them.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]

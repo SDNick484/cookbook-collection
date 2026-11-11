@@ -2,7 +2,6 @@
 
 PUBLIC_RECIPE, PUBLIC_RECIPE_COOKED and PUBLIC_RECIPE_FLAGS are the whole public contract for a recipe row.
 """
-from datetime import date
 
 import pytest
 

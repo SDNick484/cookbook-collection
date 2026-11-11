@@ -1,0 +1,209 @@
+#!/bin/sh
+# Restore the Cookbook Collection database from a snapshot made by app-backup (installed by setup-cookbooks.sh).
+#
+#   app-restore --list                  show the snapshots, newest first
+#   app-restore --dry-run [SNAPSHOT]    check the snapshot and print what would happen; changes nothing
+#   app-restore SNAPSHOT                restore it
+#
+# SNAPSHOT is "latest" (the newest nightly one), a date such as 2026-11-10, the name of a safety copy shown by
+# --list (cookbooks-before-upgrade-..., cookbooks-before-restore-...), or the path of a .db.gz / .db file (for
+# example one copied to BACKUP_TARGET). Only the database is restored; photos and covers are not touched.
+#
+# A real run: checks the snapshot (gzip test, PRAGMA integrity_check on a copy) while the service is still up,
+# stops the service, saves the database it is about to replace as cookbooks-before-restore-<time>.db.gz next to
+# the other snapshots, swaps the snapshot in, removes the stale -wal and -shm files (a leftover -wal would be
+# replayed onto the restored database), fixes ownership, runs PRAGMA integrity_check, starts the service and waits
+# for /healthz. If anything fails before the swap the service is started again with the old database untouched.
+# If the restored database fails the integrity check the service stays stopped, and the way back is printed.
+#
+# Settings (environment; the defaults are right for a server set up by the installer):
+#   LOCAL_DIR  snapshots (/var/backups/apps)       DATA_DIR   the app's data (/var/lib/cookbooks, or the one in $CONF)
+#   SERVICE    OpenRC service (cookbooks)           RC_SERVICE rc-service command
+#   OWNER      owner of the database (cookbooks:cookbooks)
+#   HEALTH_URL /healthz to wait for after the start; set it empty to skip the wait
+set -u
+CONF=${CONF:-/etc/conf.d/cookbooks}
+# shellcheck source=/dev/null
+[ -f "$CONF" ] && . "$CONF"
+LOCAL_DIR=${LOCAL_DIR:-/var/backups/apps}
+DATA_DIR=${DATA_DIR:-/var/lib/cookbooks}
+SERVICE=${SERVICE:-cookbooks}
+RC_SERVICE=${RC_SERVICE:-rc-service}
+OWNER=${OWNER:-cookbooks:cookbooks}
+HEALTH_URL=${HEALTH_URL-http://127.0.0.1:${PORT:-8767}/healthz}
+LOG=${LOG:-/var/log/app-ops.log}
+DB=$DATA_DIR/cookbooks.db
+
+log() { echo "$(date '+%F %T') restore: $*" >> "$LOG" 2>/dev/null; }
+say() { echo "$*"; }
+die() { echo "app-restore: $*" >&2; log "FAILED: $*"; exit 1; }
+usage() {
+  cat <<EOF
+Usage: app-restore --list                 show the snapshots, newest first
+       app-restore --dry-run [SNAPSHOT]   check the snapshot and print the plan; changes nothing
+       app-restore SNAPSHOT               restore it
+
+SNAPSHOT: "latest", a date (2026-11-10), a safety copy's name from --list, or the path of a .db.gz / .db file.
+Only the database is restored; photos and covers are not touched. See the top of this script for details.
+EOF
+}
+
+snapshots() {  # paths, newest first: the nightly ones, then the safety copies
+  for f in "$LOCAL_DIR"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/cookbooks-cookbooks.db.gz; do
+    [ -f "$f" ] && echo "$f"
+  done | sort -r
+  for f in "$LOCAL_DIR"/cookbooks-before-*.db.gz; do
+    [ -f "$f" ] && echo "$f"
+  done | sort -r
+}
+
+label() {  # path -> the name --list shows and a SNAPSHOT argument accepts
+  case "$1" in
+    */cookbooks-cookbooks.db.gz) basename "$(dirname "$1")" ;;
+    *) basename "$1" .db.gz ;;
+  esac
+}
+
+resolve() {  # SNAPSHOT argument -> path (prints nothing if there is no such snapshot)
+  case "$1" in
+    latest) snapshots | grep '/cookbooks-cookbooks\.db\.gz$' | head -n 1 ;;
+    */*) [ -f "$1" ] && echo "$1" ;;
+    *) snapshots | while IFS= read -r f; do
+         if [ "$(label "$f")" = "$1" ]; then echo "$f"; break; fi
+       done ;;
+  esac
+}
+
+list() {
+  all=$(snapshots)
+  [ -n "$all" ] || { say "No snapshots in $LOCAL_DIR (the nightly app-backup job makes them)."; return 0; }
+  say "Snapshots in $LOCAL_DIR, newest first (restore one by name, or use \"latest\"):"
+  echo "$all" | while IFS= read -r f; do
+    printf '  %-48s %s\n' "$(label "$f")" "$(du -h "$f" | cut -f1)"
+  done
+}
+
+unpack() {  # unpack SNAPSHOT DEST
+  case "$1" in
+    *.gz) gunzip -c "$1" > "$2" ;;
+    *) cat "$1" > "$2" ;;
+  esac
+}
+
+integrity() {  # integrity DBFILE: succeeds when PRAGMA integrity_check says ok
+  [ "$(sqlite3 -cmd ".timeout 30000" "$1" 'PRAGMA integrity_check;' 2>/dev/null)" = ok ]
+}
+
+LIST=0 DRY=0 SEL=""
+for a in "$@"; do
+  case "$a" in
+    --list) LIST=1 ;;
+    --dry-run) DRY=1 ;;
+    -h|--help) usage; exit 0 ;;
+    -*) echo "app-restore: unknown option $a" >&2; usage >&2; exit 2 ;;
+    *) [ -z "$SEL" ] || { echo "app-restore: one snapshot at a time" >&2; exit 2; }; SEL=$a ;;
+  esac
+done
+
+if [ "$LIST" = 1 ]; then list; exit 0; fi
+if [ -z "$SEL" ]; then
+  if [ "$DRY" = 1 ]; then SEL=latest; else usage >&2; echo >&2; echo "app-restore: say which snapshot (see --list)" >&2; exit 2; fi
+fi
+
+SNAP=$(resolve "$SEL")
+[ -n "$SNAP" ] || die "no snapshot called '$SEL' (see: app-restore --list)"
+command -v sqlite3 >/dev/null 2>&1 || die "sqlite3 is not installed (apk add sqlite)"
+case "$SNAP" in *.gz) gunzip -t "$SNAP" 2>/dev/null || die "$SNAP is not a valid gzip file" ;; esac
+
+# Check the snapshot while the service is still running, so a bad one costs no downtime. A real run stages it
+# inside DATA_DIR (same filesystem, so the final rename is atomic); a dry run uses a temp folder.
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/app-restore.XXXXXX") || die "can't make a temporary folder"
+if [ "$DRY" = 1 ]; then STAGE=$TMP/stage.db; else STAGE=$DATA_DIR/.restore-$$.db; fi
+cleanup() { rm -rf "$TMP"; rm -f "$STAGE" "$STAGE-wal" "$STAGE-shm" "$STAGE-journal"; }
+trap cleanup EXIT
+trap 'cleanup; echo "app-restore: interrupted" >&2; exit 1' INT TERM HUP
+
+unpack "$SNAP" "$STAGE" || die "couldn't unpack $SNAP into $(dirname "$STAGE") (is there room?)"
+integrity "$STAGE" || die "$SNAP does not pass PRAGMA integrity_check; nothing was changed"
+rm -f "$STAGE-wal" "$STAGE-shm"
+
+STAMP=$(date +%Y%m%d-%H%M%S)
+PRE=$LOCAL_DIR/cookbooks-before-restore-$STAMP.db
+n=1; while [ -e "$PRE.gz" ]; do n=$((n + 1)); PRE=$LOCAL_DIR/cookbooks-before-restore-$STAMP-$n.db; done
+
+if [ "$DRY" = 1 ]; then
+  say "Dry run: nothing is changed."
+  say "  snapshot  $SNAP  (integrity_check: ok)"
+  if [ -f "$DB" ]; then say "  replaces  $DB  ($(du -h "$DB" | cut -f1) now)"; else say "  creates   $DB  (there is no database now)"; fi
+  say "Steps:"
+  say "  1. stop the '$SERVICE' service"
+  if [ -f "$DB" ]; then say "  2. save the current database as $PRE.gz"; else say "  2. (no current database to save)"; fi
+  say "  3. put the snapshot in place and remove $DB-wal and $DB-shm"
+  say "  4. set the owner to $OWNER"
+  say "  5. run PRAGMA integrity_check on the restored database"
+  say "  6. start the '$SERVICE' service${HEALTH_URL:+ and wait for $HEALTH_URL}"
+  say "Photos and covers in $DATA_DIR are not touched."
+  exit 0
+fi
+
+say "Restoring $SNAP"
+log "restoring $SNAP into $DB"
+mkdir -p "$LOCAL_DIR" || die "can't create $LOCAL_DIR"
+
+say "==> Stopping $SERVICE"
+"$RC_SERVICE" "$SERVICE" stop >/dev/null 2>&1
+if "$RC_SERVICE" "$SERVICE" status >/dev/null 2>&1; then
+  die "couldn't stop $SERVICE (are you root?); nothing was changed"
+fi
+
+start_again() { "$RC_SERVICE" "$SERVICE" start >/dev/null 2>&1 || echo "app-restore: couldn't start $SERVICE; start it with: rc-service $SERVICE start" >&2; }
+
+SAVED=""
+if [ -f "$DB" ]; then
+  say "==> Saving the current database as $PRE.gz"
+  if sqlite3 -cmd ".timeout 30000" "$DB" ".backup '$PRE'" 2>/dev/null; then
+    :
+  else
+    # a damaged database is the likeliest reason to be restoring, and .backup can't read it: keep the raw files
+    echo "    .backup couldn't read it; copying the raw file instead"
+    cp -p "$DB" "$PRE" 2>/dev/null || { rm -f "$PRE"; start_again; die "couldn't save the current database; nothing was changed"; }
+    [ -f "$DB-wal" ] && cp -p "$DB-wal" "$PRE-wal" 2>/dev/null
+  fi
+  gzip -f "$PRE" || { start_again; die "couldn't compress the saved copy; nothing was changed"; }
+  [ -f "$PRE-wal" ] && gzip -f "$PRE-wal"
+  SAVED=$PRE.gz
+else
+  say "==> No current database to save"
+fi
+
+say "==> Replacing the database"
+rm -f "$DB-wal" "$DB-shm" "$DB-journal"
+if ! mv "$STAGE" "$DB"; then
+  start_again
+  die "couldn't move the snapshot into place; the old database is unchanged${SAVED:+ (a copy is in $SAVED)}"
+fi
+chown "$OWNER" "$DB" || echo "app-restore: couldn't set the owner to $OWNER on $DB" >&2
+
+say "==> Checking the restored database"
+OK=0; integrity "$DB" && OK=1
+rm -f "$DB-wal" "$DB-shm"  # the check, run as root, may have left root-owned side files the service couldn't open
+if [ "$OK" != 1 ]; then
+  log "FAILED: restored database did not pass integrity_check; $SERVICE left stopped"
+  echo "app-restore: the restored database fails PRAGMA integrity_check. $SERVICE is left stopped." >&2
+  [ -n "$SAVED" ] && echo "To go back to what was there before: app-restore $SAVED" >&2
+  exit 1
+fi
+
+say "==> Starting $SERVICE"
+"$RC_SERVICE" "$SERVICE" start >/dev/null 2>&1 || die "couldn't start $SERVICE; the database is restored. Start it with: rc-service $SERVICE start"
+if [ -n "$HEALTH_URL" ]; then
+  i=0
+  until wget -qO- -T 5 "$HEALTH_URL" >/dev/null 2>&1; do
+    i=$((i + 1))
+    [ $i -gt 30 ] && die "$SERVICE started but $HEALTH_URL isn't healthy; see /var/log/cookbooks.log"
+    sleep 1
+  done
+  say "    healthy: $(wget -qO- -T 5 "$HEALTH_URL" 2>/dev/null)"
+fi
+log "restored $SNAP${SAVED:+; previous database saved as $SAVED}"
+say "Done. Restored $(label "$SNAP")${SAVED:+; the previous database is saved as $SAVED}."

@@ -1,5 +1,4 @@
 """The private MCP token: accepted forms, bad input, and keeping it out of logs."""
-import io
 
 import pytest
 from werkzeug.test import EnvironBuilder
@@ -22,7 +21,7 @@ def tools(c, url="/mcp", headers=None):
 
 
 def private_tools(r):
-    return "set_want_to_try" in {t["name"] for t in r.json["result"]["tools"]}
+    return "cooking_stats" in {t["name"] for t in r.json["result"]["tools"]}
 
 
 # ------------------------------------------------------------ accepted forms

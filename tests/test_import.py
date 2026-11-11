@@ -590,7 +590,7 @@ def test_dry_run_copies_nothing(new_catalog, tmp_path_factory):
 
 
 def test_files_already_here_are_kept_not_overwritten(new_catalog, tmp_path_factory):
-    import importer, photos
+    import importer
     src = _backup_folder(tmp_path_factory.mktemp("src"))
     new_catalog()
     mine = _jpeg(A.COVER_DIR / COVER_OK, (10, 10), "blue")
@@ -616,7 +616,7 @@ def test_without_photos_dir_missing_files_are_reported_not_fatal(new_catalog):
 def test_file_names_that_are_not_plain_image_names_are_refused(new_catalog, tmp_path_factory, name):
     """Names are joined onto the data folders (and unlinked when a book is deleted), so a name from a file must never
     be able to leave them."""
-    import importer, photos
+    import importer
     src = tmp_path_factory.mktemp("src")
     dest = new_catalog()
     con = A.connect()

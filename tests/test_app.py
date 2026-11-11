@@ -1,5 +1,5 @@
 """Run: python3 -m pytest -q tests  (from the cookbooks folder)"""
-import io, json, os, shutil, sys, tempfile, time
+import io, json, os, sys, tempfile, time
 from pathlib import Path
 
 import pytest
@@ -270,7 +270,6 @@ def test_auth_reasons(c, monkeypatch, caplog):
 
 
 def test_team_domain_normalized(monkeypatch):
-    import importlib
     monkeypatch.setenv("CF_TEAM_DOMAIN", "https://team.example.com/")
     monkeypatch.setenv("CF_AUD", '"aud123"')
     src = (ROOT / "app.py").read_text()

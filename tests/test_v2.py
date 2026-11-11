@@ -1,5 +1,5 @@
 """v2 features: Dinner Log link, photo import, suggestions, stats, shelf, MCP."""
-import io, json, os, sqlite3, sys, tempfile, time, urllib.error
+import io, json, os, sys, tempfile, time, urllib.error
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -352,10 +352,11 @@ def test_mcp_public(c):
 
 def test_mcp_private(c, monkeypatch):
     monkeypatch.setattr(X, "MCP_TOKEN", "s3cret-token")
+    monkeypatch.setattr(X, "MCP_WRITE", True)
     names = {t["name"] for t in rpc(c, "tools/list", url="/mcp/s3cret-token").json["result"]["tools"]}
-    assert {"suggest_recipes", "cooking_stats", "set_want_to_try"} <= names
+    assert {"suggest_recipes", "cooking_stats"} <= names and not names & set(X.WRITE_TOOLS)  # path: read-only
     hdr = {"Authorization": "Bearer s3cret-token"}
-    assert len(rpc(c, "tools/list", headers=hdr).json["result"]["tools"]) == len(names)
+    assert {t["name"] for t in rpc(c, "tools/list", headers=hdr).json["result"]["tools"]} == names | set(X.WRITE_TOOLS)
     assert rpc(c, "tools/list", url="/mcp/wrong").status_code == 404
     res = json.loads(rpc(c, "tools/call", {"name": "suggest_recipes", "arguments": {"mode": "want", "count": 3}},
                          headers=hdr).json["result"]["content"][0]["text"])
@@ -370,6 +371,7 @@ def test_mcp_private(c, monkeypatch):
 
 def test_mcp_update_book(c, monkeypatch):
     monkeypatch.setattr(X, "MCP_TOKEN", "s3cret-token")
+    monkeypatch.setattr(X, "MCP_WRITE", True)
     hdr = {"Authorization": "Bearer s3cret-token"}
     a = c.post("/admin/api/books", json={"title": "Fix Me Pozole", "cuisine": "Mexican", "tags": ["Caucasus"]}).json
     b = c.post("/admin/api/books", json={"title": "Fix Me Too", "tags": ["Caucasus", "Soup"]}).json
@@ -472,7 +474,7 @@ def test_second_cuisine_by_tag(c):
     main = c.post("/admin/api/books", json={"title": "Zz Portuguese Main", "cuisine": "Portuguese"}).json
     second = c.post("/admin/api/books", json={"title": "Zz Provincetown", "cuisine": "American",
                                                "tags": ["portuguese", "New England"]}).json
-    r = c.post(f"/admin/api/books/{second['id']}/recipes", json={"name": "Zz kale soup", "page": "40"}).json
+    c.post(f"/admin/api/books/{second['id']}/recipes", json={"name": "Zz kale soup", "page": "40"})
     titles = lambda url: {b["title"] for b in c.get(url).json["books"]}
     assert {"Zz Portuguese Main", "Zz Provincetown"} <= titles("/api/books?cuisine=Portuguese")
     assert "Zz Provincetown" in titles("/api/books?cuisine=American")

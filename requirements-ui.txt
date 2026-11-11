@@ -1,0 +1,8 @@
+# CI-only, like requirements-dev.txt (production does not install it). Used by the `ui-tests` job, which then runs
+# `python -m playwright install --with-deps chromium`.
+#
+# Kept out of requirements-dev.txt on purpose. The four browser test files call pytest.importorskip("playwright...")
+# and skip when Chromium can't launch. In the pytest job (no Playwright) they skip for want of the import. If
+# Playwright were installed there without Chromium they would skip quietly instead of failing.
+# The ui-tests job runs them through .github/scripts/run-ui-tests.sh, which fails on any skip.
+playwright==1.65.0

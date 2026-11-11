@@ -6,6 +6,8 @@
 #   folders are copied there too, so a lost container disk loses nothing.
 # Config: /etc/conf.d/app-ops     Log: /var/log/app-ops.log
 set -u
+# /etc/conf.d/app-ops is written on the host by the installer and is optional, so it isn't in the repo.
+# shellcheck source=/dev/null
 [ -f /etc/conf.d/app-ops ] && . /etc/conf.d/app-ops
 LOCAL_DIR=${LOCAL_DIR:-/var/backups/apps}
 KEEP_DAYS=${KEEP_DAYS:-14}

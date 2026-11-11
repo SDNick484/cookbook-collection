@@ -170,13 +170,17 @@ jobs:
           # the config is valid, and a forced rotation through /etc/logrotate.conf works
           logrotate -d "$conf"
           test -s /var/log/cookbooks.log
+          cat /etc/logrotate.conf
           logrotate -f /etc/logrotate.conf
-          test -f /var/log/cookbooks.log.1
+          ls -la /var/log
+          # the rotated copy is cookbooks.log.1, or cookbooks.log-<date> if the distro's config sets dateext
+          rotated() { ls "$1".* "$1"-* 2>/dev/null | head -n 1; }
+          test -n "$(rotated /var/log/cookbooks.log)"
           # copytruncate: the service keeps writing to the same log without a restart
           wget -qO- http://127.0.0.1:8767/healthz >/dev/null
           sleep 1
           test -s /var/log/cookbooks.log
-          test -f /var/log/app-ops.log.1
+          test -n "$(rotated /var/log/app-ops.log)"
 
       - name: Step B - Verify TZ setting and tzdata
         run: |

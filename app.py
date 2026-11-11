@@ -19,7 +19,7 @@ Environment:
   HOUSE_BOOK_TITLE    title of the house book when it is first created (house.py)
   RETURN_URL_ORIGINS  origins the recipe editor may return to after a save (house.py)
 """
-import csv, fcntl, io, ipaddress, json, os, re, sqlite3, time, unicodedata, urllib.parse, urllib.request, uuid
+import csv, fcntl, io, ipaddress, json, os, re, sqlite3, threading, time, unicodedata, urllib.parse, urllib.request, uuid
 from functools import wraps
 from pathlib import Path
 
@@ -454,7 +454,57 @@ def recipe_dict(r, private):
 
 
 # ---------------------------------------------------------------------- auth
-_jwks = None
+# Cloudflare Access signing keys, kid -> public key. Each gunicorn worker keeps its own copy as an optimization
+# only: an empty cache costs one fetch, never a wrong answer. A token whose kid isn't cached may start a refetch at
+# most once per JWKS_REFRESH_SECONDS per worker (so key rotation is picked up within a minute), whatever the token
+# turns out to be, and nothing a client sends ever empties the cache: keys are replaced only by a successful fetch.
+JWKS_REFRESH_SECONDS = 60
+JWT_LEEWAY_SECONDS = 30
+_jwks_keys = {}
+_jwks_last_fetch = None   # time.monotonic() of the last fetch attempt in this worker, successful or not
+_jwks_lock = threading.Lock()
+
+
+def _fetch_jwks():
+    """{kid: public key} from the team's certs endpoint. Raises on any failure."""
+    import jwt
+    req = urllib.request.Request(f"https://{CF_TEAM_DOMAIN}/cdn-cgi/access/certs", headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=5) as r:  # noqa: S310 — fixed https URL from config
+        data = json.loads(r.read(1_000_000))
+    return {k.key_id: k.key for k in jwt.PyJWKSet.from_dict(data).keys if k.key_id}
+
+
+def _signing_key(kid):
+    """The public key for kid, or None. Goes to the network only for an unknown kid, and only after the cooldown."""
+    global _jwks_keys, _jwks_last_fetch
+    key = _jwks_keys.get(kid)
+    if key is not None:
+        return key
+    with _jwks_lock:
+        key = _jwks_keys.get(kid)  # another thread may have refreshed while this one waited
+        if key is not None:
+            return key
+        now = time.monotonic()
+        if _jwks_last_fetch is not None and now - _jwks_last_fetch < JWKS_REFRESH_SECONDS:
+            return None
+        _jwks_last_fetch = now
+        try:
+            fresh = _fetch_jwks()
+        except Exception as e:  # noqa: BLE001 — keep the keys we have
+            app.logger.warning("Access: couldn't fetch signing keys from https://%s/cdn-cgi/access/certs: %s",
+                               CF_TEAM_DOMAIN, e)
+            return None
+        if fresh:
+            _jwks_keys = fresh
+        return _jwks_keys.get(kid)
+
+
+def _reject(reason, detail=None):
+    """Not an editor. `reason` goes to the browser, so it names settings but never their values; `detail` (values,
+    library errors) goes only to the server log."""
+    g.auth_reason = reason
+    app.logger.warning("Access: %s%s", reason, f" [{detail}]" if detail else "")
+    return None
 
 
 def access_identity():
@@ -467,44 +517,40 @@ def access_identity():
             g.auth_reason = ("Cloudflare Access signed you in, but the server isn't configured to check it yet: "
                              "set CF_TEAM_DOMAIN and CF_AUD in /etc/conf.d/cookbooks, then rc-service cookbooks restart.")
             return None
-        global _jwks
         import jwt
         try:
-            was_cached = _jwks is not None
-            if _jwks is None:
-                _jwks = jwt.PyJWKClient(f"https://{CF_TEAM_DOMAIN}/cdn-cgi/access/certs", cache_keys=True)
-            try:
-                key = _jwks.get_signing_key_from_jwt(token).key
-            except Exception:  # noqa: BLE001 — retry once on key rotation if _jwks was cached
-                if not was_cached:
-                    raise
-                _jwks = jwt.PyJWKClient(f"https://{CF_TEAM_DOMAIN}/cdn-cgi/access/certs", cache_keys=True)
-                key = _jwks.get_signing_key_from_jwt(token).key
-        except Exception as e:  # noqa: BLE001
-            _jwks = None
-            g.auth_reason = (f"Couldn't fetch Cloudflare's signing keys from https://{CF_TEAM_DOMAIN}/cdn-cgi/access/certs "
-                             f"({e}). Check CF_TEAM_DOMAIN (e.g. yourteam.cloudflareaccess.com).")
-            app.logger.warning("Access: %s", g.auth_reason)
-            return None
+            header = jwt.get_unverified_header(token)
+        except jwt.PyJWTError as e:
+            return _reject("Cloudflare Access token rejected: it isn't a well-formed token.", e)
+        kid = header.get("kid")
+        if header.get("alg") != "RS256" or not isinstance(kid, str) or not kid:
+            return _reject("Cloudflare Access token rejected: unexpected signing algorithm or no key id.",
+                           f"alg={header.get('alg')!r} kid={kid!r}")
+        key = _signing_key(kid)
+        if key is None:
+            return _reject("Cloudflare Access token rejected: it was signed with a key this server doesn't have. "
+                           "If this lasts more than a minute, check CF_TEAM_DOMAIN (your Zero Trust team domain) "
+                           "and the server log.", f"kid={kid}")
         try:
-            claims = jwt.decode(token, key, algorithms=["RS256"], audience=CF_AUD,
-                                issuer=f"https://{CF_TEAM_DOMAIN}")
-        except Exception as e:  # noqa: BLE001 — any failure means "not an editor"
-            hint = ""
-            if "audience" in str(e).lower():
-                try:  # show which Access app issued the token (unverified, display only)
-                    got = jwt.decode(token, options={"verify_signature": False}).get("aud")
-                    got = ", ".join(got) if isinstance(got, list) else got
-                except Exception:  # noqa: BLE001
-                    got = None
-                hint = (f" The sign-in came from the Access application with AUD {got}; CF_AUD is set to {CF_AUD}."
-                        if got else "") + (" CF_AUD must be the AUD tag of the Access application that protects "
-                                           "this site's /admin path.")
-            elif "issuer" in str(e).lower():
-                hint = " CF_TEAM_DOMAIN must match your Zero Trust team domain."
-            g.auth_reason = f"Cloudflare Access token rejected: {e}.{hint}"
-            app.logger.warning("Access: %s", g.auth_reason)
-            return None
+            claims = jwt.decode(token, key, algorithms=["RS256"], audience=CF_AUD, issuer=f"https://{CF_TEAM_DOMAIN}",
+                                leeway=JWT_LEEWAY_SECONDS, options={"require": ["exp", "iat", "aud", "iss"]})
+        except jwt.InvalidAudienceError:
+            try:  # which Access app issued it (unverified, for the log only)
+                got = jwt.decode(token, options={"verify_signature": False}).get("aud")
+            except Exception:  # noqa: BLE001
+                got = None
+            return _reject("Cloudflare Access token rejected: it was issued for a different Access application. "
+                           "CF_AUD must be the AUD tag of the Access application that protects this site's /admin "
+                           "path; the server log shows both values.", f"token aud={got!r}, CF_AUD={CF_AUD!r}")
+        except jwt.InvalidIssuerError:
+            return _reject("Cloudflare Access token rejected: wrong issuer. "
+                           "CF_TEAM_DOMAIN must match your Zero Trust team domain.")
+        except jwt.ExpiredSignatureError:
+            return _reject("Your Cloudflare Access sign-in has expired. Reload the page to sign in again.")
+        except jwt.MissingRequiredClaimError as e:
+            return _reject(f"Cloudflare Access token rejected: it has no '{e.claim}' claim.")
+        except jwt.PyJWTError as e:  # bad signature, iat in the future, malformed claims...
+            return _reject("Cloudflare Access token rejected: invalid signature or claims.", e)
         email = (claims.get("email") or "").lower()
         if ADMIN_EMAILS and email not in ADMIN_EMAILS:
             g.auth_reason = f"Signed in as {email or 'an unknown user'}, which isn't in ADMIN_EMAILS."
@@ -963,7 +1009,10 @@ for prefix, private in (("/api", False), ("/admin/api", True)):
 
 @app.get("/api/me")
 def me_public():
-    return jsonify(editor=bool(access_identity()))
+    """Kept for old clients. The SPA probes /admin/api/me (behind Access) instead, and only /admin is behind Access, so
+    this route never sees a sign-in: it answers without reading or verifying any token, which keeps anonymous
+    callers from driving the key fetch through it."""
+    return jsonify(editor=False)
 
 
 @app.get("/admin/api/me")

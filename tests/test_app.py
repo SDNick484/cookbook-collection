@@ -87,17 +87,11 @@ def test_cloudflare_without_jwt_is_rejected(c):
 
 
 def _jwt_setup(monkeypatch):
-    jwt = pytest.importorskip("jwt")  # PyJWT; production gets it from py3-jwt
-    rsa = pytest.importorskip("cryptography.hazmat.primitives.asymmetric.rsa")
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-
-    class FakeJWKS:
-        def get_signing_key_from_jwt(self, token):
-            return type("K", (), {"key": key.public_key()})()
-    monkeypatch.setattr(A, "_jwks", FakeJWKS())
+    from access_jwt import AccessKeys
+    keys = AccessKeys(monkeypatch)
 
     def make(email, aud="aud123", iss="https://team.example.com", exp=3600):
-        return jwt.encode({"email": email, "aud": aud, "iss": iss, "exp": int(time.time()) + exp}, key, algorithm="RS256")
+        return keys.token(email, aud=aud, iss=iss, exp=exp)
     return make
 
 
@@ -106,7 +100,7 @@ def test_access_jwt(c, monkeypatch):
     ok = c.get("/admin/api/me", headers={**CF, "Cf-Access-Jwt-Assertion": make("Bob@example.com")})
     assert ok.status_code == 200 and ok.json["email"] == "bob@example.com"
     for bad in (make("stranger@example.com"), make("alice@example.com", aud="other"),
-                make("alice@example.com", iss="https://evil.example.com"), make("alice@example.com", exp=-10)):
+                make("alice@example.com", iss="https://evil.example.com"), make("alice@example.com", exp=-120)):  # past the 30 s leeway
         assert c.get("/admin/api/me", headers={**CF, "Cf-Access-Jwt-Assertion": bad}).status_code == 401
     # a bogus token without Cloudflare headers must not fall back to LAN access
     assert c.get("/admin/api/me", headers={"Cf-Access-Jwt-Assertion": "garbage"}).status_code == 401
@@ -258,12 +252,18 @@ def test_reseed_is_idempotent():
     assert con.execute("SELECT count(*) FROM books WHERE source='sheet'").fetchone()[0] == 153
 
 
-def test_auth_reasons(c, monkeypatch):
+def test_auth_reasons(c, monkeypatch, caplog):
     make = _jwt_setup(monkeypatch)
     me = lambda h: c.get("/admin/api/me", headers=h).json
     assert "covers the path" in me(CF)["reason"]                                   # no token via Cloudflare
-    r = me({**CF, "Cf-Access-Jwt-Assertion": make("alice@example.com", aud="wishlist-aud")})
-    assert "Audience" in r["reason"] and "wishlist-aud" in r["reason"] and "aud123" in r["reason"]
+    with caplog.at_level("WARNING", logger=A.app.logger.name):
+        r = c.get("/admin/api/me", headers={**CF, "Cf-Access-Jwt-Assertion": make("alice@example.com",
+                                                                                  aud="wishlist-aud")})
+    # the browser learns what to fix, not the values: neither our AUD tag nor the token's
+    assert r.status_code == 401 and "different Access application" in r.json["reason"] and "CF_AUD" in r.json["reason"]
+    assert "wishlist-aud" not in r.get_data(as_text=True) and "aud123" not in r.get_data(as_text=True)
+    assert "wishlist-aud" in caplog.text and "aud123" in caplog.text               # the owner reads them in the log
+    assert "expired" in me({**CF, "Cf-Access-Jwt-Assertion": make("alice@example.com", exp=-3600)})["reason"]
     assert "ADMIN_EMAILS" in me({**CF, "Cf-Access-Jwt-Assertion": make("stranger@example.com")})["reason"]
     monkeypatch.setattr(A, "CF_AUD", "")
     assert "isn't configured" in me({**CF, "Cf-Access-Jwt-Assertion": make("alice@example.com")})["reason"]

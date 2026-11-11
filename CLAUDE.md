@@ -6,7 +6,7 @@ and an MCP server at `/mcp`. README.md is the user-facing guide; this file is ho
 ## Map
 | File | What's in it |
 |---|---|
-| `app.py` | Core: schema + `init_db`, `connect()`/`db()`, `fold()` (accent/case folding, also an SQL function), FTS (`books_fts`, `recipes_fts`), auth (`editor_required`), books/recipes/facets API, index paste import (`parse_index`, `mark_duplicates`, `index_commit`), `PUBLIC_BOOKS`, `cuisine_condition()`, `env_int`/`local_midnight`, `/healthz` (deep check: database, both FTS tables, DATA_DIR) |
+| `app.py` | Core: schema + `init_db`, `connect()`/`db()`, `fold()` (accent/case folding, also an SQL function), FTS (`books_fts`, `recipes_fts`), auth (`editor_required`, `access_identity`, the per-worker Access key cache `_signing_key`), security headers (`CSP`, `security_headers`) and `/robots.txt`, books/recipes/facets API, index paste import (`parse_index`, `mark_duplicates`, `index_commit`), `PUBLIC_BOOKS`, `cuisine_condition()`, `env_int`/`local_midnight`, `/healthz` (deep check: database, both FTS tables, DATA_DIR) |
 | `extras.py` | Dinner Log history (pulled over HTTP into `dl_meals` and `dl_photos`, rebuilt into `cooked`; `fetch_dl_photo`; `ensure_synced()` starts background pulls under a DB lease), `cook_rank` (the one ranking behind the Cook page `/admin/api/cook`, `/admin/api/suggest`, MCP `suggest_recipes` and Dinner Log's `/admin/api/pick`; those are thin wrappers, so change modes and ordering there), stats, photo index import (Claude API, background jobs in `photo_jobs`; whole-index scans are a parent row with one child per page, `scan_state` derives the status, `merge_pages` joins them, `pages_today` enforces `PHOTO_DAILY_LIMIT`), MCP server (`TOOLS`, `WRITE_TOOLS`, `handle_rpc`, `run_tool`), `messages_api` (Claude API call), wishlist |
 | `ask.py` | AI search: `POST /admin/api/ask`, `ask_log`, tool loop over `run_tool`, `show_results` hydration |
 | `ingredients.py` | Ingredient tags and search hints, CSV/zip import, `resolve()`, `ranked()` search ranking |
@@ -82,6 +82,18 @@ Chromium for Playwright checks: `/opt/pw-browsers/chromium-*/chrome-linux/chrome
   `fetch`; pages that sync need `start_background` patched so no real pull starts.
 - Every write route uses `@editor_required`, which refuses cross-site edits (Origin check) before auth.
   LAN editing (`lan_identity()`) trusts only the socket peer, never forwarded headers.
+  `tests/test_security_headers.py` checks every write route answers 401 to an anonymous client.
+- Access tokens: never verify one on a public route (`/api/me` is a constant). Signing keys come from
+  `_signing_key()`: an unknown kid refetches at most once per `JWKS_REFRESH_SECONDS` per worker and nothing a
+  client sends clears the cache. `g.auth_reason` reaches the browser, so it names settings, never their values
+  (no AUD tags, no library error text); pass those as `_reject(..., detail)`, which only logs them. Tests sign
+  tokens with `tests/access_jwt.py` (`AccessKeys`), which stubs `_fetch_jwks`.
+- Integer query parameters go through `arg_int()` (or `location_arg()` for ids): junk is a 400, never a 500.
+  `tests/test_int_params.py` walks every GET route with junk values.
+- The Content-Security-Policy is enforced: no inline `<script>`, no `on…=` attributes in templates (attach
+  listeners), no `eval`. Inline `style=` attributes are allowed. Images from a new external host need that host in
+  `CSP` (cover hosts come from `COVER_HOSTS`). `tests/test_csp_browser.py` opens the main screens in Chromium and
+  fails on any violation; run it after front-end changes.
 - Don't `pkill -f`/`pgrep -f` a server by a pattern that also matches your own shell command.
 - Shell scripts are POSIX sh (BusyBox ash on Alpine) and `shellcheck --shell=sh` stays clean. Disable a finding inline,
   with the reason in a comment on the line above the directive.

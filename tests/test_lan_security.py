@@ -4,7 +4,6 @@ Flask's test client lets us set the socket peer (REMOTE_ADDR) and the Host heade
 exactly what an attacker on the LAN, a DNS-rebinding page, or a cross-site form would control.
 """
 import ipaddress
-import time
 
 import pytest
 
@@ -188,16 +187,8 @@ def test_refused_before_auth_runs(c, monkeypatch):
 
 # ------------------------------------------------------------ through Cloudflare
 def _jwt(monkeypatch, email="alice@example.com"):
-    jwt = pytest.importorskip("jwt")  # PyJWT; production gets it from py3-jwt
-    rsa = pytest.importorskip("cryptography.hazmat.primitives.asymmetric.rsa")
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-
-    class FakeJWKS:
-        def get_signing_key_from_jwt(self, token):
-            return type("K", (), {"key": key.public_key()})()
-    monkeypatch.setattr(A, "_jwks", FakeJWKS())
-    return jwt.encode({"email": email, "aud": "aud123", "iss": "https://team.example.com",
-                       "exp": int(time.time()) + 3600}, key, algorithm="RS256")
+    from access_jwt import AccessKeys
+    return AccessKeys(monkeypatch).token(email)
 
 
 def test_cloudflare_edit_same_origin(c, monkeypatch):

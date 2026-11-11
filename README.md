@@ -48,6 +48,17 @@ Set `LAN_EDIT=1` to let requests that don't come through Cloudflare edit without
 
 Upgrading doesn't change an existing `LAN_EDIT` value. If `cloudflared` runs on the same server and you don't need LAN editing, also set `BIND=127.0.0.1` so the port isn't reachable from the network at all.
 
+### How sign-ins are checked
+- Each request to `/admin` that comes through Access carries a signed token (`Cf-Access-Jwt-Assertion`). The app checks its RS256 signature against your team's keys (`https://<CF_TEAM_DOMAIN>/cdn-cgi/access/certs`), its audience (`CF_AUD`) and issuer, and requires `exp` and `iat`, allowing 30 seconds of clock skew.
+- The keys are cached in memory by each worker. A token signed with a key the worker hasn't seen makes it fetch the keys again at most once a minute, so Cloudflare's key rotation is picked up within a minute and a flood of bogus tokens can't turn into a flood of fetches. A bad token or a failed fetch never empties the cache.
+- When a sign-in is refused, the page says what to check (for example "issued for a different Access application, check `CF_AUD`") without showing any AUD values. The values themselves are in the server log, `/var/log/cookbooks.log`.
+- `/api/me` always answers `{"editor": false}`: the public catalog isn't behind Access, so it never sees a sign-in. The page asks `/admin/api/me` instead.
+
+### Security headers and search engines
+Every response carries a Content-Security-Policy (scripts only from the site itself, no inline script; images from the site, `blob:`/`data:` and the cover lookup hosts; no framing), `X-Content-Type-Options: nosniff`, a `Referrer-Policy`, `X-Frame-Options: DENY` and a `Permissions-Policy` that lets only this site use the camera (barcode scanner) and keep the screen on. If you change the front end to load something from another host, add that host to `CSP` in `app.py`, or the browser will block it.
+
+`/robots.txt` always asks crawlers to stay out of `/admin` and `/mcp`. To keep the whole catalog out of search engines, set `PUBLIC_INDEXING=0` in `/etc/conf.d/cookbooks` and restart: robots.txt then disallows everything and every response says `X-Robots-Tag: noindex, nofollow`. This is a request to well-behaved crawlers, not access control; use an Access policy on the whole hostname for that.
+
 ## Adding books
 **Add book → Scan barcode** uses the phone camera. This needs Chrome on Android over HTTPS, so use the public HTTPS address rather than the LAN IP. The ISBN is looked up on Open Library, then Google Books, and the title, authors, publisher, year and cover are filled in.
 

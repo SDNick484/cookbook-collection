@@ -106,6 +106,7 @@ add_setting "$CONF" MCP_TOKEN "$(head -c 24 /dev/urandom | base64 | tr '+/' '-_'
 add_setting "$CONF" MCP_PUBLIC 1 "1 = /mcp without a token serves public search (books, recipes, pages)"
 add_setting "$CONF" MCP_WRITE 0 "1 = the MCP write tools (set_want_to_try, update_book), only for a token sent as a Bearer header"
 add_setting "$CONF" MCP_URL_TOKEN 1 "1 = also accept the token in the URL, /mcp/<MCP_TOKEN> (always read-only); 0 = header only"
+add_setting "$CONF" PUBLIC_INDEXING 1 "1 = search engines may index the public catalog; 0 = robots.txt disallows everything and pages say noindex (/admin and /mcp are disallowed either way)"
 add_setting "$CONF" WISHLIST_URL http://127.0.0.1:8766 "Family wish list app (local) for 'Add to a wish list'"
 add_setting "$CONF" WISHLIST_BOOK_URL "https://www.amazon.com/s?k={q}" "Shopping link put on wish list items; {q} = ISBN (or title + author)"
 add_setting "$CONF" DINNERLOG_URL "" "Dinner Log's public address, e.g. https://dinners.example.com — turns on 'Log this dinner' links"
@@ -132,7 +133,7 @@ description="Cookbook Collection"
 : ${PORT:=8767}
 : ${DATA_DIR:=/var/lib/cookbooks}
 : ${BIND:=0.0.0.0}
-export DATA_DIR CF_TEAM_DOMAIN CF_AUD ADMIN_EMAILS LAN_EDIT LAN_CIDRS LAN_HOSTS ALLOWED_ORIGINS DINNERLOG_API_URL DINNERLOG_TOKEN ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_EFFORT ANTHROPIC_SEARCH_KEY ANTHROPIC_SEARCH_MODEL ASK_DAILY_LIMIT PHOTO_DAILY_LIMIT MCP_TOKEN MCP_PUBLIC MCP_WRITE MCP_URL_TOKEN WISHLIST_URL WISHLIST_BOOK_URL DINNERLOG_URL READ_TOKEN HOUSE_BOOK_TITLE RETURN_URL_ORIGINS
+export DATA_DIR CF_TEAM_DOMAIN CF_AUD ADMIN_EMAILS LAN_EDIT LAN_CIDRS LAN_HOSTS ALLOWED_ORIGINS DINNERLOG_API_URL DINNERLOG_TOKEN ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_EFFORT ANTHROPIC_SEARCH_KEY ANTHROPIC_SEARCH_MODEL ASK_DAILY_LIMIT PHOTO_DAILY_LIMIT MCP_TOKEN MCP_PUBLIC MCP_WRITE MCP_URL_TOKEN PUBLIC_INDEXING WISHLIST_URL WISHLIST_BOOK_URL DINNERLOG_URL READ_TOKEN HOUSE_BOOK_TITLE RETURN_URL_ORIGINS
 # TZ is exported only when set: an empty TZ would mean UTC and override /etc/localtime
 if [ -n "${TZ:-}" ]; then export TZ; else unset TZ; fi
 supervisor="supervise-daemon"

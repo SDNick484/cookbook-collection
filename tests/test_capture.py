@@ -637,3 +637,15 @@ def test_read_token_does_not_open_capture(c, env, monkeypatch):
     job = send(c, 501).json["job"]
     assert c.get(f"/admin/api/house/capture/{job}", headers={"Authorization": "Bearer s3cret"},
                  environ_base=ANON).status_code == 401
+
+
+def test_a_restart_sweeps_photos_whose_capture_is_gone(c, env):
+    job, keep = send(c, 501).json["job"], send(c, 502).json["job"]  # both live when made
+    wait(c, job), wait(c, keep)
+    con = A.connect()
+    con.execute("UPDATE photo_jobs SET created=? WHERE id=? OR parent_id=?", (time.time() - SC.PHOTO_JOB_KEEP - 5, job, job))
+    con.commit()
+    con.close()
+    assert len(C.job_files(job)) == 1  # nothing has swept yet
+    A.init_db()  # a service start
+    assert C.job_files(job) == [] and len(C.job_files(keep)) == 1

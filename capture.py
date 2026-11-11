@@ -40,8 +40,11 @@ def capture_dir():
     return core.DATA_DIR / "capture"
 
 
-def migrate(con):  # noqa: ARG001 — no schema; only the folder the kept photos wait in
+def migrate(con):
+    """No schema: the folder kept photos wait in, and a sweep of the ones whose capture is gone (every start)."""
     capture_dir().mkdir(parents=True, exist_ok=True)
+    sweep(con)
+    con.commit()
 
 
 # ======================================================== the model's reply

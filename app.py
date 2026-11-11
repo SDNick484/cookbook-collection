@@ -766,6 +766,22 @@ def location_arg(raw, what="location_id"):
     abort(make_err(400, f"{what} must be a whole number"))
 
 
+def arg_int(params, name, default, lo=None, hi=None):
+    """A whole-number query parameter, clamped to [lo, hi]; missing or empty -> default, anything else -> a 400."""
+    raw = params.get(name)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        v = default
+    elif isinstance(raw, int) and not isinstance(raw, bool):
+        v = raw
+    elif isinstance(raw, str) and re.fullmatch(r"\s*-?\d{1,9}\s*", raw):
+        v = int(raw)
+    else:
+        abort(make_err(400, f"{name} must be a whole number"))
+    if lo is not None:
+        v = max(lo, v)
+    return v if hi is None else min(hi, v)
+
+
 def locations_list(private):
     return jsonify(locations=get_locations(db(), public=not private))
 
@@ -900,7 +916,7 @@ def recipe_filter(params, private):
         args += a
     if params.get("book"):
         where.append("r.book_id=?")
-        args.append(int(params["book"]))
+        args.append(location_arg(params["book"], "book"))
     if params.get("cuisine"):
         cond, a = cuisine_condition(params["cuisine"])
         where.append(cond)
@@ -925,8 +941,8 @@ def recipe_filter(params, private):
 
 def search_recipes(private):
     p = request.args
-    limit = max(1, min(int(p.get("limit", 100)), 500))
-    offset = max(0, int(p.get("offset", 0)))
+    limit = arg_int(p, "limit", 100, 1, 500)
+    offset = arg_int(p, "offset", 0, 0)
     if not (p.get("q", "").strip() or p.get("ingredient") or p.get("book")
             or (private and (p.get("want") or p.get("made")))):
         return jsonify(recipes=[], count=0)

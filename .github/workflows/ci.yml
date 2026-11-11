@@ -170,3 +170,23 @@ jobs:
           test ! -f /etc/init.d/cookbooks
           test -d /var/lib/cookbooks
           ! wget -qO- http://127.0.0.1:8767/healthz >/dev/null 2>&1
+
+  shellcheck:
+    # POSIX sh, as BusyBox ash runs it on Alpine. `--shell=sh` makes bashisms an error.
+    name: shellcheck (POSIX sh)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+
+      - name: Install shellcheck (pinned, so local runs agree)
+        run: python -m pip install shellcheck-py==0.11.0.1
+
+      - name: shellcheck
+        run: shellcheck --shell=sh installer/*.sh ops/* .github/scripts/*.sh

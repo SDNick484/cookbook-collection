@@ -19,11 +19,12 @@ and an MCP server at `/mcp`. README.md is the user-facing guide; this file is ho
 | `online.py` | Recipes from websites (NYT Cooking): `books.kind='online'`, editor-only |
 | `house.py` | House recipes: the one `books.kind='house'` book (`ensure_house_book`, after seeding), `books.visibility`, `recipe_details` / `recipe_ingredient_lines` / `recipe_steps`, `parse_quantity`, `parse_doc`/`save_doc`, read/write routes, `safe_return_url` (`RETURN_URL_ORIGINS`), `ROLLBACK_SQL` |
 | `capture.py` | Start a house recipe from 1-4 photos or pasted text: a `photo_jobs` parent with `status='capture'` and a child per photo; `parse_reply` (the model's labelled lines, `_from_json` fallback), `parse_recipe_text` (pasted text with Ingredients/Method headings, no model), `merge` (photo order, section carry, `CONTINUED:`), `to_doc` (fields cut to `house.LIMITS`, then `house.parse_doc`), `call_claude`, attach/discard. Kept colour copies in `DATA_DIR/capture/<job>.<n>.jpg`, removed by `drop_job` or `sweep`. No schema |
+| `changes.py` | Change history and undo (More → Recent changes): the `changes` table (`migrate` prunes by `CHANGES_KEEP_DAYS`), snapshots (`book_state`/`recipe_state`/`location_state`, `fingerprint`, `diff`), `Recorder` (touch rows before a write, `created()` after an insert, `finish()` before the commit), `undo()` and its refusals (`Conflict`), `summarize()` (plain words), the editor-only routes `/admin/api/changes*` |
 | `importer.py` | Loads the JSON export back in (`python3 -m importer`, also `import_data(con, data, ...)`): reconcile by uid, then ISBN, then title + first author; `--replace`, `--dry-run`, `--photos`. One transaction; needs `app.connect()` for `fold()`. `SKIP_SEED=1` stops `init_db` seeding an empty DB. No routes. Export carries `version` (`EXPORT_VERSION`, bump only for breaking shape changes) |
 | `static/` | Single-page app (`app.js`, `style.css`, `index.html`) |
 | `installer/` | `build.sh` -> `dist/setup-cookbooks.sh` (Alpine/OpenRC installer: `setup-head.sh` + base64 tarball). Also writes `/etc/logrotate.d/cookbooks` (only if absent) and installs `tzdata` |
 | `ops/` | `app-backup` (nightly snapshots; warns when images have no `BACKUP_TARGET`), `app-restore` (`--list`, `--dry-run`, restore), `app-health`, `app-notify`, all POSIX `sh` for BusyBox (no bash); `migrate-ops` moves files from older container-named paths. `tests/test_app_backup.py` and `test_app_restore.py` run the real scripts against a fake root through env overrides (`LIB_DIR`, `LOCAL_DIR`, `RC_SERVICE`, ...) and need the `sqlite3` CLI |
-| `tests/` | pytest; each file sets `DATA_DIR` to a temp dir and seeds from `seed.json`. `test_scan.py` covers scans, merging and the page-number forms; `test_capture.py` the recipe reader |
+| `tests/` | pytest; each file sets `DATA_DIR` to a temp dir and seeds from `seed.json`. `test_scan.py` covers scans, merging and the page-number forms; `test_capture.py` the recipe reader; `test_changes.py` the change history (round trips, refusals, batches, retention, no leaks) |
 | `.github/` | `workflows/ci.yml`: `pytest` (Alpine's python3 and the current stable Python), `alpine` (apk packages, then the real installer under OpenRC, on the production release and `latest`), `ui-tests`, `upgrade-path`, `seam-contract`, `shellcheck`, `ruff`, `gitleaks`. `scripts/`: `install-openrc-stub.sh`, `run-ui-tests.sh`, `upgrade_path.py`. `dependabot.yml`: one weekly PR each for actions and pip. Actions are pinned by commit SHA |
 | `requirements-dev.txt`, `requirements-ui.txt`, `ruff.toml` | CI-only pins (production installs apk packages, so a bump never reaches a deployment) and the ruff config (E9 and F only; each per-file ignore says why) |
 
@@ -116,6 +117,14 @@ Chromium for Playwright checks: `/opt/pw-browsers/chromium-*/chrome-linux/chrome
   any skip. A new browser test file must be added to the list in `.github/scripts/run-ui-tests.sh`.
 - A schema or migration change must keep `upgrade_path.py` passing. If it adds something an old database has to gain
   (a backfilled column, a new table), add a check for it there.
+- Every write to books, recipes (house recipes included) or locations goes through a `changes.Recorder` on the same
+  connection: `rec.book(id)` / `rec.recipe(id)` / `rec.location(id)` before changing a row (`deleting=True` before a
+  delete), `rec.created(kind, id)` after an insert, `rec.finish()` before `commit()` (it must be in the same
+  transaction; finish before anything that commits for you, like `rebuild_cooked`). Bulk operations pass `bulk=True`
+  and an `op` name. A new column on books or recipes is picked up by the snapshots on its own; a new table that holds
+  part of a book or recipe needs adding to `book_state`/`recipe_state`, `fields()` and the restore in changes.py.
+  Covers and photos are deliberately not recorded. The log holds emails and private fields: only editor routes read
+  it (never a public route, the MCP, the exports or Ask; `tests/test_changes.py` checks), and the MCP gets no undo.
 - Keep the owner's domain, server names and personal setup out of the repo; use `cookbooks.example.com`.
   `tests/test_hygiene.py` fails on container/VM IDs and home-directory paths; names, hostnames and emails
   can't be listed there, so check diffs for them yourself.

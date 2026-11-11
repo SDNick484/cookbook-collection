@@ -4,7 +4,7 @@ A family cookbook catalog: Flask + SQLite, running as one small service.
 On the server it's called `cookbooks`: the service, `/opt/cookbooks`, `/var/lib/cookbooks`, `/etc/conf.d/cookbooks`, and port 8767.
 
 - **Public** `https://cookbooks.example.com/` lets visitors browse and search books and recipe names, see which shelf each book is on, and (with Dinner Log linked) how many times each recipe was made.
-- **Editors** `https://cookbooks.example.com/admin` sit behind Cloudflare Access. From there you can add books by barcode, edit them, import indexes, manage shelf locations, write your own recipes in the house book, and see ratings, notes and the want-to-try list.
+- **Editors** `https://cookbooks.example.com/admin` sit behind Cloudflare Access. From there you can add books by barcode, edit them, import indexes, manage shelf locations, write your own recipes in the house book, see ratings, notes and the want-to-try list, and undo changes from **Recent changes**.
 
 ![Cookbook Collection catalog](screenshot.jpg)
 
@@ -236,7 +236,7 @@ Editors can attach photos of a dish to the recipe it came from.
 - Viewing is public: the gallery (`/api/photos`) and the image files (`/photos/<file>`) need no sign-in, so captions are public too. Photos of recipes from websites stay editor-only, like the websites themselves. Adding, editing and deleting photos happen under `/admin`, behind Cloudflare Access. Older `/admin/photos/` links still work.
 - Image files are served with a one-day cache lifetime. If a CDN in front of the app caches them (Cloudflare caches `.jpg` by default), a deleted photo can stay reachable at its URL until that copy expires; purge the URL in your CDN if that matters.
 - Each upload is resized to at most 2048px, plus a 480px thumbnail, and saved as JPEG in `/var/lib/cookbooks/photos`. Re-encoding drops the EXIF data, including any phone GPS location.
-- Deleting a photo, recipe or book deletes its files. The nightly backup copies `photos/` to `BACKUP_TARGET`, and **Download JSON** lists each recipe's photo files.
+- Deleting a photo, recipe or book deletes its files, and **Recent changes** can't bring them back (undoing a recipe or book delete restores everything but its photos and cover). The nightly backup copies `photos/` to `BACKUP_TARGET`, and **Download JSON** lists each recipe's photo files.
 - Uploads (covers, dish photos, index photos, recipe photos) are accepted as JPEG, PNG or WebP; other formats are refused rather than decoded. iPhone HEIC photos work if the `pillow-heif` Python package is installed. Without it, Safari normally converts them to JPEG when uploading.
 
 ### Photos from Dinner Log
@@ -292,6 +292,47 @@ Setup:
 - Limits: 5 questions per thread, 500 characters per question, 60 seconds per question.
 - Data sent to the Anthropic API: the thread's questions and earlier answers, plus the catalog search results the model asks for. These include editor-only data (ratings, cooking history, web recipes), as the private MCP does. Photos are never sent.
 - Stored locally: only a log row per question (`ask_log`: time, editor, rounds, token counts, status). The question text is not stored.
+
+## Recent changes and undo
+**More → Recent changes** (`/admin#/changes`, editors only) lists what changed in the catalog, newest first: who
+(the editor's email, `lan` for LAN editing, `mcp` for the MCP write tools, `importer` for `python3 -m importer`,
+`system` for merges at startup), when, and what, in plain words (*Changed the recipe “Gnocchi” in “Pasta Book”:
+rating 7 → 9 · starred*). Filter by book or by who. Each entry has **Undo**; a bulk operation is one group with
+**Undo all**.
+- **What is recorded:** books, recipes, house recipes and shelf locations, from every place that writes them: the
+  editor, the index import (pasted or scanned), Eat Your Books (books and recipes), *Fetch covers & details*,
+  ingredient CSV and zip imports, removing an ingredient tag, recipes from websites, Dinner Log's *Add as recipe*,
+  merges of garbled duplicates, the MCP's `set_want_to_try` and `update_book`, and `importer.py` (including
+  `--replace`; a `--dry-run` records nothing). **Not recorded:** covers and photos, an ingredient tag's chip/hint
+  setting, Dinner Log matching (aliases and manual links) and the wish list.
+- **Undo** of an edit puts back the values it replaced. Undo of a delete recreates the book, recipe or shelf with
+  its original uid (and its original id when that is free), so Dinner Log's links and anything else that stored
+  the uid match again. A book comes back with its authors, tags and recipes; a recipe with its ingredient tags,
+  star, rating, notes, house-recipe ingredients and steps, and Dinner Log manual links; a shelf with the shelves
+  under it, and the books that were on them go back on it. Undo of an add deletes what was added. **Undo all**
+  reverts a whole batch, or nothing. An undo is recorded like any change, so it can be undone too.
+- **Photos and covers can't come back.** Deleting a recipe or book deletes its photo and cover files, and the
+  history doesn't keep them: an undo restores everything else and says how many photos are gone.
+- **Refused, with the reason,** when the row was changed again since (undo the later change first), when it is
+  gone, when its book or parent shelf is gone, when its uid or ISBN is in use again, when a recipe to remove has
+  photos now, or when it was undone already. Edits made with an older release aren't recorded, so a row changed
+  that way can't be undone past that edit.
+- **Size:** single edits store only the fields that changed (deletes store the whole row, so it can be recreated).
+  Bulk operations list the recipes they added or removed in one row per book, at about 80 bytes a recipe, so a
+  2,000-recipe import adds one row of ~160 KB, far less than the recipes and their search index.
+- **Privacy:** the history holds editors' emails and private fields (notes, ratings, private notes, loans). It is
+  read only by `/admin/api/changes` (behind Access, like every editor route), never by a public page, the public or
+  private MCP, the JSON/CSV exports or Ask. Undo is a write: it takes the same sign-in and same-site Origin check
+  as any edit, and the MCP has no undo tool.
+- **Retention:** `CHANGES_KEEP_DAYS` (default 180) days, pruned at each start; a batch goes only once all of it is
+  that old. `0` keeps everything.
+- **API:** `GET /admin/api/changes` (`book=<book uid>`, `actor=`, `limit` up to 200, `before=<next_before>`),
+  `POST /admin/api/changes/<id>/undo`, `POST /admin/api/changes/batch/<batch_id>/undo`. A refused undo is a `409`
+  with the reason in `error`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `CHANGES_KEEP_DAYS` | `180` | Days of change history kept for undo, pruned at startup; `0` keeps everything |
 
 ## Backups and alerts
 The ops scripts cover Cookbook Collection and, if they're installed on the same server, Dinner Log and the wish list. Their settings live in `/etc/conf.d/app-ops`. Alerts name the server by `HOST_LABEL` (default: its hostname).
@@ -361,6 +402,8 @@ rc-service cookbooks start
   photo rows of matched books) that are not in the file, after printing what it will remove. Use
   `--dry-run --replace` to preview. Only database rows are deleted, never files.
 - The import is one transaction. A file with a newer `version` than the importer knows is refused.
+- The import is recorded as one batch in **More → Recent changes** (by `importer`), so **Undo all** there takes it
+  back, `--replace` deletions included (photo rows of deleted recipes aren't restored). `--dry-run` records nothing.
 - Exit codes: `0` done, `1` refused or nothing changed, `2` bad usage, `3` done but some rows were left
   out (listed in the output).
 - A photo's `dl_file` (an imported Dinner Log photo, see *Photos from Dinner Log*) is restored with it, unless
@@ -389,7 +432,7 @@ Every pull request runs these in GitHub Actions (`.github/workflows/ci.yml`). Ea
 | `pytest` | The suite on the `python3` that the production Alpine release ships (3.14) and on the current stable Python (3.15) | `python3 -m pytest -q tests` |
 | `alpine` | Alpine's own packages (`apk`): the suite, then the real installer under OpenRC, `/healthz`, `/mcp`, backups, rerun and `--uninstall`. Runs on the production release and on `alpine:latest` | needs an Alpine container |
 | `ui-tests` | The browser tests (`test_ask_ui`, `test_ask_gate`, `test_frontend_errors`, `test_uid_route`). They skip without Chromium, so this job fails on any skip | `pip install -r requirements-ui.txt && python3 -m playwright install chromium && sh .github/scripts/run-ui-tests.sh` |
-| `upgrade-path` | Builds a database with the code from before uids, shelf locations and house recipes, starts the current code on it, and checks the service starts, every book and recipe has a uid, row counts hold, and search works | `python3 .github/scripts/upgrade_path.py` |
+| `upgrade-path` | Builds a database with the code from before uids, shelf locations and house recipes, starts the current code on it, and checks the service starts, every book and recipe has a uid, row counts hold, the change history table is added with no history of earlier edits, and search works | `python3 .github/scripts/upgrade_path.py` |
 | `seam-contract` | [Dinner Log](https://github.com/SDNick484/dinner-log)'s contract tests against this checkout (see [docs/seam.md](docs/seam.md)) | see that repo's `contract.yml` |
 | `shellcheck` | `installer/`, `ops/` and `.github/scripts/` as POSIX sh (BusyBox ash on Alpine) | `shellcheck --shell=sh installer/*.sh ops/* .github/scripts/*.sh` |
 | `ruff` | Errors only: syntax errors and pyflakes (rules in `ruff.toml`). No formatter, no style rules | `ruff check .` |
@@ -399,6 +442,15 @@ Every pull request runs these in GitHub Actions (`.github/workflows/ci.yml`). Ea
 uses Alpine's `apk` packages, so bumping a pin there never changes a deployment. Dependabot opens one grouped pull
 request a week for GitHub Actions and one for these pins. The Alpine release in the `alpine` job and the Python in the
 `pytest` job should follow the release your server runs.
+
+### Rolling back the change history release
+The previous release runs on the upgraded database as is: it never reads the `changes` table (edits made with it
+just aren't recorded). To remove the table too, with the service stopped:
+```sh
+rc-service cookbooks stop
+sqlite3 /var/lib/cookbooks/cookbooks.db 'DROP TABLE IF EXISTS changes;'
+rc-service cookbooks start
+```
 
 ### Rolling back the house recipes release
 The previous release runs on the upgraded database as is: it ignores the new column and tables, and its own checks

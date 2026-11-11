@@ -9,7 +9,7 @@ import copy, http.client, json, os, re, time, urllib.error
 
 from flask import g, jsonify, request
 
-import extras
+import scan, extras
 from app import app, db, editor_required, make_err, clean, recipes_by_id, recipe_dict, book_dicts, env_int, local_midnight
 
 
@@ -49,7 +49,7 @@ SYSTEM = (extras.MCP_INSTRUCTIONS + extras.MCP_WEB_RECIPES + "\n\n"
 
 
 def search_key():
-    return SEARCH_KEY or extras.ANTHROPIC_API_KEY
+    return SEARCH_KEY or scan.ANTHROPIC_API_KEY
 
 
 def enabled():
@@ -197,8 +197,8 @@ def call_model(body, deadline):
         if left <= 0:
             raise AskTimeout()
         try:
-            return extras.messages_api(body, search_key(), min(CALL_TIMEOUT_S, left))
-        except extras.ClaudeAPIError as e:
+            return scan.messages_api(body, search_key(), min(CALL_TIMEOUT_S, left))
+        except scan.ClaudeAPIError as e:
             if attempt == 2 or e.status not in (429, 529):
                 raise
             app.logger.warning("Ask: Claude API %s, retrying: %s", e.status, e.detail)
@@ -278,7 +278,7 @@ def answer(messages):
                 data = call_model(body, deadline)
             except (AskTimeout, TimeoutError):
                 return fail("timeout", "no answer within the time limit (round %d)", rnd)
-            except extras.ClaudeAPIError as e:
+            except scan.ClaudeAPIError as e:
                 return fail("api_error", "Claude API %s: %s", e.status, e.detail)
             except urllib.error.URLError as e:
                 if isinstance(e.reason, TimeoutError):

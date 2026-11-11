@@ -16,7 +16,7 @@ os.environ.setdefault("CF_TEAM_DOMAIN", "team.example.com")
 os.environ.setdefault("CF_AUD", "aud123")
 import app as A  # noqa: E402
 import ask  # noqa: E402
-import extras as X  # noqa: E402
+import scan as SC  # noqa: E402
 
 CF = {"Cf-Ray": "abc", "Cf-Connecting-Ip": "203.0.113.9"}   # came through Cloudflare, no Access sign-in
 ASK = {"thread": [{"q": "chicken thighs"}]}
@@ -55,7 +55,7 @@ def test_editor_gets_what_the_button_needs(c, monkeypatch):
     assert me.status_code == 200 and me.get_json()["editor"] is True
     assert c.get("/admin/api/features").get_json()["ask"] is True
     monkeypatch.setattr(ask, "SEARCH_KEY", "")
-    monkeypatch.setattr(X, "ANTHROPIC_API_KEY", "")
+    monkeypatch.setattr(SC, "ANTHROPIC_API_KEY", "")
     assert c.get("/admin/api/features").get_json()["ask"] is False   # switched off: no button
 
 

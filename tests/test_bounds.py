@@ -9,6 +9,7 @@ from PIL import Image
 import app as A
 import ask
 import extras as X
+import scan as SC
 
 LAN = dict(base_url="http://127.0.0.1:8767", environ_base={"REMOTE_ADDR": "127.0.0.1"})
 
@@ -56,8 +57,8 @@ def test_cover_and_photo_uploads_use_the_allow_list(c):
 
 def test_index_photo_uses_the_allow_list(monkeypatch):
     with pytest.raises(ValueError):
-        X.prepare_photo(image_bytes("BMP"))
-    assert X.prepare_photo(image_bytes("JPEG", (400, 600)))[:2] == b"\xff\xd8"
+        SC.prepare_photo(image_bytes("BMP"))
+    assert SC.prepare_photo(image_bytes("JPEG", (400, 600)))[:2] == b"\xff\xd8"
 
 
 # ------------------------------------------------------------------ get_book paging

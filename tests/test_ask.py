@@ -8,6 +8,7 @@ import pytest
 
 import app as A
 import extras as X
+import scan as SC
 import ask
 
 OK = {"thread": [{"q": "chicken thighs"}]}
@@ -48,7 +49,7 @@ def test_cross_site_403(c):
 
 def test_no_key_503_and_flag(c, monkeypatch):
     monkeypatch.setattr(ask, "SEARCH_KEY", "")
-    monkeypatch.setattr(X, "ANTHROPIC_API_KEY", "")
+    monkeypatch.setattr(SC, "ANTHROPIC_API_KEY", "")
     before = len(ask_rows())
     r = c.post("/admin/api/ask", json=OK)
     assert r.status_code == 503
@@ -61,7 +62,7 @@ def test_no_key_503_and_flag(c, monkeypatch):
 
 def test_falls_back_to_api_key(monkeypatch):
     monkeypatch.setattr(ask, "SEARCH_KEY", "")
-    monkeypatch.setattr(X, "ANTHROPIC_API_KEY", "k2")
+    monkeypatch.setattr(SC, "ANTHROPIC_API_KEY", "k2")
     assert ask.search_key() == "k2"
     assert ask.enabled()
 
@@ -199,7 +200,7 @@ def model(monkeypatch):
 
     def install(*items):
         fake = Script(items)
-        monkeypatch.setattr(X, "messages_api", fake)
+        monkeypatch.setattr(SC, "messages_api", fake)
         return fake
     return install
 
@@ -407,7 +408,7 @@ GENERIC = {"error": "AI search is unavailable right now, try again"}
 
 
 def test_api_500_is_502_and_logged(c, model):
-    model(X.ClaudeAPIError(500, "boom"))
+    model(SC.ClaudeAPIError(500, "boom"))
     r = c.post("/admin/api/ask", json=OK)
     assert r.status_code == 502
     assert r.get_json() == GENERIC and b"boom" not in r.data
@@ -416,15 +417,15 @@ def test_api_500_is_502_and_logged(c, model):
 
 def test_529_retried_once_then_ok(c, model, monkeypatch):
     slept = []
-    model(X.ClaudeAPIError(529, ""), show("ok"))
+    model(SC.ClaudeAPIError(529, ""), show("ok"))
     monkeypatch.setattr(ask.time, "sleep", slept.append)
     r = c.post("/admin/api/ask", json=OK)
     assert r.status_code == 200 and r.get_json()["answer"] == "ok" and slept == [2]
-    model(X.ClaudeAPIError(529, ""), X.ClaudeAPIError(429, ""))
+    model(SC.ClaudeAPIError(529, ""), SC.ClaudeAPIError(429, ""))
     r = c.post("/admin/api/ask", json=OK)
     assert r.status_code == 502 and r.get_json() == GENERIC
     assert ask_rows()[-1]["status"] == "api_error"
-    fake = model(X.ClaudeAPIError(400, "bad"), show())
+    fake = model(SC.ClaudeAPIError(400, "bad"), show())
     assert c.post("/admin/api/ask", json=OK).status_code == 502
     assert len(fake.bodies) == 1  # only 429 and 529 are retried
 

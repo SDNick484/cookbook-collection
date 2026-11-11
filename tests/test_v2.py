@@ -13,6 +13,7 @@ os.environ.setdefault("CF_TEAM_DOMAIN", "team.example.com")
 os.environ.setdefault("CF_AUD", "aud123")
 import app as A  # noqa: E402
 import extras as X  # noqa: E402
+import scan as SC  # noqa: E402
 import cook as CK  # noqa: E402
 import dinnerlog as DL  # noqa: E402
 from dl_history import History  # noqa: E402
@@ -182,9 +183,9 @@ def photo_job(c, bid, timeout=10):
 
 def test_photo_import(c, monkeypatch):
     bid = c.post("/admin/api/books", json={"title": "Photo Book"}).json["id"]
-    monkeypatch.setattr(X, "ANTHROPIC_API_KEY", "")
+    monkeypatch.setattr(SC, "ANTHROPIC_API_KEY", "")
     assert photo_job(c, bid)[0] == 503
-    monkeypatch.setattr(X, "ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(SC, "ANTHROPIC_API_KEY", "sk-test")
     seen = {}
 
     def fake(img, media_type="image/jpeg"):
@@ -195,7 +196,7 @@ def test_photo_import(c, monkeypatch):
                 "| Braised Fennel | 255\n"
                 "Ají amarillo | Causa limeña | 51 ,88\n"
                 " | See also Potatoes | \n"), "end_turn"
-    monkeypatch.setattr(X, "call_claude", fake)
+    monkeypatch.setattr(SC, "call_claude", fake)
     _, j = photo_job(c, bid)
     rows = j["rows"]
     assert max(seen["size"]) == 2576 and j["warning"] is None
@@ -205,17 +206,17 @@ def test_photo_import(c, monkeypatch):
     assert rows[3]["page"] == "51, 88" and len(rows) == 4
 
     # an answer cut off at the output limit keeps every complete line, and says so
-    monkeypatch.setattr(X, "call_claude", lambda *a, **k: ("Anticuchos | de corazón | 101\nCeviche | clásico | 4", "max_tokens"))
+    monkeypatch.setattr(SC, "call_claude", lambda *a, **k: ("Anticuchos | de corazón | 101\nCeviche | clásico | 4", "max_tokens"))
     _, j = photo_job(c, bid)
     assert [r["name"] for r in j["rows"]] == ["de corazón"] and "cut off after 1 entries" in j["warning"]
 
-    monkeypatch.setattr(X, "call_claude", lambda *a, **k: ("sorry, can't read that", "end_turn"))
+    monkeypatch.setattr(SC, "call_claude", lambda *a, **k: ("sorry, can't read that", "end_turn"))
     _, j = photo_job(c, bid)
     assert j["status"] == "error" and "no entries" in j["error"]
 
     def boom(*a, **k):
         raise RuntimeError("Claude API error 529: overloaded")
-    monkeypatch.setattr(X, "call_claude", boom)
+    monkeypatch.setattr(SC, "call_claude", boom)
     _, j = photo_job(c, bid)
     assert j["status"] == "error" and "529" in j["error"]
     assert c.get("/admin/api/index/photo/nope").status_code == 404
@@ -223,10 +224,10 @@ def test_photo_import(c, monkeypatch):
 
 def test_photo_rows_formats():
     # the JSON the earlier prompt asked for still reads
-    rows = X.parse_claude_rows('```json\n{"entries": [{"heading": null, "name": "Lomo saltado", "page": "212"}]}\n```')
+    rows = SC.parse_claude_rows('```json\n{"entries": [{"heading": null, "name": "Lomo saltado", "page": "212"}]}\n```')
     assert rows == [{"heading": None, "name": "Lomo saltado", "page": "212"}]
     # a markdown table, with its header and divider lines
-    rows = X.parse_claude_rows("| heading | name | page |\n|---|---|---|\n| Potatoes | Papa a la huancaína | 66 |\n")
+    rows = SC.parse_claude_rows("| heading | name | page |\n|---|---|---|\n| Potatoes | Papa a la huancaína | 66 |\n")
     assert rows == [{"heading": "Potatoes", "name": "Papa a la huancaína", "page": "66"}]
 
 
@@ -234,7 +235,7 @@ def test_photo_job_left_running(c):
     """A job whose worker died (a restart mid-read) reports an error instead of waiting forever."""
     con = A.connect()
     con.execute("INSERT INTO photo_jobs (id, book_id, status, created) VALUES ('stale', 1, 'running', ?)",
-                (time.time() - X.PHOTO_JOB_LIMIT - 5,))
+                (time.time() - SC.PHOTO_JOB_LIMIT - 5,))
     con.commit()
     con.close()
     j = c.get("/admin/api/index/photo/stale").json
@@ -259,7 +260,7 @@ def test_effort_falls_back(monkeypatch):
             raise urllib.error.HTTPError(req.full_url, 400, "bad", {}, io.BytesIO(b'{"error": "output_config.effort: not supported"}'))
         return Resp(json.dumps({"content": [{"type": "text", "text": "A | b | 1"}], "stop_reason": "end_turn"}).encode())
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
-    assert X.call_claude(b"jpeg") == ("A | b | 1", "end_turn")
+    assert SC.call_claude(b"jpeg") == ("A | b | 1", "end_turn")
     assert sent == [{"effort": "low"}, None]
 
 
@@ -278,7 +279,7 @@ def test_messages_api_returns_json_and_sends_key(monkeypatch):
         seen["req"], seen["timeout"] = req, timeout
         return _Resp(b'{"content": []}')
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
-    assert X.messages_api({"model": "m"}, "k", 12.5) == {"content": []}
+    assert SC.messages_api({"model": "m"}, "k", 12.5) == {"content": []}
     assert seen["req"].get_header("X-api-key") == "k"
     assert seen["req"].full_url.endswith("/v1/messages")
     assert json.loads(seen["req"].data) == {"model": "m"}
@@ -289,8 +290,8 @@ def test_messages_api_http_error(monkeypatch):
     def urlopen(req, timeout):
         raise urllib.error.HTTPError(req.full_url, 529, "x", {}, io.BytesIO(b"overloaded"))
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
-    with pytest.raises(X.ClaudeAPIError) as ei:
-        X.messages_api({}, "k", 5)
+    with pytest.raises(SC.ClaudeAPIError) as ei:
+        SC.messages_api({}, "k", 5)
     assert ei.value.status == 529 and "overloaded" in ei.value.detail
 
 
@@ -299,7 +300,7 @@ def test_messages_api_timeout_propagates(monkeypatch):
         raise TimeoutError("slow")
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     with pytest.raises(TimeoutError):
-        X.messages_api({}, "k", 5)
+        SC.messages_api({}, "k", 5)
 
 
 def test_call_claude_effort_fallback_and_error_text(monkeypatch):
@@ -312,14 +313,14 @@ def test_call_claude_effort_fallback_and_error_text(monkeypatch):
             raise urllib.error.HTTPError(req.full_url, 400, "bad", {}, io.BytesIO(b'{"error": "output_config not supported"}'))
         return _Resp(json.dumps({"content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn"}).encode())
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
-    assert X.call_claude(b"jpeg") == ("ok", "end_turn")
+    assert SC.call_claude(b"jpeg") == ("ok", "end_turn")
     assert len(calls) == 2 and "output_config" not in calls[1]
 
     def boom(req, timeout):
         raise urllib.error.HTTPError(req.full_url, 500, "x", {}, io.BytesIO(b"kaput"))
     monkeypatch.setattr(urllib.request, "urlopen", boom)
     with pytest.raises(RuntimeError) as ei:
-        X.call_claude(b"jpeg")
+        SC.call_claude(b"jpeg")
     assert str(ei.value) == "Claude API error 500: kaput"
 
 
@@ -510,7 +511,7 @@ def test_suggest_favorites_multi_cooked_and_parse_truncation(c, dl):
     assert all(r["name"] != "Zuni Roast Chicken with Bread Salad" for r in favs)
 
     # Truncation before first '|' on trailing line keeps the preceding complete line
-    rows = X.parse_claude_rows("Chicken | braised | 350\nPork", truncated=True)
+    rows = SC.parse_claude_rows("Chicken | braised | 350\nPork", truncated=True)
     assert rows == [{"heading": "Chicken", "name": "braised", "page": "350"}]
 
 
@@ -653,8 +654,8 @@ def _start_photo_job(c, bid):
 
 @pytest.fixture()
 def photo_book(c, monkeypatch):
-    monkeypatch.setattr(X, "ANTHROPIC_API_KEY", "test-key")
-    monkeypatch.setattr(X, "run_photo_job", lambda *a, **k: None)  # never call Claude from tests
+    monkeypatch.setattr(SC, "ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(SC, "run_photo_job", lambda *a, **k: None)  # never call Claude from tests
     con = A.connect()  # jobs left running by earlier tests would count against the cap
     con.execute("DELETE FROM photo_jobs")
     con.commit()
@@ -672,21 +673,21 @@ def _insert_job(job_id, book_id, status, created):
 
 def test_photo_jobs_are_capped_while_running(c, photo_book):
     now = time.time()
-    for i in range(getattr(X, "PHOTO_JOBS_MAX", 3)):
+    for i in range(getattr(SC, "PHOTO_JOBS_MAX", 3)):
         _insert_job(f"busy-{i}", photo_book, "running", now)
     r = _start_photo_job(c, photo_book)
     assert r.status_code == 429 and r.headers.get("Retry-After")
 
 
 def test_stale_running_jobs_do_not_block_new_ones(c, photo_book):
-    old = time.time() - X.PHOTO_JOB_LIMIT - 60
-    for i in range(getattr(X, "PHOTO_JOBS_MAX", 3)):
+    old = time.time() - SC.PHOTO_JOB_LIMIT - 60
+    for i in range(getattr(SC, "PHOTO_JOBS_MAX", 3)):
         _insert_job(f"dead-{i}", photo_book, "running", old)
     assert _start_photo_job(c, photo_book).status_code == 202
 
 
 def test_timed_out_photo_job_is_saved_as_error(c, photo_book):
-    _insert_job("timed-out", photo_book, "running", time.time() - X.PHOTO_JOB_LIMIT - 30)
+    _insert_job("timed-out", photo_book, "running", time.time() - SC.PHOTO_JOB_LIMIT - 30)
     assert c.get("/admin/api/index/photo/timed-out").json["status"] == "error"
     row = A.connect().execute("SELECT status, error FROM photo_jobs WHERE id='timed-out'").fetchone()
     assert row["status"] == "error" and row["error"]

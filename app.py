@@ -240,12 +240,13 @@ def _init_db_locked():
     global HAS_FTS
     con = connect()
     con.executescript(SCHEMA)
-    import dinnerlog, cook, extras, eyb, ingredients, photos, online, ask, house
+    import dinnerlog, cook, extras, scan, eyb, ingredients, photos, online, ask, house
     online.migrate(con)
     house.migrate(con)  # after online: books.kind must exist
     dinnerlog.migrate(con)
     cook.migrate(con)
     extras.migrate(con)
+    scan.migrate(con)
     eyb.migrate(con)
     ingredients.migrate(con)
     photos.migrate(con)
@@ -1798,6 +1799,7 @@ if __name__ == "__main__":
 else:
     import dinnerlog  # noqa: E402,F401 — Dinner Log history
     import cook  # noqa: E402,F401 — what to cook, stats, shelf
+    import scan  # noqa: E402,F401 — photo index import
     import extras  # noqa: E402,F401 — the remaining v2 routes
     import eyb  # noqa: E402,F401 — Eat Your Books import
     import ingredients  # noqa: E402,F401 — ingredient tags

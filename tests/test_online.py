@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("DATA_DIR", tempfile.mkdtemp())
 import app as A  # noqa: E402
 import extras as X  # noqa: E402
+import dinnerlog as DL  # noqa: E402
 from dl_history import History  # noqa: E402
 import online as O  # noqa: E402
 
@@ -126,7 +127,7 @@ def test_dinner_log_credits_saved_links(c, clean_online, monkeypatch):
     h.add(today, "Onion soup", "website", "", NYT + "?smid=share", 9)
     h.add(today, "Takeout", "website", "", "https://example.com/x")
     con = A.connect()
-    X.rebuild_cooked(con, force=True)
+    DL.rebuild_cooked(con, force=True)
     rows = con.execute("SELECT book_id, recipe_id, how FROM cooked").fetchall()
     con.close()
     assert [tuple(x) for x in rows] == [(bid, rid, "auto")]          # the unrelated website dinner is left out

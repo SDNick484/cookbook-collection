@@ -6,7 +6,7 @@ PUBLIC_RECIPE, PUBLIC_RECIPE_COOKED and PUBLIC_RECIPE_FLAGS are the whole public
 import pytest
 
 import app as A
-import extras as X
+import dinnerlog as DL
 from dl_history import History
 
 CF = {"Cf-Ray": "abc", "Cf-Connecting-Ip": "203.0.113.9"}   # through Cloudflare, no Access login
@@ -66,19 +66,19 @@ def test_public_view_keeps_history_fresh(c, cooked_book, monkeypatch):
     """Decision: a public book page syncs like an editor's, so counts don't wait for an editor visit."""
     bid, _, _ = cooked_book
     started = []
-    monkeypatch.setattr(X, "start_background", lambda fn: started.append(fn))
+    monkeypatch.setattr(DL, "start_background", lambda fn: started.append(fn))
     con = A.connect()
-    X.meta_set(con, "dl_pulled_at", "0")                             # stale
-    X.meta_set(con, "dl_lease", "0")
+    DL.meta_set(con, "dl_pulled_at", "0")                             # stale
+    DL.meta_set(con, "dl_lease", "0")
     con.execute("DELETE FROM meta WHERE key='dl_failed_at'")
     con.commit()
     con.close()
     assert c.get(f"/api/books/{bid}", headers=CF).status_code == 200
-    assert started == [X.background_pull]
+    assert started == [DL.background_pull]
 
 
 def test_public_view_without_dinnerlog(c, monkeypatch):
-    monkeypatch.setattr(X, "DINNERLOG_API_URL", "")
+    monkeypatch.setattr(DL, "DINNERLOG_API_URL", "")
     r = c.get("/api/books/1", headers=CF)
     assert r.status_code == 200 and all(set(x) <= set(A.PUBLIC_RECIPE) | set(A.PUBLIC_RECIPE_COOKED) | set(A.PUBLIC_RECIPE_FLAGS)
                                         for x in r.json["recipes"])

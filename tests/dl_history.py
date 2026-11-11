@@ -1,6 +1,6 @@
 """Test helper: stand in for Dinner Log by storing cooking history the way a pull does."""
 import app as A
-import extras as X
+import dinnerlog as DL
 
 
 class History:
@@ -8,9 +8,9 @@ class History:
     had just brought it in, so the next request rebuilds `cooked`."""
 
     def __init__(self, monkeypatch):
-        monkeypatch.setattr(X, "DINNERLOG_API_URL", "http://127.0.0.1:8000")
-        monkeypatch.setattr(X, "DINNERLOG_TOKEN", "test-token")
-        monkeypatch.setattr(X, "start_background", lambda fn: None)   # no real pulls from tests
+        monkeypatch.setattr(DL, "DINNERLOG_API_URL", "http://127.0.0.1:8000")
+        monkeypatch.setattr(DL, "DINNERLOG_TOKEN", "test-token")
+        monkeypatch.setattr(DL, "start_background", lambda fn: None)   # no real pulls from tests
         self.meals = []
         self._store()
 
@@ -24,6 +24,6 @@ class History:
     def _store(self):
         con = A.connect()
         try:
-            X.store_snapshot(con, self.meals, f'"{len(self.meals)}"')
+            DL.store_snapshot(con, self.meals, f'"{len(self.meals)}"')
         finally:
             con.close()

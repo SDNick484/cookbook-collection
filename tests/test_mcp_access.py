@@ -195,7 +195,7 @@ def test_every_candidate_is_compared(monkeypatch, supplied):
     monkeypatch.setattr(X, "MCP_TOKEN", "t1,t2,t3")
     seen = []
     real = hmac.compare_digest
-    monkeypatch.setattr(X.hmac, "compare_digest", lambda a, b: seen.append(b) or real(a, b))
+    monkeypatch.setattr(hmac, "compare_digest", lambda a, b: seen.append(b) or real(a, b))
     assert X.token_ok(supplied) is (supplied != "nope")
     assert seen == [b"t1", b"t2", b"t3"]
 

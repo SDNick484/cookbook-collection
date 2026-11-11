@@ -3,11 +3,15 @@ import io
 import json
 import socket
 import urllib.error
+import os
+import sqlite3
+import time
+import urllib.request
 
 import pytest
 
 import app as A
-import extras as X
+import dinnerlog as DL
 
 TOKEN = "dl-token-for-tests"
 URL = "http://127.0.0.1:8000"
@@ -57,13 +61,13 @@ def meal(id_, name="Roast chicken", title="", detail="", source_type="cookbook",
 
 
 def meta(con, k):
-    return X.meta_get(con, k)
+    return DL.meta_get(con, k)
 
 
 @pytest.fixture(autouse=True)
 def configured(monkeypatch):
-    monkeypatch.setattr(X, "DINNERLOG_API_URL", URL)
-    monkeypatch.setattr(X, "DINNERLOG_TOKEN", TOKEN)
+    monkeypatch.setattr(DL, "DINNERLOG_API_URL", URL)
+    monkeypatch.setattr(DL, "DINNERLOG_TOKEN", TOKEN)
     con = A.connect()
     con.execute("DELETE FROM dl_meals")
     con.execute("DELETE FROM cooked")
@@ -77,7 +81,7 @@ def configured(monkeypatch):
 
 def use(monkeypatch, *answers):
     fake = FakeDL(*answers)
-    monkeypatch.setattr(X, "dl_open", fake)
+    monkeypatch.setattr(DL, "dl_open", fake)
     return fake
 
 
@@ -85,10 +89,10 @@ def use(monkeypatch, *answers):
 
 def test_pull_200_stores_snapshot_and_etag(configured, monkeypatch):
     fake = use(monkeypatch, Resp(payload([meal(1), meal(2, "Soup")]), headers={"ETag": '"abc"'}))
-    st = X.pull_history(configured, now=1000.0)
+    st = DL.pull_history(configured, now=1000.0)
     assert st == {"ok": True, "changed": True, "error": None}
     req, timeout = fake.requests[0]
-    assert req.full_url == URL + "/api/history" and timeout == X.PULL_TIMEOUT
+    assert req.full_url == URL + "/api/history" and timeout == DL.PULL_TIMEOUT
     assert req.get_header("Authorization") == f"Bearer {TOKEN}"
     assert req.get_header("If-none-match") is None                      # nothing pulled yet
     rows = configured.execute("SELECT id, name, rating FROM dl_meals ORDER BY id").fetchall()
@@ -98,9 +102,9 @@ def test_pull_200_stores_snapshot_and_etag(configured, monkeypatch):
 
 
 def test_pull_sends_if_none_match_and_handles_304(configured, monkeypatch):
-    X.store_snapshot(configured, [meal(1)], '"abc"')
+    DL.store_snapshot(configured, [meal(1)], '"abc"')
     fake = use(monkeypatch, http_error(304))
-    st = X.pull_history(configured, now=2000.0)
+    st = DL.pull_history(configured, now=2000.0)
     assert st == {"ok": True, "changed": False, "error": None}
     assert fake.requests[0][0].get_header("If-none-match") == '"abc"'
     assert configured.execute("SELECT count(*) FROM dl_meals").fetchone()[0] == 1
@@ -110,9 +114,9 @@ def test_pull_sends_if_none_match_and_handles_304(configured, monkeypatch):
 @pytest.mark.parametrize("answer", [socket.timeout("timed out"), urllib.error.URLError("refused"),
                                     http_error(500), http_error(302), http_error(401)])
 def test_pull_errors_keep_snapshot(configured, monkeypatch, answer):
-    X.store_snapshot(configured, [meal(1)], '"abc"')
+    DL.store_snapshot(configured, [meal(1)], '"abc"')
     use(monkeypatch, answer)
-    st = X.pull_history(configured, now=3000.0)
+    st = DL.pull_history(configured, now=3000.0)
     assert st["ok"] is False and st["error"]
     assert meta(configured, "dl_error") and float(meta(configured, "dl_failed_at")) == 3000.0
     assert configured.execute("SELECT count(*) FROM dl_meals").fetchone()[0] == 1
@@ -125,12 +129,12 @@ def test_pull_errors_keep_snapshot(configured, monkeypatch, answer):
     payload([{**meal(1), "id": "x"}]),
     payload([{**meal(1), "id": True}]),
     b"<html>login</html>",
-    b"x" * (X.MAX_HISTORY_BYTES + 1),
+    b"x" * (DL.MAX_HISTORY_BYTES + 1),
 ])
 def test_pull_rejects_bad_payload(configured, monkeypatch, body):
-    X.store_snapshot(configured, [meal(1)], '"abc"')
+    DL.store_snapshot(configured, [meal(1)], '"abc"')
     use(monkeypatch, Resp(body, headers={"ETag": '"new"'}))
-    st = X.pull_history(configured, now=4000.0)
+    st = DL.pull_history(configured, now=4000.0)
     assert st["ok"] is False and meta(configured, "dl_error")
     assert configured.execute("SELECT count(*) FROM dl_meals").fetchone()[0] == 1
     assert meta(configured, "dl_etag") == '"abc"'
@@ -138,37 +142,37 @@ def test_pull_rejects_bad_payload(configured, monkeypatch, body):
 
 def test_pull_200_without_etag(configured, monkeypatch):            # Review Focus 1
     fake = use(monkeypatch, Resp(payload([meal(1)])), http_error(304))
-    assert X.pull_history(configured, now=1.0)["ok"]
+    assert DL.pull_history(configured, now=1.0)["ok"]
     assert meta(configured, "dl_etag") == ""
-    X.pull_history(configured, now=2.0)
+    DL.pull_history(configured, now=2.0)
     assert fake.requests[1][0].get_header("If-none-match") is None
 
 
 def test_pull_tolerates_missing_fields(configured, monkeypatch):    # Review Focus 3
     use(monkeypatch, Resp(payload([{"id": 5, "day": "2026-10-01", "name": "X"}]), headers={"ETag": '"e"'}))
-    assert X.pull_history(configured, now=1.0)["ok"]
+    assert DL.pull_history(configured, now=1.0)["ok"]
     r = configured.execute("SELECT name, source_type, rating, cookbook_book_id FROM dl_meals WHERE id=5").fetchone()
     assert tuple(r) == ("X", None, None, None)
 
 
 def test_pull_url_trailing_slash(configured, monkeypatch):          # Review Focus 4
-    monkeypatch.setattr(X, "DINNERLOG_API_URL", X.clean_url(URL + "/"))
+    monkeypatch.setattr(DL, "DINNERLOG_API_URL", DL.clean_url(URL + "/"))
     fake = use(monkeypatch, Resp(payload([]), headers={"ETag": '"e"'}))
-    X.pull_history(configured, now=1.0)
+    DL.pull_history(configured, now=1.0)
     assert fake.requests[0][0].full_url == URL + "/api/history"
 
 
 def test_pull_unconfigured_is_noop(configured, monkeypatch):
-    monkeypatch.setattr(X, "DINNERLOG_API_URL", "")
+    monkeypatch.setattr(DL, "DINNERLOG_API_URL", "")
     fake = use(monkeypatch)
-    st = X.pull_history(configured, now=1.0)
+    st = DL.pull_history(configured, now=1.0)
     assert st["ok"] is False and fake.requests == []
     assert meta(configured, "dl_error") is None and meta(configured, "dl_pulled_at") is None
 
 
 def test_error_never_contains_token_or_body(configured, monkeypatch):
     use(monkeypatch, http_error(500, f"secret page with {TOKEN}".encode()))
-    X.pull_history(configured, now=1.0)
+    DL.pull_history(configured, now=1.0)
     err = meta(configured, "dl_error")
     assert TOKEN not in err and "secret page" not in err
 
@@ -203,10 +207,10 @@ def test_precedence(configured):
         meal(3, n1, "unmatched title", str(p1), cookbook_book_id=zuni),                       # stamped book
         meal(4, n2, ZUNI, str(p2)),                                                           # fuzzy, as before
     ]
-    X.store_snapshot(con, meals, '"v1"')
-    con.execute("INSERT INTO dl_link VALUES (1, ?, ?)", (r2, X.meal_key("2026-10-01", "Dinner one")))
+    DL.store_snapshot(con, meals, '"v1"')
+    con.execute("INSERT INTO dl_link VALUES (1, ?, ?)", (r2, DL.meal_key("2026-10-01", "Dinner one")))
     con.commit()
-    assert X.rebuild_cooked(con)["rebuilt"] is True
+    assert DL.rebuild_cooked(con)["rebuilt"] is True
     assert cooked(con) == {1: (zuni, r2, "manual"), 2: (zuni, r2, "linked"),
                            3: (zuni, r1, "auto"), 4: (zuni, r2, "auto")}
 
@@ -215,8 +219,8 @@ def test_deleted_stamped_recipe_falls_through(configured):
     con = configured
     zuni = book_id(con, ZUNI)
     (r1, n1, p1), = lone_recipes(con, zuni, 1)
-    X.store_snapshot(con, [meal(1, n1, ZUNI, str(p1), cookbook_book_id=999999, cookbook_recipe_id=999999)], '"v1"')
-    X.rebuild_cooked(con)
+    DL.store_snapshot(con, [meal(1, n1, ZUNI, str(p1), cookbook_book_id=999999, cookbook_recipe_id=999999)], '"v1"')
+    DL.rebuild_cooked(con)
     assert cooked(con) == {1: (zuni, r1, "auto")}
 
 
@@ -224,29 +228,29 @@ def test_never_pulled_keeps_cooked(configured):
     con = configured
     con.execute("INSERT INTO cooked(meal_id, day, meal_name) VALUES (42, '2026-01-01', 'From before the upgrade')")
     con.commit()
-    assert X.rebuild_cooked(con)["rebuilt"] is False
-    assert X.rebuild_cooked(con, force=True)["rebuilt"] is False         # nothing pulled yet: keep what's there
+    assert DL.rebuild_cooked(con)["rebuilt"] is False
+    assert DL.rebuild_cooked(con, force=True)["rebuilt"] is False         # nothing pulled yet: keep what's there
     assert list(cooked(con)) == [42]
 
 
 def test_rebuild_only_when_something_changed(configured, monkeypatch):
     con = configured
-    X.store_snapshot(con, [meal(1, "x", ZUNI)], '"v1"')
-    assert X.rebuild_cooked(con)["rebuilt"] is True
-    assert X.rebuild_cooked(con)["rebuilt"] is False                     # same snapshot, same catalog
+    DL.store_snapshot(con, [meal(1, "x", ZUNI)], '"v1"')
+    assert DL.rebuild_cooked(con)["rebuilt"] is True
+    assert DL.rebuild_cooked(con)["rebuilt"] is False                     # same snapshot, same catalog
     use(monkeypatch, http_error(304))
-    X.pull_history(con)                                                  # unchanged history
-    assert X.rebuild_cooked(con)["rebuilt"] is False
-    X.store_snapshot(con, [meal(1, "x", ZUNI), meal(2, "y", ZUNI)], '"v2"')
-    assert X.rebuild_cooked(con)["rebuilt"] is True
+    DL.pull_history(con)                                                  # unchanged history
+    assert DL.rebuild_cooked(con)["rebuilt"] is False
+    DL.store_snapshot(con, [meal(1, "x", ZUNI), meal(2, "y", ZUNI)], '"v2"')
+    assert DL.rebuild_cooked(con)["rebuilt"] is True
 
 
 def test_changed_history_without_etag_still_rebuilds(configured):    # Review Focus 1
     con = configured
-    X.store_snapshot(con, [meal(1, "x", ZUNI)], "")
-    assert X.rebuild_cooked(con)["rebuilt"] is True
-    X.store_snapshot(con, [meal(1, "x", ZUNI), meal(2, "y", ZUNI)], "")
-    assert X.rebuild_cooked(con)["rebuilt"] is True
+    DL.store_snapshot(con, [meal(1, "x", ZUNI)], "")
+    assert DL.rebuild_cooked(con)["rebuilt"] is True
+    DL.store_snapshot(con, [meal(1, "x", ZUNI), meal(2, "y", ZUNI)], "")
+    assert DL.rebuild_cooked(con)["rebuilt"] is True
     assert set(cooked(con)) == {1, 2}
 
 
@@ -254,13 +258,13 @@ def test_catalog_change_triggers_rebuild(configured):
     con = configured
     bid = con.execute("INSERT INTO books(title) VALUES ('Late Indexed Book')").lastrowid
     con.commit()
-    X.store_snapshot(con, [meal(1, "Special Braised Short Ribs", "Late Indexed Book", "42")], '"v1"')
-    X.rebuild_cooked(con)
+    DL.store_snapshot(con, [meal(1, "Special Braised Short Ribs", "Late Indexed Book", "42")], '"v1"')
+    DL.rebuild_cooked(con)
     assert cooked(con) == {1: (bid, None, "book")}
     rid = con.execute("INSERT INTO recipes(book_id, name, page, page_sort) VALUES (?, 'Special Braised Short Ribs', "
                       "'42', 42)", (bid,)).lastrowid
     con.commit()
-    assert X.rebuild_cooked(con)["rebuilt"] is True                      # no force, no new pull
+    assert DL.rebuild_cooked(con)["rebuilt"] is True                      # no force, no new pull
     assert cooked(con) == {1: (bid, rid, "auto")}
     con.execute("DELETE FROM books WHERE id=?", (bid,))
     con.commit()
@@ -270,13 +274,13 @@ def test_deleted_meal_disappears(configured):                           # Review
     con = configured
     zuni = book_id(con, ZUNI)
     (r1, n1, p1), (r2, n2, p2) = lone_recipes(con, zuni)
-    X.store_snapshot(con, [meal(1, n1, ZUNI, str(p1)), meal(3, n2, ZUNI, str(p2))], '"v1"')
-    con.execute("INSERT INTO dl_link VALUES (3, ?, ?)", (r1, X.meal_key("2026-10-01", n2)))
+    DL.store_snapshot(con, [meal(1, n1, ZUNI, str(p1)), meal(3, n2, ZUNI, str(p2))], '"v1"')
+    con.execute("INSERT INTO dl_link VALUES (3, ?, ?)", (r1, DL.meal_key("2026-10-01", n2)))
     con.commit()
-    X.rebuild_cooked(con)
+    DL.rebuild_cooked(con)
     assert set(cooked(con)) == {1, 3}
-    X.store_snapshot(con, [meal(1, n1, ZUNI, str(p1))], '"v2"')
-    X.rebuild_cooked(con)
+    DL.store_snapshot(con, [meal(1, n1, ZUNI, str(p1))], '"v2"')
+    DL.rebuild_cooked(con)
     assert cooked(con) == {1: (zuni, r1, "auto")}                        # meal 3 gone; its link unused
 
 
@@ -288,13 +292,13 @@ CF = {"Cf-Ray": "abc", "Cf-Connecting-Ip": "203.0.113.9"}   # through Cloudflare
 @pytest.fixture()
 def started(monkeypatch):
     calls = []
-    monkeypatch.setattr(X, "start_background", lambda fn: calls.append(fn))
+    monkeypatch.setattr(DL, "start_background", lambda fn: calls.append(fn))
     return calls
 
 
 def set_meta(con, **kv):
     for k, v in kv.items():
-        X.meta_set(con, k, v)
+        DL.meta_set(con, k, v)
     con.commit()
 
 
@@ -303,62 +307,62 @@ def page(c):
 
 
 def test_lease_single_holder(configured):
-    assert X.try_lease(configured, 1000.0) is True
-    assert X.try_lease(configured, 1001.0) is False
-    assert X.try_lease(configured, 1000.0 + X.LEASE_TTL + 1) is True
-    X.release_lease(configured)
-    assert X.try_lease(configured, 1000.0 + X.LEASE_TTL + 2) is True
+    assert DL.try_lease(configured, 1000.0) is True
+    assert DL.try_lease(configured, 1001.0) is False
+    assert DL.try_lease(configured, 1000.0 + DL.LEASE_TTL + 1) is True
+    DL.release_lease(configured)
+    assert DL.try_lease(configured, 1000.0 + DL.LEASE_TTL + 2) is True
 
 
 def test_ensure_synced_starts_pull_without_waiting(configured, monkeypatch, started):
     fake = use(monkeypatch)                                               # an inline pull would pop from []
-    set_meta(configured, dl_pulled_at=f"{X.time.time() - X.PULL_EVERY - 5:.3f}")
+    set_meta(configured, dl_pulled_at=f"{time.time() - DL.PULL_EVERY - 5:.3f}")
     page(A.app.test_client())
-    assert started == [X.background_pull] and fake.requests == []
+    assert started == [DL.background_pull] and fake.requests == []
     page(A.app.test_client())
     assert len(started) == 1                                              # the lease is held
 
 
 def test_never_pulled_starts_pull(configured, started):
     page(A.app.test_client())
-    assert started == [X.background_pull]
+    assert started == [DL.background_pull]
 
 
 def test_fresh_snapshot_no_pull(configured, started):
-    set_meta(configured, dl_pulled_at=f"{X.time.time() - 10:.3f}")
+    set_meta(configured, dl_pulled_at=f"{time.time() - 10:.3f}")
     page(A.app.test_client())
     assert started == []
 
 
 def test_backoff_suppresses_pull(configured, started):
-    now = X.time.time()
+    now = time.time()
     set_meta(configured, dl_pulled_at=f"{now - 1000:.3f}", dl_failed_at=f"{now - 100:.3f}")
     page(A.app.test_client())
     assert started == []
-    set_meta(configured, dl_failed_at=f"{now - X.PULL_BACKOFF - 1:.3f}")
+    set_meta(configured, dl_failed_at=f"{now - DL.PULL_BACKOFF - 1:.3f}")
     page(A.app.test_client())
-    assert started == [X.background_pull]
+    assert started == [DL.background_pull]
 
 
 def test_unconfigured_never_pulls(configured, monkeypatch, started):
-    monkeypatch.setattr(X, "DINNERLOG_API_URL", "")
+    monkeypatch.setattr(DL, "DINNERLOG_API_URL", "")
     page(A.app.test_client())
     assert started == []
 
 
 def test_background_pull_rebuilds_and_releases_lease(configured, monkeypatch):
     use(monkeypatch, Resp(payload([meal(1, "x", ZUNI)]), headers={"ETag": '"b1"'}))
-    assert X.try_lease(configured, X.time.time())
-    X.background_pull()
+    assert DL.try_lease(configured, time.time())
+    DL.background_pull()
     assert meta(configured, "dl_lease") == "0" and set(cooked(configured)) == {1}
 
 
 def test_background_pull_releases_lease_on_exception(configured, monkeypatch):   # Review Focus 2
     def boom(con, now=None):
-        raise X.sqlite3.OperationalError("database is locked")
-    monkeypatch.setattr(X, "pull_history", boom)
-    assert X.try_lease(configured, X.time.time())
-    X.background_pull()                                                   # logs, doesn't raise
+        raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(DL, "pull_history", boom)
+    assert DL.try_lease(configured, time.time())
+    DL.background_pull()                                                   # logs, doesn't raise
     assert meta(configured, "dl_lease") == "0"
     assert meta(configured, "dl_error") and meta(configured, "dl_failed_at")
 
@@ -386,7 +390,7 @@ def test_alias_and_link_rebuild_without_pull(configured, monkeypatch, started):
     con = configured
     zuni = book_id(con, ZUNI)
     (r1, n1, p1), = lone_recipes(con, zuni, 1)
-    X.store_snapshot(con, [meal(1, n1, "My Zuni Copy", str(p1))], '"a"')
+    DL.store_snapshot(con, [meal(1, n1, "My Zuni Copy", str(p1))], '"a"')
     fake = use(monkeypatch)
     c = A.app.test_client()
     assert c.post("/admin/api/dinnerlog/alias", json={"title": "My Zuni Copy", "book_id": zuni}).status_code == 200
@@ -406,24 +410,24 @@ def test_status_pulls_inline_when_never_pulled(configured, monkeypatch):
 
 
 def test_status_without_force_doesnt_pull_once_pulled(configured, monkeypatch, started):
-    X.store_snapshot(configured, [meal(1, "x", ZUNI)], '"a"')
+    DL.store_snapshot(configured, [meal(1, "x", ZUNI)], '"a"')
     fake = use(monkeypatch)
     assert A.app.test_client().get("/admin/api/dinnerlog").json["available"] is True
     assert fake.requests == []
 
 
 def test_stats_view_and_installer_force_a_fetch():
-    js = (X.os.path.dirname(A.__file__) + "/static/app.js")
+    js = (os.path.dirname(A.__file__) + "/static/app.js")
     assert 'api("dinnerlog?force=1")' in open(js).read()
-    sh = open(X.os.path.dirname(A.__file__) + "/installer/setup-head.sh").read()
+    sh = open(os.path.dirname(A.__file__) + "/installer/setup-head.sh").read()
     assert "/admin/api/dinnerlog?force=1" in sh
 
 
 @pytest.mark.parametrize("url", ["127.0.0.1:8000", "dinnerlog", "file:///etc/passwd", "ftp://h/x"])
 def test_url_without_http_scheme_is_a_clear_error(configured, monkeypatch, url):
-    monkeypatch.setattr(X, "DINNERLOG_API_URL", url)
+    monkeypatch.setattr(DL, "DINNERLOG_API_URL", url)
     fake = use(monkeypatch)
-    st = X.pull_history(configured, now=1.0)
+    st = DL.pull_history(configured, now=1.0)
     assert st["ok"] is False and "http://" in st["error"] and fake.requests == []
     r = A.app.test_client().get("/admin/api/dinnerlog?force=1")
     assert r.status_code == 200 and "http://" in r.json["error"]
@@ -432,6 +436,6 @@ def test_url_without_http_scheme_is_a_clear_error(configured, monkeypatch, url):
 def test_opener_ignores_environment_proxies(monkeypatch):
     monkeypatch.setenv("http_proxy", "http://proxy.invalid:3128")
     monkeypatch.setenv("https_proxy", "http://proxy.invalid:3128")
-    opener = X.build_dl_opener()
-    assert not any(isinstance(h, X.urllib.request.ProxyHandler) and h.proxies for h in opener.handlers)
-    assert any(isinstance(h, X._NoRedirect) for h in opener.handlers)
+    opener = DL.build_dl_opener()
+    assert not any(isinstance(h, urllib.request.ProxyHandler) and h.proxies for h in opener.handlers)
+    assert any(isinstance(h, DL._NoRedirect) for h in opener.handlers)

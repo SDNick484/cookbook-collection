@@ -6,7 +6,7 @@ route that does int(request.args[...]) without a guard shows up here.
 import pytest
 
 import app as A
-import extras as X
+import dinnerlog as DL
 
 JUNK = {"limit": "lots", "offset": "1e3", "n": "ten", "rest": "x", "count": "1.5", "book": "abc", "page": "p",
         "location_id": "shelf", "days": "-", "year": "nineteen", "id": "1;2", "seed": "s"}
@@ -15,7 +15,7 @@ JUNK = {"limit": "lots", "offset": "1e3", "n": "ten", "rest": "x", "count": "1.5
 @pytest.fixture()
 def c(monkeypatch):
     monkeypatch.setattr(A, "http_get", lambda *a, **k: (_ for _ in ()).throw(OSError("no network in tests")))
-    monkeypatch.setattr(X, "start_background", lambda *a, **k: None)
+    monkeypatch.setattr(DL, "start_background", lambda *a, **k: None)
     return A.app.test_client()
 
 

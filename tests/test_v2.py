@@ -2,6 +2,7 @@
 import io, json, os, sys, tempfile, time, urllib.error
 from datetime import date, timedelta
 from pathlib import Path
+import urllib.request
 
 import pytest
 
@@ -12,6 +13,7 @@ os.environ.setdefault("CF_TEAM_DOMAIN", "team.example.com")
 os.environ.setdefault("CF_AUD", "aud123")
 import app as A  # noqa: E402
 import extras as X  # noqa: E402
+import dinnerlog as DL  # noqa: E402
 from dl_history import History  # noqa: E402
 
 CF = {"Cf-Ray": "abc", "Cf-Connecting-Ip": "203.0.113.9"}
@@ -81,7 +83,7 @@ def test_dinnerlog_matching(c, dl):
 
 
 def test_dinnerlog_missing_is_harmless(c, monkeypatch):
-    monkeypatch.setattr(X, "DINNERLOG_API_URL", "")
+    monkeypatch.setattr(DL, "DINNERLOG_API_URL", "")
     assert c.get("/admin/api/dinnerlog").json["available"] is False
     assert c.get("/admin/api/books/1").status_code == 200
 
@@ -89,10 +91,10 @@ def test_dinnerlog_missing_is_harmless(c, monkeypatch):
 def test_match_recipe_unit():
     recs = [(1, "roast, with bread salad", "Chicken", 342, "342–344"), (2, "Braised fennel", None, 255, "255"),
             (3, "Rosemary-Roasted Potatoes", None, 235, "235"), (4, "Salt Roasties", None, 237, "237")]
-    assert X.match_recipe(recs, "343", "chicken") == 1          # inside a page range
-    assert X.match_recipe(recs, "p255", "anything") == 2        # single recipe on page
-    assert X.match_recipe(recs, "", "rosemary roasted potatoes") == 3
-    assert X.match_recipe(recs, "", "pizza") is None
+    assert DL.match_recipe(recs, "343", "chicken") == 1          # inside a page range
+    assert DL.match_recipe(recs, "p255", "anything") == 2        # single recipe on page
+    assert DL.match_recipe(recs, "", "rosemary roasted potatoes") == 3
+    assert DL.match_recipe(recs, "", "pizza") is None
 
 
 # ------------------------------------------------------------ suggestions / stats / shelf
@@ -255,7 +257,7 @@ def test_effort_falls_back(monkeypatch):
         if "output_config" in body:
             raise urllib.error.HTTPError(req.full_url, 400, "bad", {}, io.BytesIO(b'{"error": "output_config.effort: not supported"}'))
         return Resp(json.dumps({"content": [{"type": "text", "text": "A | b | 1"}], "stop_reason": "end_turn"}).encode())
-    monkeypatch.setattr(X.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     assert X.call_claude(b"jpeg") == ("A | b | 1", "end_turn")
     assert sent == [{"effort": "low"}, None]
 
@@ -274,7 +276,7 @@ def test_messages_api_returns_json_and_sends_key(monkeypatch):
     def urlopen(req, timeout):
         seen["req"], seen["timeout"] = req, timeout
         return _Resp(b'{"content": []}')
-    monkeypatch.setattr(X.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     assert X.messages_api({"model": "m"}, "k", 12.5) == {"content": []}
     assert seen["req"].get_header("X-api-key") == "k"
     assert seen["req"].full_url.endswith("/v1/messages")
@@ -285,7 +287,7 @@ def test_messages_api_returns_json_and_sends_key(monkeypatch):
 def test_messages_api_http_error(monkeypatch):
     def urlopen(req, timeout):
         raise urllib.error.HTTPError(req.full_url, 529, "x", {}, io.BytesIO(b"overloaded"))
-    monkeypatch.setattr(X.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     with pytest.raises(X.ClaudeAPIError) as ei:
         X.messages_api({}, "k", 5)
     assert ei.value.status == 529 and "overloaded" in ei.value.detail
@@ -294,7 +296,7 @@ def test_messages_api_http_error(monkeypatch):
 def test_messages_api_timeout_propagates(monkeypatch):
     def urlopen(req, timeout):
         raise TimeoutError("slow")
-    monkeypatch.setattr(X.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     with pytest.raises(TimeoutError):
         X.messages_api({}, "k", 5)
 
@@ -308,13 +310,13 @@ def test_call_claude_effort_fallback_and_error_text(monkeypatch):
         if "output_config" in body:
             raise urllib.error.HTTPError(req.full_url, 400, "bad", {}, io.BytesIO(b'{"error": "output_config not supported"}'))
         return _Resp(json.dumps({"content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn"}).encode())
-    monkeypatch.setattr(X.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     assert X.call_claude(b"jpeg") == ("ok", "end_turn")
     assert len(calls) == 2 and "output_config" not in calls[1]
 
     def boom(req, timeout):
         raise urllib.error.HTTPError(req.full_url, 500, "x", {}, io.BytesIO(b"kaput"))
-    monkeypatch.setattr(X.urllib.request, "urlopen", boom)
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
     with pytest.raises(RuntimeError) as ei:
         X.call_claude(b"jpeg")
     assert str(ei.value) == "Claude API error 500: kaput"
@@ -403,14 +405,14 @@ def test_mcp_update_book(c, monkeypatch):
 
 
 def test_match_book_prefers_word_overlap():
-    books = [(1, X.norm_title("Simple"), X.tokens("Simple")),
-             (2, X.norm_title("Ottolenghi Simple"), X.tokens("Ottolenghi Simple")),
-             (3, X.norm_title("The Zuni Cafe Cookbook"), X.tokens("The Zuni Cafe Cookbook"))]
-    assert X.match_book("Simple (Ottolenghi)", books, {}) == 2
-    assert X.match_book("Simple", books, {}) == 1
-    assert X.match_book("Zuni", books, {}) == 3
-    assert X.match_book("zuni cafe", books, {}) == 3
-    assert X.match_book("Grandma's binder", books, {}) is None
+    books = [(1, DL.norm_title("Simple"), DL.tokens("Simple")),
+             (2, DL.norm_title("Ottolenghi Simple"), DL.tokens("Ottolenghi Simple")),
+             (3, DL.norm_title("The Zuni Cafe Cookbook"), DL.tokens("The Zuni Cafe Cookbook"))]
+    assert DL.match_book("Simple (Ottolenghi)", books, {}) == 2
+    assert DL.match_book("Simple", books, {}) == 1
+    assert DL.match_book("Zuni", books, {}) == 3
+    assert DL.match_book("zuni cafe", books, {}) == 3
+    assert DL.match_book("Grandma's binder", books, {}) is None
 
 
 # ------------------------------------------------------------ wish list (against the real app)

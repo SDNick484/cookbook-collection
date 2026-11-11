@@ -240,9 +240,10 @@ def _init_db_locked():
     global HAS_FTS
     con = connect()
     con.executescript(SCHEMA)
-    import extras, eyb, ingredients, photos, online, ask, house
+    import dinnerlog, extras, eyb, ingredients, photos, online, ask, house
     online.migrate(con)
     house.migrate(con)  # after online: books.kind must exist
+    dinnerlog.migrate(con)
     extras.migrate(con)
     eyb.migrate(con)
     ingredients.migrate(con)
@@ -930,9 +931,9 @@ def list_books(private):
     rows = db().execute(sql, args).fetchall()
     books = book_dicts(rows, private)
     if private:
-        import extras
-        extras.ensure_synced()
-        cb = extras.cooked_by_book([b["id"] for b in books])
+        import dinnerlog
+        dinnerlog.ensure_synced()
+        cb = dinnerlog.cooked_by_book([b["id"] for b in books])
         for b in books:
             b.update(cb.get(b["id"], {}))
     if sort == "title":
@@ -965,16 +966,16 @@ def get_book(book_id, private):
     for r in book["recipes"]:  # a full recipe (ingredients, steps) has a page of its own: #/recipe/<uid>
         if private or "has_detail" in PUBLIC_RECIPE_FLAGS:
             r["has_detail"] = r["id"] in with_detail
-    import extras
+    import dinnerlog, extras
     # Public pages sync too, so their counts stay current; a pull is leased, at most one a minute (with
     # backoff after a failure), and nothing from the request reaches Dinner Log.
-    extras.ensure_synced()
-    cr = extras.cooked_by_recipe(book_id)
+    dinnerlog.ensure_synced()
+    cr = dinnerlog.cooked_by_recipe(book_id)
     for r in book["recipes"]:
         stats = cr.get(r["id"], {})
         r.update(stats if private else {k: stats[k] for k in PUBLIC_RECIPE_COOKED if k in stats})
     if private:
-        book.update(extras.cooked_by_book([book_id]).get(book_id, {}))
+        book.update(dinnerlog.cooked_by_book([book_id]).get(book_id, {}))
         book["wishes"] = extras.wishes_for_book(book_id)
         import photos
         book["photos"] = photos.for_book(book_id)
@@ -1794,7 +1795,8 @@ if __name__ == "__main__":
     import app as _real  # import as a module so extras.py registers onto the same app
     _real.app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8767)), debug=False)
 else:
-    import extras  # noqa: E402,F401 — registers v2 routes
+    import dinnerlog  # noqa: E402,F401 — Dinner Log history
+    import extras  # noqa: E402,F401 — the remaining v2 routes
     import eyb  # noqa: E402,F401 — Eat Your Books import
     import ingredients  # noqa: E402,F401 — ingredient tags
     import photos  # noqa: E402,F401 — photos of dishes cooked from the books

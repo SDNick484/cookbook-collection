@@ -158,10 +158,7 @@ jobs:
 
       - name: Step B - Verify log rotation
         run: |
-          set -eux
-          ls -la /var/log
-          wc -c /var/log/cookbooks.log
-          tail -n 5 /var/log/cookbooks.log || true
+          set -eu
           conf=/etc/logrotate.d/cookbooks
           test -f "$conf"
           test "$(stat -c %a "$conf")" = "644"
@@ -170,9 +167,7 @@ jobs:
           # the config is valid, and a forced rotation through /etc/logrotate.conf works
           logrotate -d "$conf"
           test -s /var/log/cookbooks.log
-          cat /etc/logrotate.conf
           logrotate -f /etc/logrotate.conf
-          ls -la /var/log
           # the rotated copy is cookbooks.log.1, or cookbooks.log-<date> if the distro's config sets dateext
           rotated() { ls "$1".* "$1"-* 2>/dev/null | head -n 1; }
           test -n "$(rotated /var/log/cookbooks.log)"

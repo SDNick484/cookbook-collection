@@ -261,6 +261,8 @@ def test_scan_status_is_derived_from_its_pages(c, scan_env, monkeypatch):
     assert j["status"] == "done" and j["pages"][1]["status"] == "error" and "stopped partway" in j["pages"][1]["error"]
     assert c.get("/admin/api/index/scan/nope", **LAN).status_code == 404
     assert c.get(f"/admin/api/index/photo/{scan}", **LAN).status_code == 404  # a scan isn't a single-photo job
+    page = A.connect().execute("SELECT id FROM photo_jobs WHERE parent_id=? LIMIT 1", (scan,)).fetchone()[0]
+    assert c.get(f"/admin/api/index/photo/{page}", **LAN).status_code == 404  # nor is one of its pages
 
 
 def test_scan_retry_refuses_a_page_still_being_read(c, scan_env, monkeypatch):

@@ -1078,7 +1078,10 @@ function fillForm(form, r, { overwrite = false } = {}) {
 }
 function showCoverChoice(url) {
   const el = $("#newcover");
-  if (el) el.innerHTML = `<div class="cover"><img src="${esc(url)}" alt="" onerror="this.closest('#newcover').innerHTML='<span class=muted>No cover image available</span>'"></div><span class="small muted">Cover will be saved with the book</span>`;
+  if (!el) return;
+  el.innerHTML = `<div class="cover"><img src="${esc(url)}" alt=""></div><span class="small muted">Cover will be saved with the book</span>`;
+  // a listener, not an inline onerror: the Content-Security-Policy allows no inline script
+  $("img", el).addEventListener("error", () => { el.innerHTML = `<span class="muted">No cover image available</span>`; });
 }
 
 async function editView(id) {
@@ -1885,12 +1888,13 @@ async function linksView() {
     <div class="panel"><textarea id="lt" rows="6" placeholder="https://cooking.nytimes.com/recipes/1017256-french-onion-soup">${esc(prefill)}</textarea>
       <div class="actions"><button class="primary" id="lp">Preview</button></div><div id="lres"></div></div>
     <div class="panel"><h3>Your whole NYT Cooking Recipe Box</h3>
-      <ol class="small"><li>On a computer, drag this button to the browser's bookmarks bar: <a class="btn" href="${esc(BOOKMARKLET)}" onclick="event.preventDefault()">Copy recipe links</a></li>
+      <ol class="small"><li>On a computer, drag this button to the browser's bookmarks bar: <a class="btn" id="bml" href="${esc(BOOKMARKLET)}">Copy recipe links</a></li>
         <li>Open your Recipe Box on cooking.nytimes.com and scroll to the bottom, so every recipe has loaded.</li>
         <li>Click <b>Copy recipe links</b> in the bookmarks bar, paste here and preview.</li></ol>
       <p class="small muted" style="margin-bottom:0">It only reads the links already on the page, in your own signed-in browser. Saving again skips recipes that are already here, so you can repeat it whenever you've saved more.</p></div>
     <div class="panel"><h3>From your phone</h3>
       <p class="small muted" style="margin:0">Open Cookbook Collection's editor page in Chrome on Android and use <b>Add to Home screen</b> (install). Then <b>Share → Cookbook Collection</b> from the NYT Cooking app or any recipe page brings the link straight here.</p></div>`;
+  $("#bml").addEventListener("click", (e) => e.preventDefault());   // it's for dragging to the bookmarks bar, not clicking
   const preview = async () => {
     let r;
     try { r = await api("online/preview", { method: "POST", body: { text: $("#lt").value } }); } catch (e) { toast(e.message); return; }

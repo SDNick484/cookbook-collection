@@ -22,12 +22,16 @@ def shelf(book_id):
     con = db()
     if not con.execute("SELECT 1 FROM books WHERE id=?", (book_id,)).fetchone():
         abort(404)
+    import changes
+    rec = changes.Recorder(con)
+    rec.book(book_id)
     if out:
         con.execute("UPDATE books SET status='out', out_since=date('now','localtime'), updated_at=CURRENT_TIMESTAMP "
                     "WHERE id=?", (book_id,))
     else:
         con.execute("UPDATE books SET status='owned', out_since=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?",
                     (book_id,))
+    rec.finish()
     con.commit()
     return core.get_book(book_id, private=True)
 

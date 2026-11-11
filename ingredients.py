@@ -219,8 +219,14 @@ def update_ingredient(iid):
 @app.delete("/admin/api/ingredients/<int:iid>")
 @editor_required
 def delete_ingredient(iid):
-    db().execute("DELETE FROM ingredients WHERE id=?", (iid,))
-    db().commit()
+    import changes
+    con = db()
+    rec = changes.Recorder(con, op="ingredient tag delete", bulk=True)  # the recipes it is taken off
+    for (rid,) in con.execute("SELECT recipe_id FROM recipe_ingredients WHERE ingredient_id=?", (iid,)).fetchall():
+        rec.recipe(rid)
+    con.execute("DELETE FROM ingredients WHERE id=?", (iid,))
+    rec.finish()
+    con.commit()
     return jsonify(ok=True)
 
 
@@ -346,21 +352,24 @@ def ingredient_commit():
         con.execute("UPDATE ingredients SET hint=? WHERE id=?", (int(request.form["hint"]), iid))
     name, hint = con.execute("SELECT name, hint FROM ingredients WHERE id=?", (iid,)).fetchone()
     created = {}
-    res = tag_rows(con, iid, rows, decisions, {}, created)
+    import changes
+    rec = changes.Recorder(con, op="ingredient import", bulk=True)
+    res = tag_rows(con, iid, rows, decisions, {}, created, rec)
     if isinstance(res, Response):
         return res
     tagged, added, skipped = res
-    eyb.merge_garbled(con)  # a good copy just added replaces any garbled one already here
+    eyb.merge_garbled(con, rec)  # a good copy just added replaces any garbled one already here
+    rec.finish()
     con.commit()
     total = con.execute("SELECT count(*) FROM recipe_ingredients WHERE ingredient_id=?", (iid,)).fetchone()[0]
     return jsonify(kind="ingredient", ingredient=name, hint=bool(hint), tagged=tagged, added_recipes=added,
                    skipped=skipped, created_books=len(created), total=total)
 
 
-def tag_rows(con, iid, rows, decisions, books, created):
+def tag_rows(con, iid, rows, decisions, books, created, rec):
     """Tag EYB `rows` with ingredient `iid`, adding recipes that aren't in their book yet. decisions maps an EYB
-    book title to a book id, "create" or "skip"; `books` caches BookRecipes per book, `created` new books.
-    Returns (tagged, added, skipped), or an error response."""
+    book title to a book id, "create" or "skip"; `books` caches BookRecipes per book, `created` new books; `rec`
+    (a changes.Recorder) records it. Returns (tagged, added, skipped), or an error response."""
     tagged = added = skipped = 0
     for r in rows:
         d = decisions.get(r["book_title"], "skip")
@@ -373,6 +382,7 @@ def tag_rows(con, iid, rows, decisions, books, created):
                      "and tags (or set status to No longer owned)")).lastrowid
                 core.set_people(con, bid, eyb.split_authors(r["author"]), [])
                 core.reindex_book(con, bid)
+                rec.created("book", bid)
                 created[r["book_title"]] = bid
             d = created[r["book_title"]]
         if not str(d).isdigit():
@@ -383,13 +393,17 @@ def tag_rows(con, iid, rows, decisions, books, created):
             if not con.execute("SELECT 1 FROM books WHERE id=?", (bid,)).fetchone():
                 return make_err(400, f"No such book {bid}")
             books[bid] = BookRecipes(con, bid)
+            rec.book(bid)
             con.execute("UPDATE books SET eyb_title=coalesce(eyb_title, ?) WHERE id=?", (r["book_title"], bid))
         rid = books[bid].find(r["name"], r["page"])
         if rid is None:
             rid = con.execute("INSERT INTO recipes(book_id, name, page, page_sort, source) VALUES (?,?,?,?, 'eyb')",
                               (bid, r["name"], r["page"], page_sort(r["page"]))).lastrowid
+            rec.created("recipe", rid)
             books[bid].add(rid, r["name"], r["page"])
             added += 1
+        else:
+            rec.recipe(rid)
         tagged += con.execute("INSERT OR IGNORE INTO recipe_ingredients VALUES (?,?)", (rid, iid)).rowcount
     return tagged, added, skipped
 
@@ -512,6 +526,8 @@ def ingredient_zip_commit():
     if not plan:
         return make_err(400, "Nothing to import: give at least one file a tag name")
     con = db()
+    import changes
+    rec = changes.Recorder(con, op="ingredient zip import", bulk=True)
     books = eyb.catalog()
     all_groups = {}
     for p in plan:
@@ -527,13 +543,14 @@ def ingredient_zip_commit():
             con.execute("UPDATE ingredients SET hint=? WHERE id=?", (1 if p.get("hint") else 0, iid))
             results[key] = {"iid": iid, "files": [], "tagged": 0, "added": 0, "skipped": 0}
         res = results[key]
-        out = tag_rows(con, res["iid"], files[p["file"]], decisions, indexes, {})
+        out = tag_rows(con, res["iid"], files[p["file"]], decisions, indexes, {}, rec)
         if isinstance(out, Response):
             return out
         res["files"].append(p["file"])
         for k, v in zip(("tagged", "added", "skipped"), out):
             res[k] += v
-    eyb.merge_garbled(con)
+    eyb.merge_garbled(con, rec)
+    rec.finish()
     con.commit()
     summary = []
     for res in results.values():

@@ -339,7 +339,11 @@ def t_set_want(a, private):
     if not con.execute("SELECT 1 FROM recipes WHERE id=?", (rid,)).fetchone():
         raise ToolError("No such recipe")
     want = a.get("want", True) not in (False, 0, "false", "False", "0", "no")
+    import changes
+    rec = changes.Recorder(con, op="MCP", actor="mcp")
+    rec.recipe(rid)
     con.execute("UPDATE recipes SET want_to_try=? WHERE id=?", (1 if want else 0, rid))
+    rec.finish()
     con.commit()
     return {"ok": True, "recipe_id": rid, "want_to_try": bool(want)}
 
@@ -354,6 +358,9 @@ def t_update_book(a, private):
     tag_names = lambda: [r[0] for r in con.execute(
         "SELECT t.name FROM tags t JOIN book_tags bt ON bt.tag_id=t.id WHERE bt.book_id=? ORDER BY t.name", (bid,))]
     before = {"cuisine": row["cuisine"], "tags": tag_names()}
+    import changes
+    rec = changes.Recorder(con, op="MCP", actor="mcp")
+    rec.book(bid)
     if "cuisine" in a:
         cuisine = clean(str(a["cuisine"] or ""))
         if cuisine:  # reuse an existing cuisine's spelling, so "mexican" joins "Mexican"
@@ -374,6 +381,7 @@ def t_update_book(a, private):
         core.set_people(con, bid, authors, tags)
         con.execute("DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM book_tags)")
     core.reindex_book(con, bid)
+    rec.finish()
     con.commit()
     after = {"cuisine": con.execute("SELECT cuisine FROM books WHERE id=?", (bid,)).fetchone()[0], "tags": tag_names()}
     return {"ok": True, "book_id": bid, "title": row["title"], "before": before, "after": after}

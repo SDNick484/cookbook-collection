@@ -85,13 +85,15 @@ def links_in(text):
     return found, skipped
 
 
-def site_book(con, item, create=True):
+def site_book(con, item, create=True, rec=None):
     row = con.execute("SELECT id FROM books WHERE kind='online' AND site=?", (item["site"],)).fetchone()
     if row or not create:
         return row[0] if row else None
     bid = con.execute("INSERT INTO books(title, kind, site, status, source) VALUES (?, 'online', ?, 'owned', 'online')",
                       (item["site_name"], item["site"])).lastrowid
     core.reindex_book(con, bid)
+    if rec:
+        rec.created("book", bid)
     return bid
 
 
@@ -128,6 +130,8 @@ def online_commit():
     """Save recipe links: [{url, title?, want_to_try?}]. The link is parsed again here; a title typed in
     the preview replaces the one taken from the link. Links already saved are left as they are."""
     con = db()
+    import changes
+    rec = changes.Recorder(con, op="links from websites", bulk=True)
     added, duplicates, books = 0, 0, set()
     for row in (request.get_json(force=True) or {}).get("items", []):
         item = parse_link(str(row.get("url") or ""))
@@ -136,14 +140,16 @@ def online_commit():
         if existing(con, item):
             duplicates += 1
             continue
-        bid = site_book(con, item)
+        bid = site_book(con, item, rec=rec)
         books.add(bid)
-        con.execute("INSERT INTO recipes(book_id, name, url, ext_id, want_to_try, source) VALUES (?,?,?,?,?, 'online')",
-                    (bid, clean(row.get("title")) or item["title"], item["url"], item["ext_id"],
-                     1 if row.get("want_to_try") else 0))
+        rec.created("recipe", con.execute(
+            "INSERT INTO recipes(book_id, name, url, ext_id, want_to_try, source) VALUES (?,?,?,?,?, 'online')",
+            (bid, clean(row.get("title")) or item["title"], item["url"], item["ext_id"],
+             1 if row.get("want_to_try") else 0)).lastrowid)
         added += 1
     if not added and not duplicates:
         return make_err(400, "No recipe links to save")
+    rec.finish()
     con.commit()
     return jsonify(added=added, duplicates=duplicates, books=[
         {"id": bid, "title": con.execute("SELECT title FROM books WHERE id=?", (bid,)).fetchone()[0]} for bid in sorted(books)])

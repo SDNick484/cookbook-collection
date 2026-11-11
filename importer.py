@@ -340,6 +340,7 @@ def _shelf(ctx, raw):
         if found is None:
             found = con.execute("INSERT INTO locations(parent_id, name, sort_order) VALUES (?,?,?)",
                                 (parent, name, A.next_sort_order(con, parent))).lastrowid
+            ctx.rec.created("location", found)
         parent = found
     return parent
 
@@ -377,6 +378,7 @@ def _book(ctx, src, label, rep):
                 ins[k] = src[k]
         bid = con.execute(f"INSERT INTO books({','.join(ins)}) VALUES ({','.join('?' * len(ins))})",
                           list(ins.values())).lastrowid
+        ctx.rec.created("book", bid)
         _set_people(con, bid, src)
         A.reindex_book(con, bid)
         rep.counts["books"]["insert"] += 1
@@ -384,6 +386,7 @@ def _book(ctx, src, label, rep):
         ctx.claimed_books.add(bid)
         return bid
     ctx.keep.add(bid)
+    ctx.rec.book(bid)
     cur = con.execute("SELECT * FROM books WHERE id=?", (bid,)).fetchone()
     changes = {k: v for k, v in vals.items() if cur[k] != v}
     if changes.get("isbn"):
@@ -512,12 +515,14 @@ def _recipe(ctx, bid, src, label, rep):
             ins["created_at"] = src["created_at"]
         rid = con.execute(f"INSERT INTO recipes({','.join(ins)}) VALUES ({','.join('?' * len(ins))})",
                           list(ins.values())).lastrowid
+        ctx.rec.created("recipe", rid)
         if names:
             _set_ingredients(ctx, rid, names)
         rep.counts["recipes"]["insert"] += 1
         ctx.claimed_recipes.add(rid)
     else:
         rid = cur["id"]
+        ctx.rec.recipe(rid)
         changes = {k: v for k, v in vals.items() if cur[k] != v}
         if cur["book_id"] != bid:
             changes["book_id"] = bid  # the file moved it to another book
@@ -553,8 +558,11 @@ def _set_detail(ctx, bid, rid, raw, label, rep):
 # ------------------------------------------------------------------ the import
 class _Ctx:
     def __init__(self, con, photos_dir=None):
-        import ingredients
-        self.A, self.ing, self.con = _app(), ingredients, con
+        A = _app()  # first: app imports the feature modules (changes among them) in its own order
+        import changes, ingredients
+        self.A, self.ing, self.con = A, ingredients, con
+        # The change history: one batch by "importer", so More -> Recent changes can show and undo the import.
+        self.rec = changes.Recorder(con, op="JSON import", actor="importer", bulk=True)
         self.photos_dir = Path(photos_dir) if photos_dir else None
         self.refs = set()        # (kind, file name) the imported books reference
         self.book_files = set()  # the same for the book being imported; kept only if it went through
@@ -612,6 +620,10 @@ def _replace(ctx, rep, log):
         if stale_recipes or stale_photos:
             log(f"  - and {len(stale_recipes)} recipe(s) / {len(stale_photos)} photo row(s) missing from books and "
                 "recipes that are in the file")
+    for rid in stale_recipes:  # recorded with what undo needs to bring them back
+        ctx.rec.recipe(rid, deleting=True)
+    for bid in gone_ids:
+        ctx.rec.book(bid, deleting=True)
     _delete_in(con, "DELETE FROM recipes WHERE id IN ({q})", stale_recipes)  # their photo rows cascade
     _delete_in(con, "DELETE FROM recipe_photos WHERE id IN ({q})", stale_photos)
     _delete_in(con, "DELETE FROM books WHERE id IN ({q})", gone_ids)         # and their recipes, photo rows, links
@@ -701,6 +713,7 @@ def import_data(con, data, *, replace=False, dry_run=False, photos_dir=None, log
         rep.new_names = {t: _count(con, t) - before[t] for t in rep.new_names}
         if replace:
             _replace(ctx, rep, log)
+        ctx.rec.finish()  # in the import's transaction: a dry run rolls it back with the rest
         if dry_run:
             con.rollback()
         else:

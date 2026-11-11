@@ -60,8 +60,14 @@ def garbled_twin(garbled, good):
     return re.fullmatch(rx, unicodedata.normalize("NFC", good), re.I) is not None
 
 
-def merge_recipe(con, src, dst):
-    """Fold recipe `src` into `dst`, keeping its ingredient tags, star, rating, notes, photos and Dinner Log links."""
+def merge_recipe(con, src, dst, rec=None):
+    """Fold recipe `src` into `dst`, keeping its ingredient tags, star, rating, notes, photos and Dinner Log links.
+    Recorded in `rec` (a changes.Recorder: `dst` updated, `src` deleted), or as a merge of its own without one."""
+    import changes
+    own = changes.Recorder(con, op="merge", bulk=True) if rec is None else None
+    rec = rec or own
+    rec.recipe(dst)
+    rec.recipe(src, deleting=True)
     con.execute("INSERT OR IGNORE INTO recipe_ingredients(recipe_id, ingredient_id) "
                 "SELECT ?, ingredient_id FROM recipe_ingredients WHERE recipe_id=?", (dst, src))
     con.execute("""UPDATE recipes SET
@@ -77,10 +83,17 @@ def merge_recipe(con, src, dst):
     con.execute("DELETE FROM dl_link WHERE recipe_id=?", (src,))
     con.execute("UPDATE recipe_photos SET recipe_id=? WHERE recipe_id=?", (dst, src))
     con.execute("DELETE FROM recipes WHERE id=?", (src,))
+    if own:
+        own.finish()
 
 
-def merge_garbled(con):
-    """Merge every garbled recipe that has exactly one good twin (same book and page) into it. Returns how many."""
+def merge_garbled(con, rec=None):
+    """Merge every garbled recipe that has exactly one good twin (same book and page) into it. Returns how many.
+    Recorded in `rec` (an import's Recorder), else as a merge batch of its own."""
+    import changes
+    own = rec is None
+    if own:
+        rec = changes.Recorder(con, op="merge", bulk=True)  # "system" at startup
     merged = 0
     for rid, book_id, name, page in con.execute(
             "SELECT id, book_id, name, page FROM recipes WHERE instr(name, ?) > 0", (GARBLED,)).fetchall():
@@ -88,8 +101,10 @@ def merge_garbled(con):
             "SELECT id, name FROM recipes WHERE book_id=? AND coalesce(page, '')=coalesce(?, '') AND instr(name, ?)=0",
             (book_id, page, GARBLED)) if garbled_twin(name, other)]
         if len(twins) == 1:
-            merge_recipe(con, rid, twins[0])
+            merge_recipe(con, rid, twins[0], rec)
             merged += 1
+    if own:
+        rec.finish()
     return merged
 
 
@@ -415,6 +430,8 @@ def eyb_commit():
     except ValueError:
         return make_err(400, "Bad decisions")
     con = db()
+    import changes
+    rec = changes.Recorder(con, op="Eat Your Books import", bulk=True)
     if kind == "books":
         updated = created = skipped = retitled = 0
         for i, e in enumerate(rows):
@@ -436,6 +453,7 @@ def eyb_commit():
                 if not b:
                     skipped += 1
                     continue
+                rec.book(bid)
                 sets = {"eyb_title": e["title"], "eyb_status": e["eyb_status"]}
                 if e["isbn"] and not b["isbn"] and isbn_free:
                     sets["isbn"] = e["isbn"]
@@ -462,8 +480,10 @@ def eyb_commit():
                      "From Eat Your Books, which may be out of date: confirm you still own it, then set cuisine "
                      "and tags (or set status to No longer owned)")).lastrowid
                 core.set_people(con, bid, e["authors"], [])
+                rec.created("book", bid)
                 created += 1
             core.reindex_book(con, bid)
+        rec.finish()
         con.commit()
         return jsonify(kind="books", updated=updated, created=created, skipped=skipped, retitled=retitled)
 
@@ -481,6 +501,7 @@ def eyb_commit():
                      "and tags (or set status to No longer owned)")).lastrowid
                 core.set_people(con, bid, split_authors(r["author"]), [])
                 core.reindex_book(con, bid)
+                rec.created("book", bid)
                 created[r["book_title"]] = bid
             d = created[r["book_title"]]
         if d == "skip" or not str(d).isdigit():
@@ -491,15 +512,18 @@ def eyb_commit():
             if not con.execute("SELECT 1 FROM books WHERE id=?", (bid,)).fetchone():
                 return make_err(400, f"No such book {bid}")
             existing_cache[bid] = RecipeIndex(con, bid)
+            rec.book(bid)
             con.execute("UPDATE books SET eyb_title=coalesce(eyb_title, ?) WHERE id=?", (r["book_title"], bid))
         if existing_cache[bid].has(r["name"], r["page"]):
             dup += 1
             continue
         existing_cache[bid].add(r["name"], r["page"])
-        con.execute("INSERT INTO recipes(book_id, name, page, page_sort, source) VALUES (?,?,?,?, 'eyb')",
-                    (bid, r["name"], r["page"], page_sort(r["page"])))
+        rec.created("recipe", con.execute(
+            "INSERT INTO recipes(book_id, name, page, page_sort, source) VALUES (?,?,?,?, 'eyb')",
+            (bid, r["name"], r["page"], page_sort(r["page"]))).lastrowid)
         added += 1
-    merge_garbled(con)  # a good copy just added replaces any garbled one already here
+    merge_garbled(con, rec)  # a good copy just added replaces any garbled one already here
+    rec.finish()
     con.commit()
     return jsonify(kind="recipes", added=added, duplicates=dup, skipped=skipped, books=len(existing_cache),
                    created_books=len(created))
@@ -527,7 +551,11 @@ def enrich_batch():
     n = max(1, min(int((request.get_json(silent=True) or {}).get("limit") or 5), 20))
     batch = enrich_candidates(con)[:n]
     results = []
+    import changes
+    batch_id = changes.new_batch()  # one batch per call, a commit per book
     for b in batch:
+        rec = changes.Recorder(con, op="fetch details", batch_id=batch_id)
+        rec.book(b["id"])
         got, filled = None, []
         for fn in (core.ol_by_isbn, core.google_by_isbn):
             try:
@@ -559,6 +587,7 @@ def enrich_batch():
             except Exception:  # noqa: BLE001 — many books simply have no cover image
                 pass
         core.reindex_book(con, b["id"])
+        rec.finish()
         con.commit()
         results.append({"id": b["id"], "title": b["title"], "filled": filled})
     return jsonify(results=results, remaining=len(enrich_candidates(con)))

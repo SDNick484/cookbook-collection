@@ -27,7 +27,7 @@ if [ "${1:-}" = "--uninstall" ]; then
 fi
 
 echo "==> Installing packages"
-apk add --no-cache python3 py3-flask py3-gunicorn py3-pillow py3-jwt py3-cryptography sqlite >/dev/null
+apk add --no-cache python3 py3-flask py3-gunicorn py3-pillow py3-jwt py3-cryptography sqlite tzdata >/dev/null
 
 if ! python3 -c "import sqlite3; c=sqlite3.connect(':memory:'); c.execute('create virtual table t using fts5(x)')" 2>/dev/null; then
   echo "    note: this sqlite has no FTS5; search will fall back to simple matching"
@@ -106,6 +106,7 @@ add_setting "$CONF" MCP_PUBLIC 1 "1 = /mcp without a token serves public search 
 add_setting "$CONF" WISHLIST_URL http://127.0.0.1:8766 "Family wish list app (local) for 'Add to a wish list'"
 add_setting "$CONF" WISHLIST_BOOK_URL "https://www.amazon.com/s?k={q}" "Shopping link put on wish list items; {q} = ISBN (or title + author)"
 add_setting "$CONF" DINNERLOG_URL "" "Dinner Log's public address, e.g. https://dinners.example.com — turns on 'Log this dinner' links"
+add_setting "$CONF" TZ "" "Time zone, e.g. America/Los_Angeles: daily limits (Ask, photo import) reset at local midnight in it; empty = this server's own zone (UTC unless /etc/localtime is set)"
 add_setting "$CONF" HOUSE_BOOK_TITLE "House Recipes" "Title of the house book (your own recipes) when it is first created; rename it in the editor later"
 add_setting "$CONF" RETURN_URL_ORIGINS "" "Origins the recipe editor may send you back to after a save, e.g. https://dinners.example.com (comma separated)"
 add_setting "$CONF" READ_TOKEN "$(head -c 24 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')" \
@@ -129,6 +130,8 @@ description="Cookbook Collection"
 : ${DATA_DIR:=/var/lib/cookbooks}
 : ${BIND:=0.0.0.0}
 export DATA_DIR CF_TEAM_DOMAIN CF_AUD ADMIN_EMAILS LAN_EDIT LAN_CIDRS LAN_HOSTS ALLOWED_ORIGINS DINNERLOG_API_URL DINNERLOG_TOKEN ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_EFFORT ANTHROPIC_SEARCH_KEY ANTHROPIC_SEARCH_MODEL ASK_DAILY_LIMIT PHOTO_DAILY_LIMIT MCP_TOKEN MCP_PUBLIC WISHLIST_URL WISHLIST_BOOK_URL DINNERLOG_URL READ_TOKEN HOUSE_BOOK_TITLE RETURN_URL_ORIGINS
+# TZ is exported only when set: an empty TZ would mean UTC and override /etc/localtime
+if [ -n "${TZ:-}" ]; then export TZ; else unset TZ; fi
 supervisor="supervise-daemon"
 respawn_delay=5
 respawn_max=10

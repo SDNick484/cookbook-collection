@@ -61,6 +61,8 @@ if [ "$SVC" = "cookbooks" ]; then
       export WISHLIST_BOOK_URL="${WISHLIST_BOOK_URL:-https://www.amazon.com/s?k={q}}"
       export DINNERLOG_URL="${DINNERLOG_URL:-}"
       export READ_TOKEN="${READ_TOKEN:-}"
+      # same rule as the real init script: TZ only when set (empty would mean UTC)
+      if [ -n "${TZ:-}" ]; then export TZ; else unset TZ; fi
       GUNICORN="$(command -v gunicorn || echo /usr/bin/gunicorn)"
 
       touch /var/log/cookbooks.log /run/cookbooks.pid

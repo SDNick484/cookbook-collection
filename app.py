@@ -18,6 +18,8 @@ Environment:
   READ_TOKEN      optional bearer token for read-only private routes (Dinner Log's picks, house recipes)
   HOUSE_BOOK_TITLE    title of the house book when it is first created (house.py)
   RETURN_URL_ORIGINS  origins the recipe editor may return to after a save (house.py)
+  TZ              time zone, e.g. America/Los_Angeles: daily limits (Ask, photo import) reset at local midnight
+                  in it. Unset = the machine's zone, which on a stock Alpine install is UTC
 """
 import csv, fcntl, io, ipaddress, json, os, re, sqlite3, time, unicodedata, urllib.parse, urllib.request, uuid
 from functools import wraps
@@ -298,7 +300,9 @@ def env_int(name, default):
 
 
 def local_midnight():
-    """Unix time of the most recent local midnight: daily limits reset then."""
+    """Unix time of the most recent local midnight: daily limits reset then. "Local" is whatever libc says: the TZ
+    environment variable, else /etc/localtime, else UTC (a stock Alpine install). The installer's TZ setting
+    (with the tzdata package) is what makes it the owner's midnight rather than UTC's."""
     t = time.localtime()
     return time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 0, 0, 0, 0, 0, -1))
 

@@ -66,7 +66,11 @@ jobs:
 
       - name: Syntax-check shell scripts
         run: |
-          sh -n installer/build.sh installer/setup-head.sh ops/* .github/scripts/*.sh
+          # one file per `sh -n`: given several arguments it parses only the first and treats the rest as arguments
+          for f in installer/build.sh installer/setup-head.sh ops/* .github/scripts/*.sh; do
+            echo "sh -n $f"
+            sh -n "$f"
+          done
 
   alpine:
     name: alpine smoke test (alpine:${{ matrix.alpine }})
@@ -126,6 +130,7 @@ jobs:
           test "$(stat -c %U /opt/cookbooks)" = "root"
           test "$(stat -c %U /var/lib/cookbooks)" = "cookbooks"
           test "$(stat -c %U:%G /etc/conf.d/cookbooks)" = "root:cookbooks"
+          test -x /usr/local/bin/app-restore
 
       - name: Step B - Verify Gunicorn health endpoint
         run: |
@@ -151,10 +156,65 @@ jobs:
           test -n "$snapshot"
           test -f "$snapshot"
 
+      - name: Step B - Verify the image backup warning
+        run: |
+          count() { grep -c "$1" /var/log/app-ops.log || true; }
+          warned=$(count 'backup: WARNING: image files are not backed up')
+          alerted=$(count 'Backup coverage down')
+          mkdir -p /var/lib/cookbooks/photos
+          touch /var/lib/cookbooks/photos/ci-canary.jpg
+          /usr/local/bin/app-backup
+          /usr/local/bin/app-backup
+          # BACKUP_TARGET is empty: the warning is logged every night...
+          test "$(count 'backup: WARNING: image files are not backed up')" = "$((warned + 2))"
+          # ...but the alert goes out once, when the state begins
+          if [ "$alerted" = 0 ]; then test "$(count 'Backup coverage down')" = 1; else test "$(count 'Backup coverage down')" = "$alerted"; fi
+          /usr/local/bin/app-backup --check-images | grep -q 'not backed up'
+          rm -f /var/lib/cookbooks/photos/ci-canary.jpg
+          if /usr/local/bin/app-backup --check-images >/dev/null; then
+            echo "Error: --check-images still warns with no image files"; exit 1
+          fi
+
+      - name: Step B - Verify log rotation
+        run: |
+          set -eu
+          conf=/etc/logrotate.d/cookbooks
+          test -f "$conf"
+          test "$(stat -c %a "$conf")" = "644"
+          grep -q copytruncate "$conf"
+          test -x /etc/periodic/daily/logrotate
+          # the config is valid, and a forced rotation through /etc/logrotate.conf works
+          logrotate -d "$conf"
+          test -s /var/log/cookbooks.log
+          logrotate -f /etc/logrotate.conf
+          # the rotated copy is cookbooks.log.1, or cookbooks.log-<date> if the distro's config sets dateext
+          rotated() { ls "$1".* "$1"-* 2>/dev/null | head -n 1; }
+          test -n "$(rotated /var/log/cookbooks.log)"
+          # copytruncate: the service keeps writing to the same log without a restart
+          wget -qO- http://127.0.0.1:8767/healthz >/dev/null
+          sleep 1
+          test -s /var/log/cookbooks.log
+          test -n "$(rotated /var/log/app-ops.log)"
+
+      - name: Step B - Verify TZ setting and tzdata
+        run: |
+          grep -q '^TZ=""' /etc/conf.d/cookbooks
+          grep -q 'export TZ' /etc/init.d/cookbooks
+          test -f /usr/share/zoneinfo/America/Los_Angeles
+          # 2026-01-01 00:00 UTC is 16:00 PST on Dec 31 in Los Angeles: libc found the zone file
+          out=$(TZ=America/Los_Angeles python3 -c "import time; t=time.localtime(1767225600); print(t.tm_zone, t.tm_hour)")
+          echo "$out"
+          test "$out" = "PST 16"
+
       - name: Step B - Verify installer idempotency and pre-upgrade backup
         run: |
           token_before=$(grep '^MCP_TOKEN=' /etc/conf.d/cookbooks)
+          # an owner-edited log rotation config must survive an upgrade untouched
+          echo "# edited by the owner" >> /etc/logrotate.d/cookbooks
           sh dist/setup-cookbooks.sh
+          grep -q '# edited by the owner' /etc/logrotate.d/cookbooks
+          test "$(grep -c '^/var/log/cookbooks.log' /etc/logrotate.d/cookbooks)" = 1
+          logrotate -d /etc/logrotate.d/cookbooks
           token_after=$(grep '^MCP_TOKEN=' /etc/conf.d/cookbooks)
           test "$token_before" = "$token_after"
           backup=$(find /var/backups/apps -name "cookbooks-before-upgrade-*.db.gz" | head -n1)
@@ -163,11 +223,42 @@ jobs:
           test -f "$backup"
           wget -qO- http://127.0.0.1:8767/healthz | grep -Eq '"ok": *(true|1)|(^ok$)'
 
+      - name: Step B - Verify backup, change a row, restore with app-restore
+        run: |
+          set -eu
+          DB=/var/lib/cookbooks/cookbooks.db
+          # sqlite3 runs as the service user, like the app does: a root-owned -wal/-shm would lock the service out
+          q() { su -s /bin/sh cookbooks -c "sqlite3 -cmd '.timeout 30000' $DB \"$1\""; }
+          canary() { q "SELECT value FROM meta WHERE key='ci_canary'"; }
+          q "INSERT OR REPLACE INTO meta(key, value) VALUES ('ci_canary', 'original')"
+          /usr/local/bin/app-backup
+          q "UPDATE meta SET value='changed' WHERE key='ci_canary'"
+          test "$(canary)" = changed
+
+          /usr/local/bin/app-restore --list
+          # a dry run verifies the snapshot and prints the plan, and changes nothing
+          /usr/local/bin/app-restore --dry-run latest | tee /tmp/restore-plan.txt
+          grep -q 'Dry run' /tmp/restore-plan.txt
+          test "$(canary)" = changed
+          test -z "$(ls /var/backups/apps/cookbooks-before-restore-*.db.gz 2>/dev/null)"
+
+          /usr/local/bin/app-restore latest
+          test "$(canary)" = original
+          test "$(q 'PRAGMA integrity_check')" = ok
+          # the service is back and healthy, the replaced database was saved, and nothing root-owned is left behind
+          rc-service cookbooks status
+          wget -qO- http://127.0.0.1:8767/healthz | grep -Eq '"ok": *true'
+          ls /var/backups/apps/cookbooks-before-restore-*.db.gz
+          test "$(stat -c %U $DB)" = cookbooks
+          test -z "$(find /var/lib/cookbooks -maxdepth 1 -name 'cookbooks.db*' ! -user cookbooks)"
+          test -z "$(find /var/lib/cookbooks -maxdepth 1 -name '.restore-*')"
+
       - name: Step B - Verify installer --uninstall
         run: |
           sh dist/setup-cookbooks.sh --uninstall
           test ! -d /opt/cookbooks
           test ! -f /etc/init.d/cookbooks
+          test ! -e /usr/local/bin/app-restore
           test -d /var/lib/cookbooks
           ! wget -qO- http://127.0.0.1:8767/healthz >/dev/null 2>&1
 

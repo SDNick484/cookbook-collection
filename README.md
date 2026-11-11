@@ -20,6 +20,13 @@ The script is safe to run again. It replaces the app but keeps `/var/lib/cookboo
 
 On a first install the database is seeded from `seed.json`, which holds the original collection's books and recipe names. To start your own catalog empty, replace `seed.json` with `{"books": [], "recipes": []}` before building.
 
+**Time zone.** The daily limits (`PHOTO_DAILY_LIMIT`, `ASK_DAILY_LIMIT`) reset at local midnight, and a stock Alpine install runs in UTC, so they would reset at UTC midnight. To reset at your own midnight, set `TZ` in `/etc/conf.d/cookbooks` and restart:
+```sh
+vim /etc/conf.d/cookbooks            # TZ="America/Los_Angeles"
+rc-service cookbooks restart
+```
+The installer adds `TZ=""` (empty: the server's own zone, so an upgrade changes nothing) and installs `tzdata`; without that package musl silently falls back to UTC. Don't export an empty `TZ` yourself: that means UTC and overrides `/etc/localtime`. For a local run, the line in `.env.example` is commented out for the same reason.
+
 Health alerts post to a Home Assistant webhook. To use them, build with `HA_WEBHOOK_ID=… sh installer/build.sh`, or set `HA_WEBHOOK_ID` in `/etc/conf.d/app-ops` after installing.
 
 ## Cloudflare (hybrid public + private)
@@ -249,17 +256,39 @@ Setup:
 The ops scripts cover Cookbook Collection and, if they're installed on the same server, Dinner Log and the wish list. Their settings live in `/etc/conf.d/app-ops`. Alerts name the server by `HOST_LABEL` (default: its hostname).
 
 Older versions named these files after the container (`/etc/conf.d/ctNNN-ops`, `/var/backups/ctNNN`, `ctNNN-backup`, …). The installer moves them to the names above on upgrade and keeps the old `ctNNN-notify` command as a link, in case another app still calls it. It never overwrites a file that already exists under the new name. The alert text changes too, so check any Home Assistant automation that matches on it.
-- `/etc/periodic/daily/app-backup` takes consistent SQLite snapshots into `/var/backups/apps`, kept `KEEP_DAYS` days.
+- `/etc/periodic/daily/app-backup` takes consistent SQLite snapshots into `/var/backups/apps`, kept `KEEP_DAYS` days. Restore one with `app-restore` (see [Backup / restore by hand](#backup--restore-by-hand)).
 - Set `BACKUP_TARGET` to a mounted folder on other storage, e.g. an NFS share from a NAS. Snapshots plus photos and covers are copied there too.
+- **Without `BACKUP_TARGET` only the databases are backed up.** If photos or covers exist, the nightly run logs `WARNING: image files are not backed up: 212 in /var/lib/cookbooks/photos (212)…` to `/var/log/app-ops.log`, and the installer's summary says the same (`app-backup --check-images` prints it on demand). One alert goes to the webhook, named `Backup coverage`, when that state begins, not every night; a matching "up" follows once `BACKUP_TARGET` is set. If `HA_URL` wasn't set at that moment, the alert was only logged and won't repeat until the state has cleared and returned.
 - `/etc/periodic/15min/app-health` checks each app. After ~30 minutes down it sends one alert to a Home Assistant webhook automation, and one more on recovery. Set `HA_URL` and `HA_WEBHOOK_ID` to turn alerts on.
+- `GET /healthz` needs no login and is what `app-health` polls. It runs a trivial query, queries both full-text indexes (when SQLite has FTS5) and checks that the data folder is writable with free space. Healthy: `200 {"fts":true,"ok":true}`. Otherwise `503 {"fts":false,"ok":false,"reason":"db"}` where `reason` is `db`, `fts` or `data-dir`; that is all it reveals, and details go to `/var/log/cookbooks.log`.
 - The app runs under `supervise-daemon`, so a crash restarts it automatically.
+- **Logs** (`/var/log/cookbooks.log`, the gunicorn access and error log, and `/var/log/app-ops.log`) are rotated by `logrotate` from the daily cron job, using `/etc/logrotate.d/cookbooks`: the gunicorn log weekly or once it passes 10 MB, eight kept; the ops log monthly or past 5 MB, six kept; both compressed. The gunicorn log is rotated with `copytruncate`, so the service isn't restarted; the price is that a line written in the instant between the copy and the truncate can be lost. The installer writes that file only if it doesn't exist, so edit it freely: an upgrade never overwrites it. Check a change with `logrotate -d /etc/logrotate.d/cookbooks`.
 
 ## Backup / restore by hand
 Copy `/var/lib/cookbooks/` (`cookbooks.db` + `covers/`), or use **More → Download JSON**.
 
 ### Restore from a SQLite snapshot
-Stop the service, replace the database, remove the old WAL side files (a stale `-wal` file from the
-previous database would be replayed onto the restored one), fix ownership, start:
+`app-restore` (installed in `/usr/local/bin`) does the whole job. Run it as root:
+```sh
+app-restore --list                  # snapshots, newest first
+app-restore --dry-run 2026-11-10    # checks the snapshot and prints the plan; changes nothing
+app-restore 2026-11-10              # restores it
+```
+```
+Snapshots in /var/backups/apps, newest first (restore one by name, or use "latest"):
+  2026-11-10                                       212K
+  2026-11-09                                       210K
+  cookbooks-before-upgrade-20261105-101500         205K
+```
+The name is `latest` (the newest nightly snapshot), a date, the name of a safety copy shown by `--list`, or the path of a `.db.gz` file, for example one in `BACKUP_TARGET/db/<date>/`. A real run:
+1. checks the snapshot while the service is still running (gzip test, `PRAGMA integrity_check` on a copy), so a bad snapshot costs no downtime;
+2. stops the service and saves the database it is about to replace as `/var/backups/apps/cookbooks-before-restore-<time>.db.gz` (a damaged database is kept as a raw copy);
+3. swaps the snapshot in and removes the stale `-wal` and `-shm` files (a leftover `-wal` from the old database would be replayed onto the restored one);
+4. fixes ownership, runs `PRAGMA integrity_check` on the result, starts the service and waits for `/healthz`.
+
+If something fails before the swap, the service is started again with the old database untouched. If the restored database fails its integrity check the service is left stopped, and the message says how to go back (`app-restore <the before-restore copy>`). Only the database is restored: photos and covers stay as they are, so copy those back from `BACKUP_TARGET/files/cookbooks/` yourself if you lost them. Restoring a snapshot from an older version is fine: the app migrates the database when it starts.
+
+By hand, the same steps are:
 ```sh
 rc-service cookbooks stop
 gunzip -c /var/backups/apps/<date>/cookbooks-cookbooks.db.gz > /var/lib/cookbooks/cookbooks.db

@@ -15,6 +15,7 @@ PRIVATE = {"Authorization": f"Bearer {TOKEN}"}
 def c(monkeypatch):
     monkeypatch.setattr(X, "MCP_TOKEN", TOKEN)
     monkeypatch.setattr(X, "MCP_PUBLIC", True)
+    monkeypatch.setattr(X, "MCP_WRITE", True)  # PRIVATE is a header token, so it gets the write tools
     return A.app.test_client()
 
 

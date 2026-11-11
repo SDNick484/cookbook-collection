@@ -33,8 +33,10 @@ MAX_HISTORY_BYTES = 10 * 1024 * 1024
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5-5").strip()
 ANTHROPIC_EFFORT = os.environ.get("ANTHROPIC_EFFORT", "low").strip()  # empty: the model's default
-MCP_TOKEN = os.environ.get("MCP_TOKEN", "").strip()
+MCP_TOKEN = os.environ.get("MCP_TOKEN", "").strip()  # one token, or several comma-separated (for rotation)
 MCP_PUBLIC = os.environ.get("MCP_PUBLIC", "1") == "1"
+MCP_WRITE = os.environ.get("MCP_WRITE", "0") == "1"          # 1 = write tools for a token sent as a Bearer header
+MCP_URL_TOKEN = os.environ.get("MCP_URL_TOKEN", "1") == "1"  # 0 = refuse /mcp/<token>; it is always read-only
 
 MIGRATIONS = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -1414,7 +1416,8 @@ def features():
     import ask  # local: ask imports extras
     return jsonify(ask=ask.enabled(), photo_import=bool(ANTHROPIC_API_KEY), dinnerlog=bool(DINNERLOG_API_URL),
                    dinnerlog_url=DINNERLOG_URL or None, wishlist=wishlist_available(),
-                   mcp_private=bool(MCP_TOKEN), mcp_public=MCP_PUBLIC)
+                   mcp_private=bool(mcp_tokens()), mcp_public=MCP_PUBLIC, mcp_write=MCP_WRITE,
+                   mcp_url_token=MCP_URL_TOKEN)
 
 
 # ======================================================== MCP endpoint
@@ -1846,8 +1849,9 @@ class RedactMcpToken:
 
     The token moves into environ[MCP_TOKEN_KEY], PATH_INFO becomes /mcp, and RAW_URI / REQUEST_URI read
     /mcp/<redacted>. gunicorn's access log formats the request line from this same environ dict after the
-    app returns, so the log never sees the secret. (Cloudflare's own logs still see the path; clients that
-    can send an Authorization header should use `Bearer <MCP_TOKEN>` instead.)"""
+    app returns, so the log never sees the secret. (Cloudflare's own logs still see the path, which is why a
+    path token is read-only and MCP_URL_TOKEN=0 turns it off; clients that can send an Authorization header
+    should use `Bearer <MCP_TOKEN>` instead.)"""
     PREFIX = "/mcp/"
 
     def __init__(self, wsgi_app):
@@ -1873,16 +1877,40 @@ class RedactMcpToken:
 app.wsgi_app = RedactMcpToken(app.wsgi_app)
 
 
-def mcp_auth(token):
-    """Returns 'private', 'public' or None."""
+def mcp_tokens():
+    """The accepted private tokens: MCP_TOKEN split on commas, blanks dropped. Several at once let a token be
+    rotated without downtime (add the new one, move the clients, remove the old one)."""
+    return [t for t in (p.strip() for p in MCP_TOKEN.split(",")) if t]
+
+
+def token_ok(supplied):
+    """True if `supplied` is one of mcp_tokens(). Every candidate is compared, in constant time, with no early
+    exit, so the time taken doesn't say which token (or how many) matched."""
+    ok = False
+    for t in mcp_tokens():
+        # compare bytes: compare_digest raises TypeError on non-ASCII str
+        ok |= hmac.compare_digest(supplied.encode(), t.encode())
+    return ok
+
+
+def mcp_auth(path_token):
+    """Returns 'write', 'private', 'public' or None (refused).
+
+    - No token: 'public' if MCP_PUBLIC, else refused.
+    - Token in the path (/mcp/<token>): refused when MCP_URL_TOKEN is off; otherwise at most 'private'. A URL ends
+      up in proxy logs, browser history and pasted links, so it never unlocks the write tools.
+    - Token in an Authorization: Bearer header: 'write' when MCP_WRITE is on, else 'private'.
+    - A wrong token is refused, never downgraded to the public view."""
+    if path_token:
+        if not MCP_URL_TOKEN:
+            return None
+        return "private" if token_ok(path_token) else None
     auth = request.headers.get("Authorization", "")
     bearer = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
-    supplied = token or bearer
-    if supplied:
-        # compare bytes: compare_digest raises TypeError on non-ASCII str
-        if MCP_TOKEN and hmac.compare_digest(supplied.encode(), MCP_TOKEN.encode()):
-            return "private"
-        return None
+    if bearer:
+        if not token_ok(bearer):
+            return None
+        return "write" if MCP_WRITE else "private"
     return "public" if MCP_PUBLIC else None
 
 
@@ -1898,10 +1926,18 @@ class UnknownTool(LookupError):
     """No tool by that name is available to this caller (including private-only tools when not private)."""
 
 
-def run_tool(name, args, private):
+def tool_allowed(name, private_only, private, write):
+    """Private-only tools need `private`; WRITE_TOOLS also need `write` (and are private-only)."""
+    if name in WRITE_TOOLS:
+        return private and write
+    return private or not private_only
+
+
+def run_tool(name, args, private, write=False):
     """Run one MCP tool: (result, None) on success, (None, error_text) for a ToolError or a bug (redacted).
-    Raises UnknownTool when no tool matches. Shared by handle_rpc and the Ask search."""
-    tool = next((t for t in TOOLS if t[0] == name and (private or not t[1])), None)
+    Raises UnknownTool when no tool matches or the caller may not use it. Shared by handle_rpc and the Ask
+    search; Ask never passes `write`, so WRITE_TOOLS can't run from it."""
+    tool = next((t for t in TOOLS if t[0] == name and tool_allowed(t[0], t[1], private, write)), None)
     if not tool:
         raise UnknownTool(name)
     try:
@@ -1921,7 +1957,7 @@ def run_tool(name, args, private):
     return res, None
 
 
-def handle_rpc(msg, private):
+def handle_rpc(msg, private, write=False):
     if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0" or "method" not in msg:
         return rpc_error(msg.get("id") if isinstance(msg, dict) else None, -32600, "Invalid request")
     raw_params = msg.get("params")
@@ -1946,11 +1982,11 @@ def handle_rpc(msg, private):
         return rpc_result(mid, {"tools": [
             {"name": n, "description": fill_tags(d, tags), "inputSchema": fill_tags(s, tags),
              "annotations": WRITE_TOOLS.get(n, {"readOnlyHint": True, "openWorldHint": False})}
-            for n, priv_only, _, d, s in TOOLS if private or not priv_only]})
+            for n, priv_only, _, d, s in TOOLS if tool_allowed(n, priv_only, private, write)]})
     if method == "tools/call":
         name, args = params.get("name"), params.get("arguments") or {}
         try:
-            res, err_text = run_tool(name, args, private)
+            res, err_text = run_tool(name, args, private, write)
         except UnknownTool:
             return rpc_error(mid, -32602, f"Unknown tool: {name}")
         if err_text is not None:
@@ -1972,13 +2008,13 @@ def mcp():
         payload = request.get_json(force=True)
     except Exception:  # noqa: BLE001
         return jsonify(rpc_error(None, -32700, "Parse error")), 400
-    private = level == "private"
+    private, write = level in ("private", "write"), level == "write"
     if isinstance(payload, list):
         if len(payload) > MCP_BATCH_MAX:
             return jsonify(rpc_error(None, -32600, f"Batch too large: at most {MCP_BATCH_MAX} requests")), 400
-        out = [r for r in (handle_rpc(m, private) for m in payload) if r is not None]
+        out = [r for r in (handle_rpc(m, private, write) for m in payload) if r is not None]
         return (jsonify(out), 200) if out else Response(status=202)
-    res = handle_rpc(payload, private)
+    res = handle_rpc(payload, private, write)
     return (jsonify(res), 200) if res is not None else Response(status=202)
 
 

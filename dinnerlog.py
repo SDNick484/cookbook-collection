@@ -507,6 +507,22 @@ def cooked_by_book(ids):
         f"WHERE book_id IN ({qs}) GROUP BY book_id", list(ids))}
 
 
+# A recipe is "made" when a Dinner Log dinner is matched to it or an editor typed a date on it: the complement of
+# cook.NEVER_MADE, which the Cook page's "Never made" mode uses (tests/test_insights.py checks they agree).
+MADE_RECIPE = "(r.last_made IS NOT NULL OR EXISTS (SELECT 1 FROM cooked c WHERE c.recipe_id=r.id))"
+
+
+def made_by_book(ids):
+    """{book id: how many of its recipes have been made}, for the editor's "made 12 of 140". Editors only: the
+    public site never sends cooking history beyond PUBLIC_RECIPE_COOKED."""
+    if not ids:
+        return {}
+    qs = ",".join("?" * len(ids))
+    return {r[0]: r[1] for r in db().execute(
+        f"SELECT r.book_id, count(*) FROM recipes r WHERE r.book_id IN ({qs}) AND {MADE_RECIPE} "
+        "GROUP BY r.book_id", list(ids))}
+
+
 def cooked_stats_for(ids):
     if not ids:
         return {}

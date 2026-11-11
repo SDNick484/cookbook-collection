@@ -9,7 +9,7 @@ and an MCP server at `/mcp`. README.md is the user-facing guide; this file is ho
 | `app.py` | Core: schema + `init_db`, `connect()`/`db()`, `fold()` (accent/case folding, also an SQL function), FTS (`books_fts`, `recipes_fts`), auth (`editor_required`, `access_identity`, the per-worker Access key cache `_signing_key`), security headers (`CSP`, `security_headers`) and `/robots.txt`, books/recipes/facets API, index paste import (`parse_index`, `mark_duplicates`, `index_commit`), `PUBLIC_BOOKS`, `cuisine_condition()`, `env_int`/`local_midnight`, `/healthz` (deep check: database, both FTS tables, DATA_DIR) |
 | `dinnerlog.py` | Dinner Log history: pulled over HTTP into `dl_meals` and `dl_photos` (`pull_history`, `fetch_dl_photo`), matched to books and recipes and rebuilt into `cooked` (`rebuild_cooked`: uid, then ids, then title + page + name), `ensure_synced()` starts background pulls under a DB lease (`try_lease`, `background_pull`). Also `cooked_by_book` / `cooked_by_recipe` / `cooked_stats_for`, `meta_get` / `meta_set` for the `meta` table, the `/admin/api/dinnerlog*` routes |
 | `cook.py` | `cook_rank` (the one ranking behind the Cook page `/admin/api/cook`, `/admin/api/suggest`, MCP `suggest_recipes` and Dinner Log's `/admin/api/pick`; those are thin wrappers, so change modes and ordering there), the collection stats, shelf (on loan) tracking |
-| `scan.py` | Photo index import (Claude API, background jobs in `photo_jobs`; whole-index scans are a parent row with one child per page, `scan_state` derives the status, `merge_pages` joins them, `pages_today` enforces `PHOTO_DAILY_LIMIT`), `messages_api` (the Claude API call, also used by Ask), the `ANTHROPIC_*` settings |
+| `scan.py` | Photo index import (Claude API, background jobs in `photo_jobs`; whole-index scans are a parent row with one child per page, `scan_state` derives the status, `merge_pages` joins them, `pages_today` enforces `PHOTO_DAILY_LIMIT`), `messages_api` (the Claude API call, also used by Ask), `model_call` (one request, effort fallback), and the job helpers capture.py shares: `photo_slot`, `finish_job`, `child_jobs`, `PARENT_STATUSES`. The `ANTHROPIC_*` settings |
 | `mcp.py` | MCP server (`TOOLS`, `WRITE_TOOLS`, `handle_rpc`, `run_tool`, access levels, token handling and log redaction) and `/admin/api/features` |
 | `wishlist.py` | The family wish list link (adds a book to a person's list over localhost, remembers what was added) |
 | `ask.py` | AI search: `POST /admin/api/ask`, `ask_log`, tool loop over `run_tool`, `show_results` hydration |
@@ -18,11 +18,12 @@ and an MCP server at `/mcp`. README.md is the user-facing guide; this file is ho
 | `photos.py` | Photos of cooked dishes; `sync_dl_photos` imports and reconciles photos shared from Dinner Log (`dl_file`, `dl_photo_skip`) |
 | `online.py` | Recipes from websites (NYT Cooking): `books.kind='online'`, editor-only |
 | `house.py` | House recipes: the one `books.kind='house'` book (`ensure_house_book`, after seeding), `books.visibility`, `recipe_details` / `recipe_ingredient_lines` / `recipe_steps`, `parse_quantity`, `parse_doc`/`save_doc`, read/write routes, `safe_return_url` (`RETURN_URL_ORIGINS`), `ROLLBACK_SQL` |
+| `capture.py` | Start a house recipe from 1-4 photos or pasted text: a `photo_jobs` parent with `status='capture'` and a child per photo; `parse_reply` (the model's labelled lines, `_from_json` fallback), `parse_recipe_text` (pasted text with Ingredients/Method headings, no model), `merge` (photo order, section carry, `CONTINUED:`), `to_doc` (fields cut to `house.LIMITS`, then `house.parse_doc`), `call_claude`, attach/discard. Kept colour copies in `DATA_DIR/capture/<job>.<n>.jpg`, removed by `drop_job` or `sweep`. No schema |
 | `importer.py` | Loads the JSON export back in (`python3 -m importer`, also `import_data(con, data, ...)`): reconcile by uid, then ISBN, then title + first author; `--replace`, `--dry-run`, `--photos`. One transaction; needs `app.connect()` for `fold()`. `SKIP_SEED=1` stops `init_db` seeding an empty DB. No routes. Export carries `version` (`EXPORT_VERSION`, bump only for breaking shape changes) |
 | `static/` | Single-page app (`app.js`, `style.css`, `index.html`) |
 | `installer/` | `build.sh` -> `dist/setup-cookbooks.sh` (Alpine/OpenRC installer: `setup-head.sh` + base64 tarball). Also writes `/etc/logrotate.d/cookbooks` (only if absent) and installs `tzdata` |
 | `ops/` | `app-backup` (nightly snapshots; warns when images have no `BACKUP_TARGET`), `app-restore` (`--list`, `--dry-run`, restore), `app-health`, `app-notify`, all POSIX `sh` for BusyBox (no bash); `migrate-ops` moves files from older container-named paths. `tests/test_app_backup.py` and `test_app_restore.py` run the real scripts against a fake root through env overrides (`LIB_DIR`, `LOCAL_DIR`, `RC_SERVICE`, ...) and need the `sqlite3` CLI |
-| `tests/` | pytest; each file sets `DATA_DIR` to a temp dir and seeds from `seed.json`. `test_scan.py` covers scans, merging and the page-number forms |
+| `tests/` | pytest; each file sets `DATA_DIR` to a temp dir and seeds from `seed.json`. `test_scan.py` covers scans, merging and the page-number forms; `test_capture.py` the recipe reader |
 | `.github/` | `workflows/ci.yml`: `pytest` (Alpine's python3 and the current stable Python), `alpine` (apk packages, then the real installer under OpenRC, on the production release and `latest`), `ui-tests`, `upgrade-path`, `seam-contract`, `shellcheck`, `ruff`, `gitleaks`. `scripts/`: `install-openrc-stub.sh`, `run-ui-tests.sh`, `upgrade_path.py`. `dependabot.yml`: one weekly PR each for actions and pip. Actions are pinned by commit SHA |
 | `requirements-dev.txt`, `requirements-ui.txt`, `ruff.toml` | CI-only pins (production installs apk packages, so a bump never reaches a deployment) and the ruff config (E9 and F only; each per-file ignore says why) |
 
@@ -83,9 +84,13 @@ Chromium for Playwright checks: `/opt/pw-browsers/chromium-*/chrome-linux/chrome
 - Ask (`ask.py`) reuses `run_tool()`; it must never be offered `WRITE_TOOLS`. `run_tool`/`handle_rpc` take
   `write=False` by default, and Ask never passes it.
 - Tests: commit the test's own connection before calling the app, or SQLite reports "database is locked".
-- Photo jobs: never call Claude from tests (monkeypatch `call_claude` or `messages_api`). A scan page's thread waits on
+- Photo jobs: never call Claude from tests (monkeypatch `call_claude` or `messages_api`; for capture, `capture.call_claude`). A scan page's thread waits on
   `_photo_sem` as `queued` and only becomes `running` (with `started`) when it gets a slot; stale checks use `started`.
   Finished jobs are deleted after `PHOTO_JOB_KEEP`; it must stay >= a day because `pages_today()` counts them.
+  A new kind of parent row goes in `PARENT_STATUSES` (never counted, never served by `/index/photo/<id>`).
+- Recipe capture: the draft is never written to the recipe tables; the editor saves it through the ordinary house
+  routes. Model output is data: `capture.plain()` and `to_doc()` before anything else sees it, `esc()` in the browser.
+  Discarding a capture keeps its child rows (blanked) so `PHOTO_DAILY_LIMIT` can't be reset by discarding.
 - Dinner Log photos: `sync_dl_photos` runs only from `background_pull` (network, re-encoding), never from
   `rebuild_cooked` or a request. Removals are never capped. Never touch rows with `dl_file` NULL (uploads), never
   send `dl_file` to a client, and keep an editor's delete a permanent `dl_photo_skip` tombstone. Tests pass a fake

@@ -240,7 +240,7 @@ def _init_db_locked():
     global HAS_FTS
     con = connect()
     con.executescript(SCHEMA)
-    import dinnerlog, cook, wishlist, scan, eyb, ingredients, photos, online, ask, house
+    import dinnerlog, cook, wishlist, scan, eyb, ingredients, photos, online, ask, house, capture
     online.migrate(con)
     house.migrate(con)  # after online: books.kind must exist
     dinnerlog.migrate(con)
@@ -251,6 +251,7 @@ def _init_db_locked():
     ingredients.migrate(con)
     photos.migrate(con)
     ask.migrate(con)
+    capture.migrate(con)  # no schema: the folder captured photos wait in
     migrate_uids(con)
     migrate_locations(con)
     old = con.execute("SELECT sql FROM sqlite_master WHERE name='recipes_fts'").fetchone()
@@ -1842,4 +1843,5 @@ else:
     import online  # noqa: E402,F401 — recipes from websites
     import ask  # noqa: E402,F401 — AI search
     import house  # noqa: E402,F401 — house recipes
+    import capture  # noqa: E402,F401 — start a house recipe from photos or pasted text
     init_db()

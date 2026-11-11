@@ -79,12 +79,14 @@ The pages are merged into one review table:
 
 The table header counts how many entries will be added and how many are already in the book; entries already present are unchecked. Add the lot with one tap. If a page is ever cut off, the entries read so far are kept and a warning tells you to photograph the rest of that page. The request asks for low effort (`ANTHROPIC_EFFORT=low`; set it empty for the model's default), since transcribing needs little reasoning and goes much faster without it.
 
+**What is sent to the Anthropic API:** each index photo, and each photo of a recipe read by **From photo** in the house recipe editor (see *House recipes*), plus any pasted recipe text that has to be read by the model there. Nothing else from the catalog goes with them. Index photos are sent in grayscale; recipe photos too, while the colour copy you may attach to the recipe stays on the server.
+
 | Variable | Default | Meaning |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | empty (photo import off) | API key for reading index photos |
 | `ANTHROPIC_MODEL` | `claude-sonnet-5-5` | Model for photo import |
 | `ANTHROPIC_EFFORT` | `low` | Effort setting; empty for the model's default |
-| `PHOTO_DAILY_LIMIT` | `100` | Index pages read per day across all editors (each is one model call with up to 16k output tokens); further pages get a clear refusal until local midnight. Retrying a page doesn't count twice. |
+| `PHOTO_DAILY_LIMIT` | `100` | Pages read per day across all editors: index pages, recipe photos, and pasted recipe text the model has to read (each is one model call); further pages get a clear refusal until local midnight. Retrying an index page doesn't count twice, and discarding a recipe capture doesn't give its pages back. |
 
 **Needs review → Not indexed yet** lists the books on hand that have no recipes in the catalog, each with an Import index link. The MCP's `search_books` has the same filter (`indexed: false`).
 
@@ -145,6 +147,27 @@ afterwards, the setting only names a new one) and can't be deleted or shelved.
   ingredient and step rows you add, move (↑/↓) and remove. **+ Section** adds a heading ("For the sauce") that applies
   to the rows under it. Enter in an ingredient's name moves on to the next row. Quantities are kept as typed
   ("1 ½", "2-3", "a pinch") and read as numbers where they are numbers, for scaling.
+- **Start from a photo or pasted text:** under **New recipe**, **📷 From photo** reads 1 to 4 photos of one recipe (a
+  recipe card, a notebook page, a printed page), taken in order, and **📋 From text** reads a pasted recipe. The result
+  fills the editor as an unsaved draft, with a note saying what to check: anything not found (name, ingredients,
+  steps), and anything cut off, shortened or left out. Nothing is stored as a recipe until you tap **Save**.
+  - Photos are read by Claude (needs `ANTHROPIC_API_KEY`) as background jobs, a couple at a time, and the page checks
+    back until they're done, so Cloudflare's 100-second limit doesn't apply. They go through the same JPEG/PNG/WebP
+    check and resizing as index photos, and each one counts against `PHOTO_DAILY_LIMIT`. Photos of a long recipe are
+    merged in the order taken: a section carries over to the next photo, and a step that runs onto the next photo
+    is joined back together.
+  - Pasted text with an **Ingredients** heading and a **Method** heading (also *Ingredienti*/*Preparazione*,
+    *Directions*, *Instructions* and others) is split on the server without the model, free. Anything else goes to
+    Claude like a photo, and counts as one page.
+  - Quantities are kept as written ("1 1/2", "2-3", "a pinch", "q.b.") and read as numbers where they are numbers,
+    exactly as when typed. The recipe stays in its own language.
+  - **The photo:** tick **Add the photo to this recipe** before saving to keep it as a normal recipe photo
+    (re-encoded, EXIF and any phone GPS dropped, members-only like the rest of the house book unless you publish it).
+    Otherwise it is deleted when you save or leave the editor. One left behind some other way (a phone that went to
+    sleep mid-read) is deleted by the first capture or service restart after a day. Until then it sits in
+    `/var/lib/cookbooks/capture`, which is never served and isn't in the backups.
+  - What the model returns is treated as text: it is stripped of control characters, cut to the editor's limits, and
+    never shown as HTML or acted on. A photo that says "ignore your instructions" just gets transcribed.
 - **Cook from it:** the recipe page scales by servings (or ½×–3×), lets you tick off ingredients and steps, runs a
   timer per step, and can keep the phone's screen on while it's open.
 - **Who sees it:** the house book is **members only**: only someone signed in (the editors behind Access) sees it or its
@@ -214,7 +237,7 @@ Editors can attach photos of a dish to the recipe it came from.
 - Image files are served with a one-day cache lifetime. If a CDN in front of the app caches them (Cloudflare caches `.jpg` by default), a deleted photo can stay reachable at its URL until that copy expires; purge the URL in your CDN if that matters.
 - Each upload is resized to at most 2048px, plus a 480px thumbnail, and saved as JPEG in `/var/lib/cookbooks/photos`. Re-encoding drops the EXIF data, including any phone GPS location.
 - Deleting a photo, recipe or book deletes its files. The nightly backup copies `photos/` to `BACKUP_TARGET`, and **Download JSON** lists each recipe's photo files.
-- Uploads (covers, dish photos, index photos) are accepted as JPEG, PNG or WebP; other formats are refused rather than decoded. iPhone HEIC photos work if the `pillow-heif` Python package is installed. Without it, Safari normally converts them to JPEG when uploading.
+- Uploads (covers, dish photos, index photos, recipe photos) are accepted as JPEG, PNG or WebP; other formats are refused rather than decoded. iPhone HEIC photos work if the `pillow-heif` Python package is installed. Without it, Safari normally converts them to JPEG when uploading.
 
 ### Photos from Dinner Log
 With the Dinner Log link set up, photos shared there are imported here on their own: Dinner Log's history lists each dinner's shared photos, and after each history fetch this app copies the ones whose dinner matches a recipe (by the same rules as cooking history), in the background.

@@ -4,7 +4,7 @@ A photo of a cookbook's index page is read by the Claude API into recipe rows. A
 photo_jobs row the browser polls), and a whole-index scan is a parent row with one child per page. Owns the
 ANTHROPIC_* settings and the Messages API call (messages_api), which Ask also uses.
 """
-import base64, io, json, os, re, secrets, threading, time, urllib.error, urllib.request
+import base64, contextlib, io, json, os, re, secrets, threading, time, urllib.error, urllib.request
 
 from flask import abort, jsonify, request
 
@@ -80,26 +80,31 @@ def messages_api(body, key, timeout):
         raise ClaudeAPIError(e.code, e.read().decode(errors="replace")[:300])
 
 
-def call_claude(image_jpeg, media_type="image/jpeg", effort=None):
-    """Returns (text, stop_reason)."""
+def model_call(content, max_tokens, effort=None):
+    """One Messages API request whose user turn is `content` (a list of content blocks). Returns (text,
+    stop_reason). Used by the index reader here and by recipe capture (capture.py)."""
     effort = ANTHROPIC_EFFORT if effort is None else effort
-    body = {
-        "model": ANTHROPIC_MODEL, "max_tokens": 16000,
-        "messages": [{"role": "user", "content": [
-            {"type": "image", "source": {"type": "base64", "media_type": media_type,
-                                         "data": base64.b64encode(image_jpeg).decode()}},
-            {"type": "text", "text": PHOTO_PROMPT}]}],
-    }
+    body = {"model": ANTHROPIC_MODEL, "max_tokens": max_tokens, "messages": [{"role": "user", "content": content}]}
     if effort:  # transcription needs little thinking, and thinking is slow
         body["output_config"] = {"effort": effort}
     try:
         data = messages_api(body, ANTHROPIC_API_KEY, PHOTO_JOB_LIMIT - 30)
     except ClaudeAPIError as e:
         if e.status == 400 and effort and ("effort" in e.detail or "output_config" in e.detail):
-            return call_claude(image_jpeg, media_type, effort="")  # a model without effort settings
+            return model_call(content, max_tokens, effort="")  # a model without effort settings
         raise RuntimeError(f"Claude API error {e.status}: {e.detail}")
     text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
     return text, data.get("stop_reason")
+
+
+def image_block(jpeg, media_type="image/jpeg"):
+    return {"type": "image", "source": {"type": "base64", "media_type": media_type,
+                                        "data": base64.b64encode(jpeg).decode()}}
+
+
+def call_claude(image_jpeg, media_type="image/jpeg", effort=None):
+    """Returns (text, stop_reason)."""
+    return model_call([image_block(image_jpeg, media_type), {"type": "text", "text": PHOTO_PROMPT}], 16000, effort)
 
 
 _ODD_PAGE_RE = re.compile(rf"^{core.ODD_PAGE}$")
@@ -205,19 +210,43 @@ def prepare_photo(raw):
 
 
 _photo_sem = threading.Semaphore(2)
+# Parent rows that only tie child jobs together: a whole-index scan, and a recipe capture (capture.py). Never a
+# photo themselves, so never counted against PHOTO_DAILY_LIMIT and never polled as a single-photo job.
+PARENT_STATUSES = ("scan", "capture")
+
+
+@contextlib.contextmanager
+def photo_slot(job_id):
+    """Wait for a reading slot as 'queued'; on getting one, mark the job 'running' with `started` (the stale
+    clock starts then, not while it waited)."""
+    with _photo_sem:
+        con = core.connect()
+        try:
+            con.execute("UPDATE photo_jobs SET status='running', started=? WHERE id=? AND status='queued'",
+                        (time.time(), job_id))
+            con.commit()
+        finally:
+            con.close()
+        yield
+
+
+def finish_job(job_id, rows=None, warning=None, error=None):
+    """Record a job's result: `error` (a message) makes it 'error', otherwise it is 'done' with `rows` (JSON)."""
+    con = core.connect()
+    try:
+        if error is not None:
+            con.execute("UPDATE photo_jobs SET status='error', error=? WHERE id=?", (error, job_id))
+        else:
+            con.execute("UPDATE photo_jobs SET status='done', rows=?, warning=? WHERE id=?", (rows, warning, job_id))
+        con.commit()
+    finally:
+        con.close()
 
 
 def run_photo_job(job_id, jpeg):
     res_rows, warning, err_msg = None, None, None
     try:
-        with _photo_sem:
-            con = core.connect()  # a scan page waited for this slot: now it's running, and the clock starts
-            try:
-                con.execute("UPDATE photo_jobs SET status='running', started=? WHERE id=? AND status='queued'",
-                            (time.time(), job_id))
-                con.commit()
-            finally:
-                con.close()
+        with photo_slot(job_id):  # a scan page waited for this slot: now it's running, and the clock starts
             text, stop = call_claude(jpeg)
         cut = stop == "max_tokens"
         rows = parse_claude_rows(text, truncated=cut)
@@ -230,16 +259,7 @@ def run_photo_job(job_id, jpeg):
         res_rows = json.dumps(rows)
     except Exception as e:  # noqa: BLE001
         err_msg = f"Couldn't read the index from that photo: {e}"
-    con = core.connect()
-    try:
-        if err_msg is not None:
-            con.execute("UPDATE photo_jobs SET status='error', error=? WHERE id=?", (err_msg, job_id))
-        else:
-            con.execute("UPDATE photo_jobs SET status='done', rows=?, warning=? WHERE id=?",
-                        (res_rows, warning, job_id))
-        con.commit()
-    finally:
-        con.close()
+    finish_job(job_id, rows=res_rows, warning=warning, error=err_msg)
 
 
 @app.post("/admin/api/books/<int:book_id>/index/photo")
@@ -283,8 +303,8 @@ def index_photo(book_id):
 @editor_required
 def index_photo_job(job_id):
     j = db().execute("SELECT * FROM photo_jobs WHERE id=?", (job_id,)).fetchone()
-    if not j or j["status"] == "scan":  # a whole-index scan is polled at /index/scan/<id>
-        abort(404)
+    if not j or j["status"] in PARENT_STATUSES or j["parent_id"] is not None:
+        abort(404)  # single photos only: a scan is polled at /index/scan/<id>, a capture at /house/capture/<id>
     elapsed = int(time.time() - j["created"])
     if j["status"] == "running":
         if elapsed > PHOTO_JOB_LIMIT:
@@ -303,10 +323,10 @@ def index_photo_job(job_id):
 # poll, so it's the same from either gunicorn worker. Pages wait for a _photo_sem slot in their own thread
 # ('queued'), then run through the single-photo path above.
 def pages_today(con):
-    """Pages (single photos and scan pages) accepted since local midnight. Counted from photo_jobs itself,
+    """Pages (single photos, scan pages, recipe capture photos and texts) accepted since local midnight. Counted from photo_jobs itself,
     which the cleanup keeps for PHOTO_JOB_KEEP >= a day."""
-    return con.execute("SELECT count(*) FROM photo_jobs WHERE status != 'scan' AND created >= ?",
-                       (core.local_midnight(),)).fetchone()[0]
+    return con.execute(f"SELECT count(*) FROM photo_jobs WHERE status NOT IN ({','.join('?' * len(PARENT_STATUSES))}) "
+                       "AND created >= ?", (*PARENT_STATUSES, core.local_midnight())).fetchone()[0]
 
 
 def daily_limit_reached(con, n):
@@ -412,18 +432,26 @@ def index_scan_retry(scan_id, page_no):
     return jsonify(pages=[page_no]), 202
 
 
-def scan_state(con, parent):
-    """The parent's status, derived from its pages, with the merged rows of the pages read so far."""
+def child_jobs(con, parent_id, stale_msg):
+    """A parent's child rows in page_no order, after marking the dead ones as errors: running past PHOTO_JOB_LIMIT
+    since they started, or queued past PHOTO_QUEUE_LIMIT (their thread died with a worker)."""
     now = time.time()
-    kids = con.execute("SELECT * FROM photo_jobs WHERE parent_id=? ORDER BY page_no", (parent["id"],)).fetchall()
+    sql = "SELECT * FROM photo_jobs WHERE parent_id=? ORDER BY page_no"
+    kids = con.execute(sql, (parent_id,)).fetchall()
     stale = [k["id"] for k in kids if (k["status"] == "running" and (k["started"] or k["created"]) < now - PHOTO_JOB_LIMIT)
              or (k["status"] == "queued" and k["created"] < now - PHOTO_QUEUE_LIMIT)]
     if stale:
-        msg = "Reading that page stopped partway (the server may have restarted). Retry the page."
         con.executemany("UPDATE photo_jobs SET status='error', error=? WHERE id=? AND status IN ('running', 'queued')",
-                        [(msg, i) for i in stale])
+                        [(stale_msg, i) for i in stale])
         con.commit()
-        kids = con.execute("SELECT * FROM photo_jobs WHERE parent_id=? ORDER BY page_no", (parent["id"],)).fetchall()
+        kids = con.execute(sql, (parent_id,)).fetchall()
+    return kids
+
+
+def scan_state(con, parent):
+    """The parent's status, derived from its pages, with the merged rows of the pages read so far."""
+    now = time.time()
+    kids = child_jobs(con, parent["id"], "Reading that page stopped partway (the server may have restarted). Retry the page.")
     pages, by_no = [], {}
     for k in kids:
         rows = json.loads(k["rows"]) if k["status"] == "done" and k["rows"] else None

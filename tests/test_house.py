@@ -630,3 +630,35 @@ def test_photos_of_house_recipes_stay_out_of_the_public_gallery(c):
     assert all(p["recipe_id"] != rid for p in c.get("/api/photos").json["photos"])
     assert any(p["recipe_id"] == rid for p in c.get("/admin/api/photos").json["photos"])
     assert c.get(f"/api/books/{house_id()}").status_code == 404  # and its page (with the photos) isn't public
+
+
+# ------------------------------------------------------------------ recipe capture: a new way in, no new way out
+def test_a_captured_recipe_inherits_the_house_book_s_visibility(c, monkeypatch):
+    """Capture (photo or pasted text) only fills the editor; the saved recipe is an ordinary house recipe, so the
+    members-only house book keeps it out of every public read. Capture itself has no public route at all."""
+    text = "Captured Juniper Braise\nIngredients\n2 tbsp juniper berries\n1 kg beef shin\nMethod\n1. Braise slowly.\n"
+    r = c.post("/admin/api/house/capture/text", json={"text": text})
+    assert r.status_code == 200 and r.json["parsed"] == "here"
+    d = r.json["draft"]
+    j = c.post("/admin/api/house/recipes", json={**d, **d["detail"]}).json
+    assert j["book"]["kind"] == "house" and [x["item"] for x in j["ingredients"]] == ["juniper berries", "beef shin"]
+    # anonymous: not by search, ingredient, uid, the house API, the gallery or the public MCP
+    assert c.get("/api/recipes?q=juniper").json["count"] == 0
+    assert c.get("/api/recipes?ingredient=juniper").json["count"] == 0
+    assert c.get(f"/api/recipes/by-uid/{j['uid']}").status_code == 404
+    assert c.get(f"/api/house/recipes/{j['uid']}").status_code == 404
+    assert all(p["recipe_id"] != j["id"] for p in c.get("/api/photos").json["photos"])
+    assert mcp(c, "search_recipes", {"query": "juniper"})["structuredContent"]["total"] == 0
+    assert c.get("/admin/api/recipes?q=juniper").json["count"] == 1  # an editor finds it
+    # no public capture route; the admin ones refuse anonymous readers
+    for path in ("/api/house/capture/text", "/api/house/capture/photos"):
+        assert c.post(path, json={"text": text}).status_code in (404, 405)
+    assert c.get("/api/house/capture/anything").status_code == 404
+    assert c.get("/admin/api/house/capture/anything", environ_base=ANON).status_code == 401
+    # published, it shows like any public house recipe
+    set_visibility(house_id(), "public")
+    try:
+        assert c.get(f"/api/house/recipes/{j['uid']}").status_code == 200
+        assert c.get("/api/recipes?q=juniper").json["count"] == 1
+    finally:
+        set_visibility(house_id(), "members")

@@ -662,6 +662,52 @@ def reader_required(fn):
     return inner
 
 
+# ---------------------------------------------------------- security headers
+# What the single-page app loads, which this policy has to allow (tests/test_csp_browser.py checks it in Chromium):
+#   scripts: /static/app.js only, no inline script or handlers, no eval
+#   styles:  /static/style.css plus inline style="" attributes in app.js templates ('unsafe-inline', styles only)
+#   images:  this origin (/covers, /photos, /static), blob: (index photo previews before upload), data:, and cover
+#            candidates from the Open Library / Google lookup, straight from COVER_HOSTS (Open Library redirects to
+#            *.archive.org, hence the subdomains)
+#   fetch:   this origin only (every external lookup goes through the server)
+#   camera:  getUserMedia for the barcode scanner (Permissions-Policy camera=(self)); file inputs with
+#            capture="environment" open the system camera and need nothing here
+#   wake lock: "Keep screen on" on a recipe page (screen-wake-lock=(self))
+#   manifest: /static/manifest.json; its share_target is a GET to /admin
+CSP = "; ".join([
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: " + " ".join(f"https://{h} https://*.{h}" for h in sorted(COVER_HOSTS)),
+    "media-src 'self' blob:",
+    "connect-src 'self'",
+    "font-src 'self'",
+    "manifest-src 'self'",
+    "worker-src 'self'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+])
+PERMISSIONS_POLICY = ("camera=(self), screen-wake-lock=(self), microphone=(), geolocation=(), payment=(), usb=(), "
+                      "display-capture=()")
+SECURITY_HEADERS = {
+    "Content-Security-Policy": CSP,
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "X-Frame-Options": "DENY",  # frame-ancestors for browsers that predate it
+    "Permissions-Policy": PERMISSIONS_POLICY,
+}
+
+
+@app.after_request
+def security_headers(resp):
+    """Every response: pages, JSON, static files, /covers, /photos, /mcp, errors."""
+    for k, v in SECURITY_HEADERS.items():
+        resp.headers.setdefault(k, v)
+    return resp
+
+
 # ------------------------------------------------------------------- pages
 @app.get("/")
 @app.get("/admin")

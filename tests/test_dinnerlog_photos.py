@@ -326,7 +326,7 @@ def test_unshared_or_deleted_meal_removes_the_copy(con, recipes):
 
 
 def test_meal_now_resolving_elsewhere_moves_the_copy(con, recipes, client):
-    (r1, u1), (r2, u2) = recipes["Pan sauce chicken"], recipes["Braised beans"]
+    (_r1, u1), (r2, u2) = recipes["Pan sauce chicken"], recipes["Braised beans"]
     snapshot(con, [meal(1, u1, [F1])])
     P.sync_dl_photos(con, Fetch())
     pid = imported(con)[F1]["id"]

@@ -1,5 +1,5 @@
 """Recipes from websites (NYT Cooking and others), saved by their links and kept for editors only."""
-import json, os, sqlite3, sys, tempfile
+import os, sys, tempfile
 from datetime import date
 from pathlib import Path
 

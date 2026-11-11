@@ -464,7 +464,7 @@ def test_house_read_api_is_members_only(c, monkeypatch):
     assert c.get(f"/admin/api/house/recipes/{cookbook_recipe}", headers=hdr, environ_base=ANON).status_code == 404
     assert c.get(f"/api/recipes/by-uid/{cookbook_recipe}").status_code == 200  # public cookbook recipe: readable
     assert c.get(f"/api/recipes/by-uid/{cookbook_recipe}").json["ingredients"] == []
-    assert c.get(f"/admin/api/house/recipes?q=lemon", headers=hdr, environ_base=ANON).json["recipes"][0]["uid"] == j["uid"]
+    assert c.get("/admin/api/house/recipes?q=lemon", headers=hdr, environ_base=ANON).json["recipes"][0]["uid"] == j["uid"]
     set_visibility(house_id(), "public")
     try:
         assert c.get(f"/api/house/recipes/{j['uid']}").status_code == 200

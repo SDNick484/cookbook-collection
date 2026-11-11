@@ -15,6 +15,8 @@
 # LIB_DIR, LOCAL_DIR, STATE_DIR, LOG, NOTIFY and OPS_CONF can be set in the environment (the tests do).
 set -u
 OPS_CONF=${OPS_CONF:-/etc/conf.d/app-ops}
+# /etc/conf.d/app-ops is written on the host by the installer and is optional, so it isn't in the repo.
+# shellcheck source=/dev/null
 [ -f "$OPS_CONF" ] && . "$OPS_CONF"
 LIB_DIR=${LIB_DIR:-/var/lib}
 LOCAL_DIR=${LOCAL_DIR:-/var/backups/apps}

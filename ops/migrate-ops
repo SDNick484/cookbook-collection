@@ -19,6 +19,8 @@ conf_value() { sed -n "s/^$2=//p" "$1" | tail -n1 | tr -d "\"'"; }
 
 merge_conf() {  # merge_conf OLD NEW: copy keys that NEW lacks or leaves empty
   old=$1 new=$2 added=""
+  # The keys match [A-Za-z_][A-Za-z0-9_]*, so they hold no whitespace or glob characters: word splitting is safe.
+  # shellcheck disable=SC2013
   for key in $(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$old" | sort -u); do
     [ -n "$(conf_value "$old" "$key")" ] || continue
     [ -z "$(conf_value "$new" "$key")" ] || continue
@@ -66,7 +68,8 @@ move() {  # move OLD NEW
 each() {  # each TEST GLOB NEW: move every match of GLOB that passes `test TEST` (and isn't NEW)
   for p in "$ROOT"$2; do
     [ "$p" = "$3" ] && continue
-    if [ -L "$p" ] || [ "$1" "$p" ]; then move "$p" "$3"; fi
+    # `test`, not `[`: shellcheck can't parse a variable as the operator inside [ ]. Same builtin, same result.
+    if [ -L "$p" ] || test "$1" "$p"; then move "$p" "$3"; fi
   done
 }
 

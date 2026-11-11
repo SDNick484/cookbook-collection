@@ -5,6 +5,17 @@ on:
     branches: [ main ]
   pull_request:
 
+# Jobs only read the repository. Nothing here writes to it or needs a secret.
+permissions:
+  contents: read
+
+concurrency:
+  # One run per PR (per ref on pushes). A newer push to a PR cancels the superseded run; runs on main are never
+  # cancelled, so every merged commit gets a complete result.
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Actions are pinned to commit SHAs (the comment names the release); Dependabot keeps them current.
 jobs:
   pytest:
     name: pytest (Python ${{ matrix.python-version }})
@@ -16,10 +27,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
@@ -66,7 +77,7 @@ jobs:
           apk add --no-cache git
 
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Step A — Native Alpine apk test run
       - name: Step A - Install native Alpine packages

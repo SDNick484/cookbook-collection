@@ -223,6 +223,8 @@ grep -q '^HA_URL=\(""\|'\'''\''\)\?$' "$OPS_CONF" && echo "  - Health alerts are
 grep -q '^HA_WEBHOOK_ID=\(""\|'\'''\''\)\?$' "$OPS_CONF" && echo "  - Health alerts also need HA_WEBHOOK_ID in $OPS_CONF (the HA automation's webhook)"
 grep -q '^DINNERLOG_API_URL=\(""\|'\'''\''\)\?$' "$CONF" && echo "  - Cooking history is off until you set DINNERLOG_API_URL and DINNERLOG_TOKEN in $CONF"
 grep -q '^DINNERLOG_URL=\(""\|'\'''\''\)\?$' "$CONF" && echo "  - 'Log this dinner' links are off until you set DINNERLOG_URL in $CONF"
+# same wording as the nightly warning (app-backup prints it, or nothing when images are covered or absent)
+if msg=$(/usr/local/bin/app-backup --check-images); then echo "  - Warning: $msg"; fi
 echo "  - Private MCP: https://<your public address>/mcp with header 'Authorization: Bearer <MCP_TOKEN>'"
 echo "    (or /mcp/<MCP_TOKEN> for clients that can't send headers); the token is MCP_TOKEN in $CONF"
 echo "Config: $CONF, $OPS_CONF   Backups: /var/backups/apps   Logs: /var/log/cookbooks.log, /var/log/app-ops.log (rotated by logrotate: $LOGROTATE_CONF)"

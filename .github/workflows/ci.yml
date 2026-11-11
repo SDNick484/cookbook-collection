@@ -53,7 +53,11 @@ jobs:
 
       - name: Syntax-check shell scripts
         run: |
-          sh -n installer/build.sh installer/setup-head.sh ops/* .github/scripts/*.sh
+          # one file per `sh -n`: given several arguments it parses only the first and treats the rest as arguments
+          for f in installer/build.sh installer/setup-head.sh ops/* .github/scripts/*.sh; do
+            echo "sh -n $f"
+            sh -n "$f"
+          done
 
   alpine:
     name: alpine smoke test (alpine:3.21)

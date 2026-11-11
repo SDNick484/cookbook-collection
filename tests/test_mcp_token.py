@@ -4,15 +4,15 @@ import pytest
 from werkzeug.test import EnvironBuilder
 
 import app as A
-import extras as X
+import mcp as MC
 
 TOKEN = "s3cret-token_AbC-123"
 
 
 @pytest.fixture()
 def c(monkeypatch):
-    monkeypatch.setattr(X, "MCP_TOKEN", TOKEN)
-    monkeypatch.setattr(X, "MCP_PUBLIC", True)
+    monkeypatch.setattr(MC, "MCP_TOKEN", TOKEN)
+    monkeypatch.setattr(MC, "MCP_PUBLIC", True)
     return A.app.test_client()
 
 
@@ -54,7 +54,7 @@ def test_wrong_path_token_is_404(c, bad):
 
 @pytest.mark.parametrize("bad", ["wrong", "é", "トークン", ""])
 def test_wrong_bearer_is_refused_not_500(c, monkeypatch, bad):
-    monkeypatch.setattr(X, "MCP_PUBLIC", False)
+    monkeypatch.setattr(MC, "MCP_PUBLIC", False)
     assert tools(c, headers={"Authorization": f"Bearer {bad}"}).status_code == 401
 
 
@@ -70,7 +70,7 @@ def test_wrong_bearer_never_downgrades_to_public(c):
 
 
 def test_no_token_configured_refuses_any_token(c, monkeypatch):
-    monkeypatch.setattr(X, "MCP_TOKEN", "")
+    monkeypatch.setattr(MC, "MCP_TOKEN", "")
     assert tools(c, "/mcp/anything").status_code == 404
     assert tools(c, headers={"Authorization": "Bearer "}).json["result"]  # empty bearer = public
 
@@ -89,7 +89,7 @@ def run_wsgi(path, query="", method="POST"):
 
 
 def test_token_is_redacted_from_logged_environ(monkeypatch):
-    monkeypatch.setattr(X, "MCP_TOKEN", TOKEN)
+    monkeypatch.setattr(MC, "MCP_TOKEN", TOKEN)
     env, status, body = run_wsgi(f"/mcp/{TOKEN}", "trace=1")
     assert status.startswith("200") and b'"result"' in body
     for k, v in env.items():
@@ -101,7 +101,7 @@ def test_token_is_redacted_from_logged_environ(monkeypatch):
 
 def test_gunicorn_request_line_has_no_token(monkeypatch):
     glogging = pytest.importorskip("gunicorn.glogging")
-    monkeypatch.setattr(X, "MCP_TOKEN", TOKEN)
+    monkeypatch.setattr(MC, "MCP_TOKEN", TOKEN)
     env, status, _ = run_wsgi(f"/mcp/{TOKEN}")
     resp = type("Resp", (), {"status": status, "sent": 10, "headers": []})()
     log = glogging.Logger.__new__(glogging.Logger)
@@ -114,7 +114,7 @@ def test_gunicorn_request_line_has_no_token(monkeypatch):
 
 def test_other_paths_untouched():
     env, status, _ = run_wsgi("/healthz", method="GET")
-    assert status.startswith("200") and env["RAW_URI"] == "/healthz" and X.MCP_TOKEN_KEY not in env
+    assert status.startswith("200") and env["RAW_URI"] == "/healthz" and MC.MCP_TOKEN_KEY not in env
 
 
 def test_installer_does_not_print_the_token():

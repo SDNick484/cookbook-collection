@@ -1,11 +1,7 @@
-"""Cookbook Collection v2 features, registered onto the core app:
+"""The MCP server (Streamable HTTP, stateless JSON) at /mcp, registered onto the core app.
 
-- Dinner Log link: pulls cooking history from Dinner Log's /api/history and matches
-  dinners to books and recipes (by the ids Dinner Log stamped, else title + page +
-  name, with manual overrides)
-- Photo index import via the Claude API
-- "What should we cook?" suggestions, stats, off-the-shelf tracking
-- MCP endpoint (Streamable HTTP, stateless JSON) at /mcp
+Also /admin/api/features, which reports which of the optional integrations are configured. Tools, access levels
+(public / private / write), token handling and the log redaction wrapper live here; Ask (ask.py) reuses run_tool().
 """
 import hmac, json, logging, os, re, secrets
 
@@ -27,7 +23,7 @@ MCP_URL_TOKEN = os.environ.get("MCP_URL_TOKEN", "1") == "1"  # 0 = refuse /mcp/<
 @app.get("/admin/api/features")
 @editor_required
 def features():
-    import ask  # local: ask imports extras
+    import ask  # local: ask imports mcp
     import wishlist  # local: importing it registers its routes, which must come after /mcp's
     return jsonify(ask=ask.enabled(), photo_import=bool(scan.ANTHROPIC_API_KEY), dinnerlog=bool(dinnerlog.DINNERLOG_API_URL),
                    dinnerlog_url=dinnerlog.DINNERLOG_URL or None, wishlist=wishlist.wishlist_available(),

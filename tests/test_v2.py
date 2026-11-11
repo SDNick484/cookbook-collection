@@ -12,7 +12,7 @@ os.environ.setdefault("DATA_DIR", tempfile.mkdtemp())
 os.environ.setdefault("CF_TEAM_DOMAIN", "team.example.com")
 os.environ.setdefault("CF_AUD", "aud123")
 import app as A  # noqa: E402
-import extras as X  # noqa: E402
+import mcp as MC  # noqa: E402
 import wishlist as WL  # noqa: E402
 import scan as SC  # noqa: E402
 import cook as CK  # noqa: E402
@@ -356,12 +356,12 @@ def test_mcp_public(c):
 
 
 def test_mcp_private(c, monkeypatch):
-    monkeypatch.setattr(X, "MCP_TOKEN", "s3cret-token")
-    monkeypatch.setattr(X, "MCP_WRITE", True)
+    monkeypatch.setattr(MC, "MCP_TOKEN", "s3cret-token")
+    monkeypatch.setattr(MC, "MCP_WRITE", True)
     names = {t["name"] for t in rpc(c, "tools/list", url="/mcp/s3cret-token").json["result"]["tools"]}
-    assert {"suggest_recipes", "cooking_stats"} <= names and not names & set(X.WRITE_TOOLS)  # path: read-only
+    assert {"suggest_recipes", "cooking_stats"} <= names and not names & set(MC.WRITE_TOOLS)  # path: read-only
     hdr = {"Authorization": "Bearer s3cret-token"}
-    assert {t["name"] for t in rpc(c, "tools/list", headers=hdr).json["result"]["tools"]} == names | set(X.WRITE_TOOLS)
+    assert {t["name"] for t in rpc(c, "tools/list", headers=hdr).json["result"]["tools"]} == names | set(MC.WRITE_TOOLS)
     assert rpc(c, "tools/list", url="/mcp/wrong").status_code == 404
     res = json.loads(rpc(c, "tools/call", {"name": "suggest_recipes", "arguments": {"mode": "want", "count": 3}},
                          headers=hdr).json["result"]["content"][0]["text"])
@@ -369,14 +369,14 @@ def test_mcp_private(c, monkeypatch):
     rid = res["recipes"][0]["id"]
     rpc(c, "tools/call", {"name": "set_want_to_try", "arguments": {"recipe_id": rid, "want": False}}, headers=hdr)
     assert all(r["id"] != rid for r in c.get("/admin/api/recipes?want=1&limit=500").json["recipes"])
-    monkeypatch.setattr(X, "MCP_PUBLIC", False)
+    monkeypatch.setattr(MC, "MCP_PUBLIC", False)
     assert rpc(c, "tools/list").status_code == 401
     assert rpc(c, "tools/list", headers=hdr).status_code == 200
 
 
 def test_mcp_update_book(c, monkeypatch):
-    monkeypatch.setattr(X, "MCP_TOKEN", "s3cret-token")
-    monkeypatch.setattr(X, "MCP_WRITE", True)
+    monkeypatch.setattr(MC, "MCP_TOKEN", "s3cret-token")
+    monkeypatch.setattr(MC, "MCP_WRITE", True)
     hdr = {"Authorization": "Bearer s3cret-token"}
     a = c.post("/admin/api/books", json={"title": "Fix Me Pozole", "cuisine": "Mexican", "tags": ["Caucasus"]}).json
     b = c.post("/admin/api/books", json={"title": "Fix Me Too", "tags": ["Caucasus", "Soup"]}).json
@@ -531,7 +531,7 @@ def test_dinnerlog_resyncs_when_local_recipe_added(c, dl):
 
 
 def test_mcp_bad_bearer_rejected_and_online_hidden_from_public(c, monkeypatch):
-    monkeypatch.setattr(X, "MCP_TOKEN", "s3cret-token")
+    monkeypatch.setattr(MC, "MCP_TOKEN", "s3cret-token")
     # Bad Bearer header on /mcp must return 401, not downgrade to public
     assert rpc(c, "tools/list", headers={"Authorization": "Bearer wrong-token"}).status_code == 401
 

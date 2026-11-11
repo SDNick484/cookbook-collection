@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("DATA_DIR", tempfile.mkdtemp())
 import app as A  # noqa: E402
-import extras as X  # noqa: E402
+import mcp as MC  # noqa: E402
 import dinnerlog as DL  # noqa: E402
 from dl_history import History  # noqa: E402
 import online as O  # noqa: E402
@@ -108,7 +108,7 @@ def test_mcp(c, clean_online, monkeypatch):
     call = lambda path, args, name="search_recipes": A.app.test_client().post(path, json={
         "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": args}}).json["result"]
     token = "t0ken"
-    monkeypatch.setattr(X, "MCP_TOKEN", token)
+    monkeypatch.setattr(MC, "MCP_TOKEN", token)
     priv = call(f"/mcp/{token}", {"query": "french onion soup"})["structuredContent"]["recipes"]
     assert any(r.get("url") == NYT and r["book_title"] == "NYT Cooking" for r in priv)
     pub = call("/mcp", {"query": "french onion soup"})["structuredContent"]["recipes"]

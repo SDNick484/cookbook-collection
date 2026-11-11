@@ -8,7 +8,10 @@ and an MCP server at `/mcp`. README.md is the user-facing guide; this file is ho
 |---|---|
 | `app.py` | Core: schema + `init_db`, `connect()`/`db()`, `fold()` (accent/case folding, also an SQL function), FTS (`books_fts`, `recipes_fts`), auth (`editor_required`, `access_identity`, the per-worker Access key cache `_signing_key`), security headers (`CSP`, `security_headers`) and `/robots.txt`, books/recipes/facets API, index paste import (`parse_index`, `mark_duplicates`, `index_commit`), `PUBLIC_BOOKS`, `cuisine_condition()`, `env_int`/`local_midnight`, `/healthz` (deep check: database, both FTS tables, DATA_DIR) |
 | `dinnerlog.py` | Dinner Log history: pulled over HTTP into `dl_meals` and `dl_photos` (`pull_history`, `fetch_dl_photo`), matched to books and recipes and rebuilt into `cooked` (`rebuild_cooked`: uid, then ids, then title + page + name), `ensure_synced()` starts background pulls under a DB lease (`try_lease`, `background_pull`). Also `cooked_by_book` / `cooked_by_recipe` / `cooked_stats_for`, `meta_get` / `meta_set` for the `meta` table, the `/admin/api/dinnerlog*` routes |
-| `extras.py` | `cook_rank` (the one ranking behind the Cook page `/admin/api/cook`, `/admin/api/suggest`, MCP `suggest_recipes` and Dinner Log's `/admin/api/pick`; those are thin wrappers, so change modes and ordering there), stats, photo index import (Claude API, background jobs in `photo_jobs`; whole-index scans are a parent row with one child per page, `scan_state` derives the status, `merge_pages` joins them, `pages_today` enforces `PHOTO_DAILY_LIMIT`), MCP server (`TOOLS`, `WRITE_TOOLS`, `handle_rpc`, `run_tool`), `messages_api` (Claude API call), wishlist |
+| `cook.py` | `cook_rank` (the one ranking behind the Cook page `/admin/api/cook`, `/admin/api/suggest`, MCP `suggest_recipes` and Dinner Log's `/admin/api/pick`; those are thin wrappers, so change modes and ordering there), the collection stats, shelf (on loan) tracking |
+| `scan.py` | Photo index import (Claude API, background jobs in `photo_jobs`; whole-index scans are a parent row with one child per page, `scan_state` derives the status, `merge_pages` joins them, `pages_today` enforces `PHOTO_DAILY_LIMIT`), `messages_api` (the Claude API call, also used by Ask), the `ANTHROPIC_*` settings |
+| `mcp.py` | MCP server (`TOOLS`, `WRITE_TOOLS`, `handle_rpc`, `run_tool`, access levels, token handling and log redaction) and `/admin/api/features` |
+| `wishlist.py` | The family wish list link (adds a book to a person's list over localhost, remembers what was added) |
 | `ask.py` | AI search: `POST /admin/api/ask`, `ask_log`, tool loop over `run_tool`, `show_results` hydration |
 | `ingredients.py` | Ingredient tags and search hints, CSV/zip import, `resolve()`, `ranked()` search ranking |
 | `eyb.py` | Eat Your Books import, merging garbled duplicate recipes |
@@ -45,6 +48,10 @@ Chromium for Playwright checks: `/opt/pw-browsers/chromium-*/chrome-linux/chrome
 ## Conventions
 - After a change to `static/`, bump `?v=N` on both asset links in `static/index.html` (browsers cache hard).
 - A new top-level module must be added to the `cp` list in `installer/build.sh` and imported at the bottom of `app.py`.
+  Route registration follows that import order and `init_db` runs each module's `migrate(con)` in the order it lists them,
+  so add to both at the place you want. Call another module's functions module-qualified (`dinnerlog.ensure_synced()`),
+  and make tests patch the module that defines the name (`monkeypatch.setattr(scan, "call_claude", ...)`): patching a
+  `from x import y` copy leaves the real function in place.
 - A new env var must be added to the `export` line in `installer/setup-head.sh`, or the service never sees it.
   `TZ` is the exception: it is exported on its own line only when non-empty, because an empty `TZ` means UTC and
   overrides `/etc/localtime`. It sets when `local_midnight()` (the Ask and photo daily limits) falls; the default is
@@ -65,7 +72,7 @@ Chromium for Playwright checks: `/opt/pw-browsers/chromium-*/chrome-linux/chrome
   the house book carry details.
 - `books.uid` / `recipes.uid` are the stable public ids (triggers fill them on insert; `id` is a reusable rowid).
   Anything stored outside this database, or sent to Dinner Log, should carry the uid.
-- MCP tools: add to `TOOLS` in extras.py as (name, private_only, fn, description, schema); writes go in
+- MCP tools: add to `TOOLS` in mcp.py as (name, private_only, fn, description, schema); writes go in
   `WRITE_TOOLS` and are private-only. Keep tool output compact: it stays in the assistant's context.
 - MCP access (`mcp_auth`): public, `private` (read tools) or `write`. `WRITE_TOOLS` need `MCP_WRITE=1` *and* a Bearer
   header token; a `/mcp/<token>` path token is never more than `private`, and `MCP_URL_TOKEN=0` refuses it.

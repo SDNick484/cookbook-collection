@@ -1,4 +1,4 @@
-"""'What should we cook?': /admin/api/cook and the one ranking (extras.cook_rank) that also backs
+"""'What should we cook?': /admin/api/cook and the one ranking (cook.cook_rank) that also backs
 /admin/api/suggest, the MCP suggest_recipes tool and /admin/api/pick."""
 import os, sys, tempfile
 from datetime import date, timedelta

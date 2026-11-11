@@ -1,13 +1,13 @@
 """Ask (AI search): config, thread validation, daily cap, the tool loop and result hydration.
 
-No network: `extras.messages_api` is replaced by a scripted fake that returns canned responses and records
+No network: `scan.messages_api` is replaced by a scripted fake that returns canned responses and records
 the request bodies it was given."""
 import copy, json, time
 
 import pytest
 
 import app as A
-import extras as X
+import mcp as MC
 import scan as SC
 import ask
 
@@ -156,7 +156,7 @@ def test_daily_limit_env(monkeypatch):
 
 # ------------------------------------------------------------------ the tool loop (scripted model)
 class Script:
-    """Stands in for extras.messages_api. Each item is a response dict, an exception to raise, or a
+    """Stands in for scan.messages_api. Each item is a response dict, an exception to raise, or a
     function of the request body returning a response (to use ids the tools really returned)."""
     def __init__(self, items):
         self.items, self.bodies, self.timeouts = list(items), [], []
@@ -218,7 +218,7 @@ def test_tools_sent_are_read_only_plus_show_results(c, model):
     assert c.post("/admin/api/ask", json=OK).status_code == 200
     body = fake.bodies[0]
     names = {t["name"] for t in body["tools"]}
-    assert not names & set(X.WRITE_TOOLS)
+    assert not names & set(MC.WRITE_TOOLS)
     assert "show_results" in names and "search_recipes" in names
     assert "{tags}" not in json.dumps(body["tools"])
     assert body["model"] == ask.SEARCH_MODEL and body["max_tokens"] == 2048
@@ -371,7 +371,7 @@ def test_answer_truncated_to_600(c, model):
 def test_tool_errors_reach_model(c, model, monkeypatch):
     def boom(a, private):
         raise RuntimeError("SQL internals")
-    monkeypatch.setattr(X, "TOOLS", X.TOOLS + [("boom", False, boom, "Breaks.", {"type": "object", "properties": {}})])
+    monkeypatch.setattr(MC, "TOOLS", MC.TOOLS + [("boom", False, boom, "Breaks.", {"type": "object", "properties": {}})])
     fake = model(resp(tool_use("get_book", {}, "t1"), tool_use("boom", {}, "t2"), tool_use("nope", {}, "t3")),
                  show())
     assert c.post("/admin/api/ask", json=OK).status_code == 200
@@ -393,15 +393,15 @@ def test_write_tools_refused_if_called(c, model):
 
 def test_write_tools_never_offered_or_run_with_mcp_write_on(c, model, monkeypatch):
     """MCP_WRITE opens the write tools to a header-token MCP client; Ask still gets none of them."""
-    monkeypatch.setattr(X, "MCP_WRITE", True)
+    monkeypatch.setattr(MC, "MCP_WRITE", True)
     rid = db_one("SELECT id FROM recipes WHERE want_to_try=0 LIMIT 1")[0]
     fake = model(resp(tool_use("set_want_to_try", {"recipe_id": rid, "want": True})), show())
     assert c.post("/admin/api/ask", json=OK).status_code == 200
-    assert not {t["name"] for t in fake.bodies[0]["tools"]} & set(X.WRITE_TOOLS)
+    assert not {t["name"] for t in fake.bodies[0]["tools"]} & set(MC.WRITE_TOOLS)
     assert fake.bodies[1]["messages"][-1]["content"][0]["content"] == "Unknown tool: set_want_to_try"
     assert db_one("SELECT want_to_try FROM recipes WHERE id=?", rid)[0] == 0
-    with pytest.raises(X.UnknownTool):  # run_tool's own default: write=False
-        X.run_tool("set_want_to_try", {"recipe_id": rid}, True)
+    with pytest.raises(MC.UnknownTool):  # run_tool's own default: write=False
+        MC.run_tool("set_want_to_try", {"recipe_id": rid}, True)
 
 
 GENERIC = {"error": "AI search is unavailable right now, try again"}
@@ -487,7 +487,7 @@ def test_question_text_not_stored(c, model):
 def test_huge_tool_result_truncated(c, model, monkeypatch):
     def huge(a, private):
         return {"blob": "x" * 50000}
-    monkeypatch.setattr(X, "TOOLS", X.TOOLS + [("huge", False, huge, "Big.", {"type": "object", "properties": {}})])
+    monkeypatch.setattr(MC, "TOOLS", MC.TOOLS + [("huge", False, huge, "Big.", {"type": "object", "properties": {}})])
     fake = model(resp(tool_use("huge", {}), tool_use("list_categories", {}, "tu2")), show())
     assert c.post("/admin/api/ask", json=OK).status_code == 200
     big, small = fake.bodies[1]["messages"][-1]["content"]
@@ -548,9 +548,9 @@ def test_collect_ids_books_without_title():
 
 
 def test_rpc_empty_tool_error_unchanged(monkeypatch):
-    monkeypatch.setattr(X, "run_tool", lambda name, args, private, write=False: (None, ""))
+    monkeypatch.setattr(MC, "run_tool", lambda name, args, private, write=False: (None, ""))
     with A.app.test_request_context():
-        out = X.handle_rpc({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        out = MC.handle_rpc({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                             "params": {"name": "search_books", "arguments": {}}}, True)
     res = out["result"]
     assert res["isError"] is True and res["content"] == [{"type": "text", "text": ""}]

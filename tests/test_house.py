@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("DATA_DIR", tempfile.mkdtemp())
 import app as A  # noqa: E402
-import extras as X  # noqa: E402
+import mcp as MC  # noqa: E402
 import scan as SC  # noqa: E402
 import house as H  # noqa: E402
 
@@ -556,7 +556,7 @@ def test_ranking_explains_an_ingredient_list_match(gravy):
 
 
 def test_mcp_finds_house_recipes_privately_and_only_privately(c, gravy, monkeypatch):
-    monkeypatch.setattr(X, "MCP_TOKEN", "tok")
+    monkeypatch.setattr(MC, "MCP_TOKEN", "tok")
     res = mcp(c, "search_recipes", {"query": "marzano"}, token="tok")["structuredContent"]
     hit = next(r for r in res["recipes"] if r["id"] == gravy["id"])
     assert hit["full"] is True and "ingredients" in hit["match"]

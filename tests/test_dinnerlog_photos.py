@@ -29,7 +29,7 @@ def jpeg(color=(200, 80, 30), size=(1600, 1200), gps=False):
 
 
 class Fetch:
-    """Stands in for extras.fetch_dl_photo: bytes per name, an exception to raise, or None (a 404)."""
+    """Stands in for dinnerlog.fetch_dl_photo: bytes per name, an exception to raise, or None (a 404)."""
 
     def __init__(self, answers=None, default=None):
         self.answers, self.calls = dict(answers or {}), []

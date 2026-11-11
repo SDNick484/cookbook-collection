@@ -1,5 +1,5 @@
 """Run: python3 -m pytest -q tests  (from the cookbooks folder)"""
-import io, json, os, sys, tempfile, time
+import io, json, os, sys, tempfile
 from pathlib import Path
 
 import pytest

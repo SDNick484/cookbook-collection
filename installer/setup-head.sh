@@ -20,7 +20,7 @@ if [ "$(id -u)" != 0 ]; then echo "Run as root"; exit 1; fi
 if [ "${1:-}" = "--uninstall" ]; then
   rc-service cookbooks stop 2>/dev/null || true
   rc-update del cookbooks default 2>/dev/null || true
-  rm -f /etc/init.d/cookbooks /etc/periodic/daily/app-backup /etc/periodic/15min/app-health
+  rm -f /etc/init.d/cookbooks /etc/periodic/daily/app-backup /etc/periodic/15min/app-health /usr/local/bin/app-restore
   rm -rf "$APP_DIR"
   echo "Removed app, service and scheduled jobs. Data kept in $DATA_DIR, backups in /var/backups/apps."
   exit 0
@@ -191,7 +191,7 @@ logrotate -d "$LOGROTATE_CONF" >/dev/null 2>&1 \
 
 # ---------------------------------------------------------------- ops jobs
 echo "==> Installing nightly backups and health checks"
-install -m 755 "$APP_DIR/ops/app-backup" "$APP_DIR/ops/app-notify" /usr/local/bin/
+install -m 755 "$APP_DIR/ops/app-backup" "$APP_DIR/ops/app-notify" "$APP_DIR/ops/app-restore" /usr/local/bin/
 mkdir -p /etc/periodic/daily /etc/periodic/15min
 ln -sf /usr/local/bin/app-backup /etc/periodic/daily/app-backup
 install -m 755 "$APP_DIR/ops/app-health" /etc/periodic/15min/app-health
@@ -228,6 +228,7 @@ if msg=$(/usr/local/bin/app-backup --check-images); then echo "  - Warning: $msg
 echo "  - Private MCP: https://<your public address>/mcp with header 'Authorization: Bearer <MCP_TOKEN>'"
 echo "    (or /mcp/<MCP_TOKEN> for clients that can't send headers); the token is MCP_TOKEN in $CONF"
 echo "Config: $CONF, $OPS_CONF   Backups: /var/backups/apps   Logs: /var/log/cookbooks.log, /var/log/app-ops.log (rotated by logrotate: $LOGROTATE_CONF)"
+echo "Restore the database from a backup: app-restore --list, then app-restore --dry-run <snapshot>, then app-restore <snapshot>"
 if grep -Eq "^LAN_EDIT=[\"']?1[\"']?[[:space:]]*(#.*)?$" "$CONF"; then
   echo
   echo "!!  LAN editing is ON (LAN_EDIT=1 in $CONF): any device in LAN_CIDRS can edit at"

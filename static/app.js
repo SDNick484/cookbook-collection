@@ -265,7 +265,7 @@ async function homeView() {
       <a class="card" href="#/book/${b.id}">${coverHTML(b)}
         <div class="meta"><div class="ttl">${esc(b.title)}</div><div class="by">${esc(byline(b))}</div>
         ${b.location_path ? `<div class="loc" title="${esc(b.location_path)}">${PIN_ICON}<span>${esc(b.location_path)}</span></div>` : ""}
-        ${ADMIN && b.rating != null ? starsHTML(b.rating) : ""}</div></a>`).join("")
+        ${ADMIN && b.rating != null ? starsHTML(b.rating) : ""}${progressHTML(b)}</div></a>`).join("")
       : (rc.count ? "" : `<div class="empty">Nothing matches.${ADMIN && S.features && S.features.ask && S.q ? ` <a id="ask-instead" href="#/ask">Ask instead →</a>` : ""}</div>`);
     // A keyword search is a new topic: start a fresh thread, unless a question is still being answered.
     if ($("#ask-instead")) $("#ask-instead").onclick = () => {
@@ -321,6 +321,10 @@ function rateWidget(el, value, save) {
   };
   $(".clear", el).onclick = () => set(null);
 }
+// "made 12 of 140" with a thin bar. Editors only: the server sends made_count to nobody else, and only for cookbooks.
+const progressHTML = (b) => ADMIN && b.made_count != null && b.recipe_count
+  ? `<div class="prog" title="${b.made_count} of ${b.recipe_count} recipes made"><span class="bar"><span style="width:${Math.round((b.made_count / b.recipe_count) * 100)}%"></span></span>
+    <span class="pt">made ${b.made_count} of ${b.recipe_count}</span></div>` : "";
 // Where to find a recipe: the page in the book, or a link for one saved from a website.
 const whereHTML = (r) => r.url ? `<a class="pg web" href="${esc(r.url)}" target="_blank" rel="noopener" title="Open the recipe on ${esc(r.book_title || S.bookTitle || "the site")}">Open ↗</a>`
   : r.has_detail ? `<a class="pg web" href="#/recipe/${esc(r.uid)}">Recipe →</a>`   // a house recipe: its own page
@@ -337,7 +341,7 @@ function recipeRow(r) {
   if (ADMIN && r.last_made) extra.push(`made ${fmtDay(r.last_made)}`);
   if (ADMIN && r.notes) extra.push(esc(r.notes));
   const nph = (S.bookPhotos || []).filter((p) => p.recipe_id === r.id).length;
-  return `<li data-id="${r.id}"><div class="rn">${r.heading ? `<span class="rh">${esc(r.heading)} · </span>` : ""}${esc(r.name)}
+  return `<li data-id="${r.id}"${r.made != null ? ` data-made="${r.made ? 1 : 0}"` : ""}><div class="rn">${r.heading ? `<span class="rh">${esc(r.heading)} · </span>` : ""}${esc(r.name)}
     ${extra.length ? `<div class="extra">${extra.join(" · ")}</div>` : ""}</div>
     ${whereHTML(r)}
     ${ADMIN ? `<span class="acts">${S.features && S.features.dinnerlog_url && S.bookTitle ? `<a class="log" title="Log this dinner in Dinner Log" target="_blank" rel="noopener"
@@ -381,6 +385,7 @@ async function bookView(id, focus) {
             aria-valuenow="${b.rating ?? 0}" aria-valuetext="${starLabel(b.rating)}"><span class="on" style="width:${(b.rating || 0) * 20}%">★★★★★</span>☆☆☆☆☆</span>
           <span class="ratev small muted">${b.rating == null ? "Not rated" : num(b.rating)}</span>
           <button class="link clear" ${b.rating == null ? "hidden" : ""}>Clear</button></div>` : ""}
+        ${progressHTML(b)}
         <dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
         ${b.tags.length ? `<div class="tags">${b.tags.map((t) => `<a class="chip" href="#/?tag=${encodeURIComponent(t)}">${esc(t)}</a>`).join("")}</div>` : ""}
         ${b.description ? `<p class="desc">${esc(b.description)}</p>` : ""}
@@ -400,15 +405,29 @@ async function bookView(id, focus) {
         <span class="pn">${esc(p.recipe_name)}</span><span class="pd">${fmtDay(p.taken_on)}${p.recipe_page ? " · p. " + esc(p.recipe_page) : ""}</span></button>`).join("")}</div>` : ""}
     <div class="section-h"><h2>Recipes <span class="muted small">${b.recipes.length || ""}</span></h2>
       ${b.recipes.length > 12 ? `<input id="rf" type="search" placeholder="Filter recipes" style="max-width:240px">` : ""}</div>
+    ${ADMIN && b.made_count != null && b.recipes.length ? `<div class="seg mf" role="group" aria-label="Which recipes">${[
+      ["all", `All ${b.recipes.length}`], ["made", `Made ${b.made_count}`], ["todo", `Not yet made ${b.recipes.length - b.made_count}`]].map(([k, t]) =>
+      `<button type="button" data-f="${k}" aria-pressed="${k === "all"}" class="${k === "all" ? "on" : ""}">${t}</button>`).join("")}</div>` : ""}
     ${b.recipes.length ? `<ul class="rlist" id="rl">${b.recipes.map(recipeRow).join("")}</ul>`
       : b.kind === "house" ? `<p class="muted">No house recipes yet.${ADMIN ? " Use <em>New recipe</em> to write one down." : ""}</p>`
       : `<p class="muted">No recipes indexed for this book yet.${ADMIN ? " Use <em>Import index</em> to add the book's index." : ""}</p>`}
     ${ADMIN ? `<div id="dinners"></div>` : ""}`;
   const rf = $("#rf");
-  if (rf) rf.oninput = () => {
-    const q = fold(rf.value.trim());
-    $$("#rl li").forEach((li) => li.classList.toggle("hidden", !!q && !fold(li.textContent).includes(q)));
+  let madeFilter = "all";  // All / Made / Not yet made (editors), combined with the text filter
+  const applyFilter = () => {
+    const q = rf ? fold(rf.value.trim()) : "";
+    $$("#rl li").forEach((li) => {
+      const text = !q || fold(li.textContent).includes(q);
+      const made = madeFilter === "all" || (madeFilter === "made") === (li.dataset.made === "1");
+      li.classList.toggle("hidden", !(text && made));
+    });
   };
+  if (rf) rf.oninput = applyFilter;
+  $$(".mf button").forEach((btn) => btn.onclick = () => {
+    madeFilter = btn.dataset.f;
+    $$(".mf button").forEach((x) => { x.classList.toggle("on", x === btn); x.setAttribute("aria-pressed", x === btn); });
+    applyFilter();
+  });
   const hit = focus && $(`#rl li[data-id="${+focus}"]`);  // arrived from the Cook page: show which recipe
   if (hit) { hit.classList.add("hl"); hit.scrollIntoView({ block: "center" }); }
   if (!ADMIN) return;
@@ -1926,10 +1945,11 @@ async function eybView() {
 }
 
 /* ---------- what should we cook ---------- */
-const COOK_MODES = [["new", "Never made"], ["stale", "Not lately"], ["want", "Want to try"], ["any", "Any"]];
+const COOK_MODES = [["new", "Never made"], ["stale", "Not lately"], ["want", "Want to try"], ["neglected", "From a neglected book"], ["any", "Any"]];
 const COOK_EMPTY = {
   new: "Everything that fits has been made.", stale: "Nothing you've made is overdue. Try Any or Never made.",
   want: "Nothing starred and unmade fits. Star recipes (☆) on a book's page to fill this list.", any: "Nothing fits.",
+  neglected: "No cookbook is overdue: every one with an index has been cooked from in the past year.",
 };
 const newSeed = () => Math.random().toString(36).slice(2, 10);
 S.cook = { mode: "any", cuisine: "", ing: ["", ""], seed: newSeed() };
@@ -2011,6 +2031,13 @@ function hbars(rows, label, value, href, note) {
     <span class="hl">${esc(label(r))}</span><span class="ht"><span class="hf" style="width:${(value(r) / max) * 100}%"></span></span>
     <span class="hv">${value(r)}</span></a>`).join("")}</div>`;
 }
+// A short list for Shelf check: the first few, the rest under "more". `right` is the note on the right of a row.
+function shelfList(rows, right, empty) {
+  if (!rows.length) return `<p class="small muted">${empty}</p>`;
+  const li = (b) => `<li><div class="rn"><a href="#/book/${b.id}">${esc(b.title)}</a></div><span class="pg">${right(b)}</span></li>`;
+  return `<ul class="rlist">${rows.slice(0, 8).map(li).join("")}</ul>` + (rows.length > 8 ? `
+    <details style="margin-top:12px"><summary>${rows.length - 8} more</summary><ul class="rlist">${rows.slice(8).map(li).join("")}</ul></details>` : "");
+}
 async function statsView() {
   const [s, dl] = await Promise.all([api("stats"), api("dinnerlog?force=1")]);
   const months = [];
@@ -2039,9 +2066,25 @@ async function statsView() {
       <div class="panel"><h3>Most cooked-from books</h3>${s.top_books.length ? hbars(s.top_books, (r) => r.title, (r) => r.n, (r) => `#/book/${r.id}`, (r) => `, last ${fmtDay(r.last)}`) : `<p class="small muted">Nothing from Dinner Log yet.</p>`}</div>
       <div class="panel"><h3>Best-rated recipes</h3>${s.top_recipes.length ? `<ul class="rlist">${s.top_recipes.map((r) => `<li><div class="rn"><a href="#/book/${r.book_id}">${esc(r.name)}</a><div class="bk">${esc(r.book_title)}${r.n ? ` · cooked ${r.n}×` : ""}</div></div><span class="rating">${num(r.avg)}</span></li>`).join("")}</ul>` : `<p class="small muted">No ratings yet.</p>`}</div>
       <div class="panel"><h3>Cuisines</h3><p class="small muted" style="margin-top:0">Books per cuisine${(s.cuisines.find((c) => c.name === "(none)") || {}).books ? ` · ${s.cuisines.find((c) => c.name === "(none)").books} books have no cuisine set` : ""}</p>${hbars(s.cuisines.filter((c) => c.name !== "(none)").slice(0, 14), (r) => r.name, (r) => r.books, (r) => r.name === "(none)" ? "#/" : `#/?cuisine=${encodeURIComponent(r.name)}`, (r) => ` books, ${r.cooked} dinners`)}</div>
-      <div class="panel"><h3>Off the shelf <span class="muted small">${s.off_shelf.length}</span></h3>${s.off_shelf.length ? `<ul class="rlist">${s.off_shelf.map((b) => `<li><div class="rn"><a href="#/book/${b.id}">${esc(b.title)}</a></div><span class="pg">since ${fmtDay(b.out_since)}</span></li>`).join("")}</ul>` : `<p class="small muted">Everything's on the shelf. Use “Pulled out” on a book's page.</p>`}
-        <details style="margin-top:14px"><summary>Never cooked from <span class="muted small">(${s.never_cooked.length})</span></summary>
-        <ul class="rlist">${s.never_cooked.map((b) => `<li><div class="rn"><a href="#/book/${b.id}">${esc(b.title)}</a></div></li>`).join("")}</ul></details></div>
+      <div class="panel"><h3>Off the shelf <span class="muted small">${s.off_shelf.length}</span></h3>${s.off_shelf.length ? `<ul class="rlist">${s.off_shelf.map((b) => `<li><div class="rn"><a href="#/book/${b.id}">${esc(b.title)}</a></div><span class="pg">since ${fmtDay(b.out_since)}</span></li>`).join("")}</ul>` : `<p class="small muted">Everything's on the shelf. Use “Pulled out” on a book's page.</p>`}</div>
+    </div>
+    <h2 class="stats-h">Shelf check</h2>
+    <p class="small muted" style="margin-top:0">What the collection is neglecting. <a href="#/cook">Cook → From a neglected book</a> draws recipes from the first two lists.</p>
+    <div class="cols">
+      <div class="panel"><h3>Never cooked from <span class="muted small">${s.never_cooked.length}</span></h3>
+        ${shelfList(s.never_cooked, () => "", "Every cookbook has been cooked from at least once.")}</div>
+      <div class="panel"><h3>Not cooked from in 12 months <span class="muted small">${s.shelf_check.lapsed.length}</span></h3>
+        <p class="small muted" style="margin-top:0">Cooked from before, longest ago first.</p>
+        ${shelfList(s.shelf_check.lapsed, (b) => (b.last ? `last ${fmtDay(b.last)}` : "no date"), "Nothing has gone quiet: every book cooked from before was used this year.")}</div>
+      <div class="panel"><h3>Cooked a lot, never rated</h3>
+        <p class="small muted" style="margin-top:0">The books we use most that have no stars yet.</p>
+        ${shelfList(s.shelf_check.unrated_most_cooked, (b) => `${b.n} dinner${b.n === 1 ? "" : "s"}`, "Every book we cook from has a rating.")}</div>
+      <div class="panel"><h3>Index coverage</h3>${(() => {
+        const ix = s.shelf_check.index;
+        return `<p class="small muted" style="margin-top:0">${ix.indexed} of ${ix.total} cookbooks have an index in the catalog.</p>
+          <div class="prog"><span class="bar"><span style="width:${ix.total ? Math.round((ix.indexed / ix.total) * 100) : 0}%"></span></span></div>
+          ${ix.not_indexed ? `<p><a href="#/review">Not indexed yet (${ix.not_indexed}) →</a></p>` : `<p class="small muted">Every cookbook is indexed.</p>`}`;
+      })()}</div>
     </div>
     <h2 class="stats-h">The collection</h2>
     <div class="cols">

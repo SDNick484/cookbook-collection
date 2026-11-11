@@ -239,3 +239,33 @@ jobs:
       - name: Scan every commit on every ref
         run: |
           "$RUNNER_TEMP/gitleaks" git --no-banner --redact --verbose --log-opts="--all" .
+
+  ui-tests:
+    # The browser tests: test_ask_ui, test_ask_gate, test_frontend_errors and test_uid_route. They skip when Chromium
+    # can't launch, so the script fails the job on any skip instead of letting it pass having tested nothing.
+    name: UI tests (Playwright, Chromium)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements-dev.txt
+            requirements-ui.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt -r requirements-ui.txt
+
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run the UI tests (a skip fails the job)
+        run: sh .github/scripts/run-ui-tests.sh

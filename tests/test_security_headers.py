@@ -1,4 +1,4 @@
-"""Security headers on every class of response, and the write gate.
+"""Security headers on every class of response, robots.txt in both PUBLIC_INDEXING modes, and the write gate.
 
 The headers come from one after_request hook (app.security_headers), so these tests sample each kind of
 response it has to cover rather than every route. tests/test_csp_browser.py checks in Chromium that the
@@ -51,6 +51,7 @@ def responses(c, files):
         ("photo", c.get(f"/photos/{files}")),
         ("mcp", c.post("/mcp", data=mcp, content_type="application/json")),
         ("mcp get", c.get("/mcp")),
+        ("robots", c.get("/robots.txt")),
         ("healthz", c.get("/healthz")),
     ]
 
@@ -68,6 +69,7 @@ def test_headers_on_every_route_class(c, files):
         assert h.get("X-Frame-Options") == "DENY", label
         pp = h.get("Permissions-Policy", "")
         assert "camera=(self)" in pp and "screen-wake-lock=(self)" in pp and "microphone=()" in pp, label
+        assert "X-Robots-Tag" not in h, label           # PUBLIC_INDEXING=1 by default
 
 
 def test_served_files_are_what_they_claim(c, files):
@@ -81,6 +83,39 @@ def test_csp_allows_the_cover_hosts():
     for h in A.COVER_HOSTS:
         assert f"https://{h}" in img and f"https://*.{h}" in img
     assert "blob:" in img and "data:" in img and "http:" not in img
+
+
+def test_robots_default_allows_the_catalog(c):
+    r = c.get("/robots.txt")
+    assert r.status_code == 200 and r.mimetype == "text/plain"
+    lines = r.get_data(as_text=True).splitlines()
+    assert lines[0] == "User-agent: *"
+    assert "Disallow: /admin" in lines and "Disallow: /mcp" in lines and "Disallow: /" not in lines
+
+
+def test_robots_and_noindex_when_indexing_is_off(c, files, monkeypatch):
+    monkeypatch.setattr(A, "PUBLIC_INDEXING", False)
+    lines = c.get("/robots.txt").get_data(as_text=True).splitlines()
+    assert "Disallow: /" in lines
+    for label, r in responses(c, files):
+        assert r.headers.get("X-Robots-Tag") == "noindex, nofollow", label
+
+
+@pytest.mark.parametrize("raw,on", [(None, True), ("1", True), ('"1"', True), ("0", False), ("", False)])
+def test_public_indexing_setting(monkeypatch, raw, on):
+    monkeypatch.delenv("PUBLIC_INDEXING", raising=False)
+    if raw is not None:
+        monkeypatch.setenv("PUBLIC_INDEXING", raw)
+    assert A._flag("PUBLIC_INDEXING", "1") is on
+
+
+def test_public_indexing_reaches_the_service():
+    """The installer writes it to conf.d and the init script exports it (else gunicorn never sees it)."""
+    head = (A.APP_DIR / "installer" / "setup-head.sh").read_text()
+    export = next(l for l in head.splitlines() if l.startswith("export DATA_DIR"))
+    assert " PUBLIC_INDEXING " in export + " "
+    assert 'add_setting "$CONF" PUBLIC_INDEXING 1 ' in head
+    assert "PUBLIC_INDEXING=1" in (A.APP_DIR / ".env.example").read_text()
 
 
 # ------------------------------------------------------------- the write gate is unchanged

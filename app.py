@@ -18,6 +18,7 @@ Environment:
   READ_TOKEN      optional bearer token for read-only private routes (Dinner Log's picks, house recipes)
   HOUSE_BOOK_TITLE    title of the house book when it is first created (house.py)
   RETURN_URL_ORIGINS  origins the recipe editor may return to after a save (house.py)
+  PUBLIC_INDEXING 1 = search engines may index the public catalog (default); 0 = noindex everywhere
 """
 import csv, fcntl, io, ipaddress, json, os, re, sqlite3, threading, time, unicodedata, urllib.parse, urllib.request, uuid
 from functools import wraps
@@ -51,6 +52,9 @@ ALLOWED_ORIGINS = {o.lower().rstrip("/") for o in _split(os.environ.get("ALLOWED
 # Bearer token for read-only private routes called by another server (Dinner Log's "Pick for tonight").
 # It never grants writes; empty = off.
 READ_TOKEN = os.environ.get("READ_TOKEN", "").strip()
+# 0 = ask search engines not to index the site at all (robots.txt Disallow: / plus X-Robots-Tag: noindex).
+# /admin and /mcp are disallowed either way.
+PUBLIC_INDEXING = _flag("PUBLIC_INDEXING", "1")
 UA = "cookbooks-catalog/1.0 (personal cookbook collection)"
 COVER_HOSTS = {"covers.openlibrary.org", "archive.org", "books.google.com", "books.googleusercontent.com"}
 
@@ -705,7 +709,15 @@ def security_headers(resp):
     """Every response: pages, JSON, static files, /covers, /photos, /mcp, errors."""
     for k, v in SECURITY_HEADERS.items():
         resp.headers.setdefault(k, v)
+    if not PUBLIC_INDEXING:
+        resp.headers.setdefault("X-Robots-Tag", "noindex, nofollow")
     return resp
+
+
+@app.get("/robots.txt")
+def robots_txt():
+    rules = ["Disallow: /"] if not PUBLIC_INDEXING else ["Disallow: /admin", "Disallow: /mcp"]
+    return Response("User-agent: *\n" + "\n".join(rules) + "\n", mimetype="text/plain")
 
 
 # ------------------------------------------------------------------- pages

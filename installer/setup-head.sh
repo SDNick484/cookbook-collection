@@ -27,7 +27,7 @@ if [ "${1:-}" = "--uninstall" ]; then
 fi
 
 echo "==> Installing packages"
-apk add --no-cache python3 py3-flask py3-gunicorn py3-pillow py3-jwt py3-cryptography sqlite tzdata >/dev/null
+apk add --no-cache python3 py3-flask py3-gunicorn py3-pillow py3-jwt py3-cryptography sqlite tzdata logrotate >/dev/null
 
 if ! python3 -c "import sqlite3; c=sqlite3.connect(':memory:'); c.execute('create virtual table t using fts5(x)')" 2>/dev/null; then
   echo "    note: this sqlite has no FTS5; search will fall back to simple matching"
@@ -144,6 +144,51 @@ start_pre() { checkpath -f -o cookbooks /var/log/cookbooks.log; }
 EOF
 chmod +x /etc/init.d/cookbooks
 
+# ---------------------------------------------------------------- log rotation
+# gunicorn keeps /var/log/cookbooks.log open, so that one is rotated by copy-and-truncate: no restart, and at worst
+# a line written in the instant between the copy and the truncate is lost. app-ops.log is appended to by short-lived
+# scripts that reopen it each time, so it rotates normally. The file is written only when it doesn't exist: once
+# it's there it belongs to the owner, and an upgrade never touches it.
+echo "==> Setting up log rotation"
+LOGROTATE_CONF=/etc/logrotate.d/cookbooks
+mkdir -p /etc/logrotate.d
+if [ -f "$LOGROTATE_CONF" ]; then
+  echo "    keeping your existing $LOGROTATE_CONF"
+else
+  cat > "$LOGROTATE_CONF" <<'EOF'
+/var/log/cookbooks.log {
+    weekly
+    maxsize 10M
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}
+
+/var/log/app-ops.log {
+    monthly
+    maxsize 5M
+    rotate 6
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 root root
+}
+EOF
+  chmod 644 "$LOGROTATE_CONF"  # logrotate ignores files in logrotate.d that aren't 0644/0444, whatever the umask was
+fi
+# the logrotate package may or may not bring its own daily job; make sure there is one
+if [ ! -e /etc/periodic/daily/logrotate ]; then
+  mkdir -p /etc/periodic/daily
+  printf '#!/bin/sh\nexec %s /etc/logrotate.conf\n' "$(command -v logrotate)" > /etc/periodic/daily/logrotate
+  chmod 755 /etc/periodic/daily/logrotate
+fi
+logrotate -d "$LOGROTATE_CONF" >/dev/null 2>&1 \
+  || echo "    note: $LOGROTATE_CONF doesn't pass 'logrotate -d'; logs won't rotate until it does"
+
 # ---------------------------------------------------------------- ops jobs
 echo "==> Installing nightly backups and health checks"
 install -m 755 "$APP_DIR/ops/app-backup" "$APP_DIR/ops/app-notify" /usr/local/bin/
@@ -180,7 +225,7 @@ grep -q '^DINNERLOG_API_URL=\(""\|'\'''\''\)\?$' "$CONF" && echo "  - Cooking hi
 grep -q '^DINNERLOG_URL=\(""\|'\'''\''\)\?$' "$CONF" && echo "  - 'Log this dinner' links are off until you set DINNERLOG_URL in $CONF"
 echo "  - Private MCP: https://<your public address>/mcp with header 'Authorization: Bearer <MCP_TOKEN>'"
 echo "    (or /mcp/<MCP_TOKEN> for clients that can't send headers); the token is MCP_TOKEN in $CONF"
-echo "Config: $CONF, $OPS_CONF   Backups: /var/backups/apps   Logs: /var/log/cookbooks.log, /var/log/app-ops.log"
+echo "Config: $CONF, $OPS_CONF   Backups: /var/backups/apps   Logs: /var/log/cookbooks.log, /var/log/app-ops.log (rotated by logrotate: $LOGROTATE_CONF)"
 if grep -Eq "^LAN_EDIT=[\"']?1[\"']?[[:space:]]*(#.*)?$" "$CONF"; then
   echo
   echo "!!  LAN editing is ON (LAN_EDIT=1 in $CONF): any device in LAN_CIDRS can edit at"

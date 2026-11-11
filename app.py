@@ -637,7 +637,37 @@ def covers(p):
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True, "fts": HAS_FTS}
+    """Deep health check. Unauthenticated, so it says as little as possible: 200 {"ok": true, "fts": ...} when the
+    database answers, both full-text indexes answer (if this SQLite has FTS5) and DATA_DIR can be written to;
+    otherwise 503 {"ok": false, "fts": ..., "reason": "db" | "fts" | "data-dir"}. Details go to the server log.
+    "fts" is true when the indexes were queried successfully. The data-dir check is os.access plus free space, not a
+    write per request: this route is public and a probe must not be able to make the app write files."""
+    reason, fts = None, False
+    try:
+        con = db()
+        con.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+    except sqlite3.Error as e:
+        app.logger.warning("healthz: database check failed: %s", e)
+        reason = "db"
+    if reason is None and HAS_FTS:
+        try:
+            for table in ("books_fts", "recipes_fts"):
+                con.execute(f"SELECT rowid FROM {table} WHERE {table} MATCH 'x' LIMIT 1").fetchall()
+            fts = True
+        except sqlite3.Error as e:
+            app.logger.warning("healthz: full-text index check failed: %s", e)
+            reason = "fts"
+    if reason is None:
+        try:
+            if not os.access(DATA_DIR, os.W_OK) or os.statvfs(DATA_DIR).f_bavail == 0:
+                app.logger.warning("healthz: %s is not writable or the disk is full", DATA_DIR)
+                reason = "data-dir"
+        except OSError as e:
+            app.logger.warning("healthz: data directory check failed: %s", e)
+            reason = "data-dir"
+    if reason:
+        return {"ok": False, "fts": fts, "reason": reason}, 503
+    return {"ok": True, "fts": fts}
 
 
 def cuisine_condition(name):

@@ -10,8 +10,8 @@ COMMIT defaults to OLD_COMMIT, the last commit before uids, shelf locations and 
 2. Check the result really is an old-format database, so the run can't quietly test nothing.
 3. Copy it and start the CURRENT code on the copy under gunicorn, as the installer runs it (--preload, 2 workers).
 4. Assert: the service starts and /healthz is ok; every book and recipe has a unique uid; no pre-existing table lost
-   or gained a row (the one expected extra is the house book); the old rows are still there under the same ids; and
-   full-text search finds specific old rows.
+   or gained a row (the one expected extra is the house book); the change history table exists with no history of
+   earlier edits; the old rows are still there under the same ids; and full-text search finds specific old rows.
 
 Needs the packages in requirements-dev.txt and a git checkout that has COMMIT (CI checks out full history).
 Standard library only. Exits 1 on any failed check, after listing all of them.
@@ -158,6 +158,14 @@ def verify(old_data, new_data, base, health, log_text):
             check(before == after, f"{table}: {before} before, {after} after")
     check(count(new, "books_fts") == count(new, "books"), "books_fts has one row per book")
     check(count(new, "recipes_fts") == count(new, "recipes"), "recipes_fts has one row per recipe")
+
+    step("Change history")
+    cols = [r[1] for r in new.execute("PRAGMA table_info(changes)")]
+    check(cols[:9] == ["id", "at", "actor", "entity", "entity_uid", "action", "before", "after", "batch_id"],
+          "the changes table was added")
+    # No history for edits made before the upgrade; the only rows allowed are startup merges of garbled names.
+    check(count(new, "changes", "WHERE NOT (actor = 'system' AND op = 'merge')") == 0,
+          f"no change history for earlier edits ({count(new, 'changes')} rows, all startup merges)")
 
     step("Old rows kept")
     for label, sql in (("books", "SELECT id, title, isbn FROM books WHERE kind IS NOT 'house' ORDER BY id"),

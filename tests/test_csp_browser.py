@@ -234,6 +234,56 @@ def test_index_import_with_photo_previews(w, server, book, tmp_path):
     w.assert_clean("index import")
 
 
+def test_new_recipe_from_photo_fills_the_form_and_attaches_on_save(w, server, tmp_path):
+    """From photo: a blob: preview, the polled job, then a draft in the form with the model's text shown as text
+    (never markup), and the photo attached once the (real) save succeeds."""
+    stub_features(w.page, photo_import=True)
+    draft = {"name": "<b>Card</b> cake", "detail": {"description": None, "yield_text": None, "servings": 8, "prep_minutes": None,
+             "cook_minutes": 30, "total_minutes": None, "methods": [], "equipment": [], "notes": None, "inspiration": None},
+             "ingredients": [{"section": "For the cake", "quantity_text": "1 1/2", "quantity_num": 1.5, "quantity_max": None,
+                              "unit": "cups", "item": "flour", "prep_note": None, "optional": 0}],
+             "steps": [{"section": None, "text": "Bake.", "timer_minutes": None}]}
+    done = {"status": "done", "source": "photo", "photos": [{"page_no": 1, "status": "done", "error": None}],
+            "attachable": 1, "draft": draft, "missing": [], "warnings": ["The reply: <img src=x> cut off"]}
+    attached = []
+    w.page.route("**/admin/api/house/capture/photos", lambda r: r.fulfill(
+        status=202, content_type="application/json", body=json.dumps({"job": "j1", "photos": 1})))
+    w.page.route("**/admin/api/house/capture/j1", lambda r: r.fulfill(
+        status=200, content_type="application/json", body=json.dumps(done)))
+    w.page.route("**/admin/api/house/capture/j1/attach", lambda r: (attached.append(r.request.post_data_json), r.fulfill(
+        status=201, content_type="application/json", body=json.dumps({"photos": []})))[-1])
+    photo = tmp_path / "card.png"
+    photo.write_bytes(png())
+    w.goto(f"{server}/admin#/recipe/new")
+    w.page.locator("#cap-photo").click()
+    w.page.locator("#cap-pick").set_input_files(str(photo))
+    w.page.wait_for_function("""() => [...document.querySelectorAll('#cap-pages img')]
+        .some((i) => i.src.startsWith('blob:') && i.complete && i.naturalWidth > 0)""")
+    w.page.locator("#cap-read").click()
+    w.page.locator("#cap-note").wait_for(timeout=15000)
+    assert w.page.input_value("input[name=name]") == "<b>Card</b> cake"
+    assert w.page.input_value("[data-k=item]") == "flour" and w.page.input_value("[data-k=quantity_text]") == "1 1/2"
+    assert w.page.locator("#cap-note b, #cap-note img, form b").count() == 0  # model text stays text
+    assert "<img src=x> cut off" in w.page.inner_text("#cap-note")
+    w.page.locator("#cap-attach").check()
+    w.page.locator("#rsave").click()
+    w.page.wait_for_function("() => /^#\\/recipe\\/[0-9a-f]{32}$/.test(location.hash)", timeout=10000)
+    assert len(attached) == 1 and isinstance(attached[0]["recipe_id"], int)
+    w.assert_clean("new recipe from photo")
+
+
+def test_new_recipe_from_pasted_text(w, server):
+    w.goto(f"{server}/admin#/recipe/new")
+    w.page.locator("#cap-text").click()
+    w.page.fill("#cap-txt", "Pasted Soup\nIngredients\n2-3 carrots, diced\na pinch of salt\nMethod\n1. Simmer.\n")
+    w.page.locator("#cap-go").click()
+    w.page.locator("#cap-note").wait_for()
+    assert w.page.input_value("input[name=name]") == "Pasted Soup"
+    assert [w.page.input_value(f"#ing-rows .erow:not(.sec) >> nth={i} >> [data-k=item]") for i in range(2)] == ["carrots", "salt"]
+    assert w.page.locator("#cap-attach").count() == 0  # nothing to attach from text
+    w.assert_clean("new recipe from text")
+
+
 def test_index_import_paste(w, server, book):
     w.goto(f"{server}/admin#/book/{book}/index")
     w.page.locator("#pastebox[open] #txt").wait_for()            # photo import is off in the tests: paste is open

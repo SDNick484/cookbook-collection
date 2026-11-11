@@ -137,8 +137,10 @@ window.addEventListener("hashchange", (e) => {
   // The recipe editor sets S.dirty: leaving it asks first, and staying puts the old address back without a reload.
   if (S.dirty && !confirm("Leave without saving your changes?")) { history.replaceState(null, "", e.oldURL); return; }
   S.dirty = false; window.onbeforeunload = null;
+  if (S.capJob) { discardCapture(S.capJob); S.capJob = null; }   // left the editor without saving a captured recipe
   route();
 });
+window.addEventListener("pagehide", () => { if (S.capJob) discardCapture(S.capJob, true); });
 
 /* Deep link by stable uid: #/uid/<book uid>[/<recipe uid>] (what Dinner Log stores). Resolves through the
    by-uid API and replaces itself with #/book/<id>[?recipe=<id>], so Back skips it and bookView does the
@@ -783,21 +785,161 @@ const UNITS = ["g", "kg", "ml", "l", "tsp", "tbsp", "cup", "cups", "oz", "lb", "
 const blankLine = () => ({ quantity_text: "", unit: "", item: "", prep_note: "", optional: false });
 const blankStep = () => ({ text: "", timer_minutes: "" });
 
-async function recipeEditView(uid, params) {
+/* ---------- start a house recipe from photos or pasted text ---------- */
+// Photos (1 to 4, in order) are read on the server as a background job that this page polls, so a slow read never
+// meets Cloudflare's 100-second limit. Pasted text is parsed on the server straight away when it has Ingredients and
+// Method headings; otherwise it becomes a job too. Either way the result only fills the editor below. Everything the
+// server sends back from the model is shown through esc() or as input values, never as markup.
+const CAP_MAX = 4, CAP_BYTES = 24e6;   // the server's limits: 4 photos, a 25 MB request
+function captureHTML(cap) {
+  const canPhoto = S.features && S.features.photo_import;
+  const note = cap ? `<div class="panel capnote" id="cap-note">
+      <strong>Read from ${cap.source === "text" ? "your text" : `the photo${(cap.photos || 1) > 1 ? "s" : ""}`}. Check it against the original, then save.</strong>
+      ${cap.missing.length ? `<p class="err">Not found: ${esc(cap.missing.join(", "))}. Fill ${cap.missing.length > 1 ? "them" : "it"} in below.</p>` : ""}
+      ${cap.warnings.length ? `<ul class="small">${cap.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>` : ""}
+      ${cap.attachable ? `<label class="chk"><input type="checkbox" id="cap-attach"> Add the photo${cap.attachable > 1 ? "s" : ""} to this recipe when it's saved</label>
+        <p class="small muted">Otherwise ${cap.attachable > 1 ? "they are" : "it is"} deleted from the server.</p>` : ""}</div>` : "";
+  return `${note}<div class="panel capture" id="capture">
+      <div class="actions" style="margin-top:0">
+        ${canPhoto ? `<button type="button" id="cap-photo">📷 From photo</button>` : ""}
+        <button type="button" id="cap-text">📋 From text</button></div>
+      <div id="cap-photo-box" class="hidden">
+        <p class="small muted">Up to ${CAP_MAX} photos of one recipe (a card, a notebook page, a printed page), in order. They are sent to
+          Claude (Anthropic's API) to read; the result fills the form for you to check.</p>
+        <div class="actions"><label class="btn">📷 Take photo<input id="cap-snap" type="file" accept="image/*" capture="environment" hidden></label>
+          <label class="btn">Choose photos<input id="cap-pick" type="file" accept="image/*" multiple hidden></label>
+          <button type="button" class="primary" id="cap-read" disabled>Read recipe</button></div>
+        <div id="cap-pages" class="scanpages hidden"></div></div>
+      <div id="cap-text-box" class="hidden">
+        <textarea id="cap-txt" rows="8" aria-label="Recipe text" placeholder="Paste a recipe: its name, then an “Ingredients” heading and a “Method” heading."></textarea>
+        <p class="small muted">With those two headings it's read here; otherwise ${canPhoto ? "it's sent to Claude to read." : "add them (Claude isn't set up on this server)."}</p>
+        <div class="actions"><button type="button" class="primary" id="cap-go">Read text</button></div></div>
+      <div id="cap-status" class="small"></div></div>`;
+}
+function discardCapture(job, keepalive = false) {
+  if (!job) return;
+  fetch(`${API}/house/capture/${encodeURIComponent(job)}`, { method: "DELETE", keepalive }).catch(() => {});
+}
+// After the recipe is saved: attach the kept photos, or delete them. Returns a toast for a failed attach, else "".
+async function finishCapture(recipeId, attach) {
+  const job = S.capJob;
+  S.capJob = null;
+  if (!job) return "";
+  if (!attach) { discardCapture(job); return ""; }
+  try { await api(`house/capture/${encodeURIComponent(job)}/attach`, { method: "POST", body: { recipe_id: recipeId } }); return ""; }
+  catch (err) { return `Saved, but the photo wasn't added: ${err.message}`; }
+}
+function wireCapture(params, isDirty) {
+  const box = $("#capture");
+  if (!box) return;
+  const here = location.hash;
+  const pend = [];    // {file, url}, in the order taken
+  let busyRead = false;
+  const status = (html, bad) => { const st = $("#cap-status"); if (st) st.innerHTML = html ? `<div class="${bad ? "err" : "muted"}">${html}</div>` : ""; };
+  const show = (which) => {
+    $("#cap-photo-box").classList.toggle("hidden", which !== "photo");
+    $("#cap-text-box").classList.toggle("hidden", which !== "text");
+    if (which === "text") $("#cap-txt").focus();
+  };
+  if ($("#cap-photo")) $("#cap-photo").onclick = () => show("photo");
+  $("#cap-text").onclick = () => show("text");
+  const drawPages = (state) => {
+    const strip = $("#cap-pages");
+    strip.classList.toggle("hidden", !pend.length);
+    const srv = Object.fromEntries(((state && state.photos) || []).map((p) => [p.page_no, p]));
+    strip.innerHTML = pend.map((pg, i) => {
+      const p = srv[i + 1];
+      const pill = !p ? "" : p.status === "done" ? "read" : p.status === "error" ? "failed" : p.status === "running" ? `reading… ${p.elapsed ? p.elapsed + "s" : ""}` : "waiting";
+      return `<div class="scanpage ${p ? p.status : ""}" data-i="${i}" title="${esc((p && p.error) || "")}">
+        <img src="${pg.url}" alt="Photo ${i + 1}"><div class="pn">Photo ${i + 1}</div><div class="ps">${esc(pill)}</div>
+        ${busyRead ? "" : `<button type="button" class="retry" data-rm="${i}" aria-label="Remove photo ${i + 1}">Remove</button>`}</div>`;
+    }).join("");
+    $$("[data-rm]", strip).forEach((b) => b.onclick = () => { const [x] = pend.splice(+b.dataset.rm, 1); URL.revokeObjectURL(x.url); drawPages(); });
+    $("#cap-read").disabled = busyRead || !pend.length;
+  };
+  const addFiles = (e) => {
+    const files = [...e.target.files]; e.target.value = "";
+    for (const f of files) {
+      if (pend.length >= CAP_MAX) { status(`At most ${CAP_MAX} photos of one recipe.`, true); break; }
+      pend.push({ file: f, url: URL.createObjectURL(f) });
+    }
+    drawPages();
+  };
+  $("#cap-snap") && ($("#cap-snap").onchange = addFiles);
+  $("#cap-pick") && ($("#cap-pick").onchange = addFiles);
+  const load = (j, job) => {
+    if (location.hash !== here) { discardCapture(job); return; }
+    if (isDirty() && !confirm("Replace what's in the form with the recipe that was read?")) { discardCapture(job); return; }
+    pend.forEach((p) => URL.revokeObjectURL(p.url));
+    pend.length = 0;   // its previews are gone; nothing may draw them again
+    if (S.capJob && S.capJob !== job) discardCapture(S.capJob);
+    S.capJob = job || null;
+    recipeEditView(null, params, { draft: j.draft, warnings: j.warnings || [], missing: j.missing || [],
+      attachable: j.attachable || 0, source: j.source, photos: (j.photos || []).length })
+      .then(() => window.scrollTo(0, 0)).catch((err) => toast(err.message));
+  };
+  const poll = async (job) => {
+    const t0 = Date.now();
+    for (;;) {
+      await new Promise((ok) => setTimeout(ok, 2500));
+      if (location.hash !== here) { discardCapture(job); return; }
+      let j;
+      try { j = await api(`house/capture/${encodeURIComponent(job)}`); }
+      catch (err) {
+        if ([400, 401, 404].includes(err.status) || Date.now() - t0 > 20 * 60000) { status(esc(err.message), true); return null; }
+        continue;   // a dropped connection: keep checking
+      }
+      drawPages(j);
+      if (j.status === "running") { status(`Reading… ${Math.round((Date.now() - t0) / 1000)}s. A dense page can take a minute.`); continue; }
+      if (j.status === "error") { status(esc(j.error), true); discardCapture(job); return null; }
+      return j;
+    }
+  };
+  $("#cap-read").onclick = async () => {
+    if (busyRead || !pend.length) return;
+    const total = pend.reduce((n, p) => n + p.file.size, 0);
+    if (total > CAP_BYTES) { status("Those photos are too large to send together. Use fewer, or smaller ones.", true); return; }
+    const fd = new FormData();
+    pend.forEach((p) => fd.append("file", p.file));
+    busyRead = true; drawPages(); status("Sending…");
+    try {
+      const r = await api("house/capture/photos", { method: "POST", body: fd });
+      const j = await poll(r.job);
+      if (j) load(j, r.job);
+    } catch (err) { status(esc(err.message), true); }
+    finally { busyRead = false; if ($("#cap-pages")) drawPages(); }
+  };
+  $("#cap-go").onclick = () => busy($("#cap-go"), async () => {
+    const text = $("#cap-txt").value;
+    if (!text.trim()) { status("Paste the recipe's text first.", true); return; }
+    status("Reading…");
+    try {
+      const r = await api("house/capture/text", { method: "POST", body: { text } });
+      if (r.job) { const j = await poll(r.job); if (j) load(j, r.job); }
+      else load(r, null);
+    } catch (err) { status(esc(err.message), true); }
+  });
+}
+
+// `cap`: a recipe just read from photos or pasted text ({draft, warnings, missing, attachable, source}). It fills the
+// new-recipe form as an unsaved draft; nothing is stored until Save. The capture's job id is S.capJob.
+async function recipeEditView(uid, params, cap = null) {
   const r = uid ? await api("recipes/by-uid/" + uid) : null;
   if (r && r.book.kind !== "house") throw new Error("Only house recipes have ingredients and steps. Edit this one from its book.");
   const house = r ? r.book : await api("house");
-  const d = (r && r.detail) || {};
+  const src = r || (cap && cap.draft) || null;
+  const d = (src && src.detail) || {};
   const ret = params.get("return") || "";
-  const rows = { ing: toRows(r ? r.ingredients : []), step: toRows(r ? r.steps : []) };
+  const rows = { ing: toRows(src ? src.ingredients : []), step: toRows(src ? src.steps : []) };
   if (!rows.ing.length) rows.ing.push(blankLine());
   if (!rows.step.length) rows.step.push(blankStep());
   const cancelTo = r ? `#/recipe/${r.uid}` : `#/book/${house.id}`;
   const v = (k) => esc(d[k] ?? "");
   view.innerHTML = `<a class="back" href="${cancelTo}">← ${esc(r ? r.name : house.title)}</a>
     <h1>${r ? "Edit recipe" : "New recipe"}</h1>
+    ${r ? "" : captureHTML(cap)}
     <form id="rf-edit" class="redit" autocomplete="off">
-      <label class="f">Name<input name="name" required maxlength="200" value="${esc(r ? r.name : (params.get("title") || "").slice(0, 200))}"></label>
+      <label class="f">Name<input name="name" required maxlength="200" value="${esc(r ? r.name : ((cap && cap.draft.name) || params.get("title") || "").slice(0, 200))}"></label>
       <label class="f">Description<textarea name="description" rows="2">${v("description")}</textarea></label>
       <div class="row3">
         <label class="f">Serves<input name="servings" inputmode="numeric" value="${v("servings")}"></label>
@@ -869,6 +1011,8 @@ async function recipeEditView(uid, params) {
     if (focus != null) { const el = $(`.erow[data-i="${focus}"] [data-k]`, ul); if (el) el.focus(); }
   };
   draw("ing"); draw("step");
+  if (!r) wireCapture(params, () => S.dirty);
+  if (cap) dirty();   // a draft that was read, not yet saved
   $$("[data-add]", form).forEach((b) => b.onclick = () => {
     const [kind, sec] = b.dataset.add.split("-");
     rows[kind].push(sec ? { sec: "" } : kind === "ing" ? blankLine() : blankStep());
@@ -890,8 +1034,9 @@ async function recipeEditView(uid, params) {
         ingredients: fromRows(rows.ing), steps: fromRows(rows.step), ...(ret ? { return: ret } : {}) };
       const saved = await api(r ? `house/recipes/${r.id}` : "house/recipes", { method: r ? "PUT" : "POST", body });
       S.dirty = false; window.onbeforeunload = null;
+      const photoNote = r ? "" : await finishCapture(saved.id, $("#cap-attach") && $("#cap-attach").checked);
       if (saved.return_url) { location.assign(saved.return_url); return; }
-      toast(saved.return_refused ? "Saved. That return link isn't allowed, so here's the recipe." : "Saved");
+      toast(photoNote || (saved.return_refused ? "Saved. That return link isn't allowed, so here's the recipe." : "Saved"));
       location.hash = `#/recipe/${saved.uid}`;
     });
   };

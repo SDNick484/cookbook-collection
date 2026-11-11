@@ -23,6 +23,7 @@
 #   HEALTH_URL /healthz to wait for after the start; set it empty to skip the wait
 set -u
 CONF=${CONF:-/etc/conf.d/cookbooks}
+# shellcheck source=/dev/null
 [ -f "$CONF" ] && . "$CONF"
 LOCAL_DIR=${LOCAL_DIR:-/var/backups/apps}
 DATA_DIR=${DATA_DIR:-/var/lib/cookbooks}

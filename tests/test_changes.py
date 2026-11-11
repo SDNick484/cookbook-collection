@@ -587,6 +587,15 @@ def test_routes_need_an_editor_and_a_same_site_origin(c):
     assert last_change()["undone_by"] is None
 
 
+def test_read_token_does_not_open_the_log(c, monkeypatch):
+    """READ_TOKEN (Dinner Log's server-to-server reads) reaches reader_required routes only, never the log."""
+    monkeypatch.setattr(A, "READ_TOKEN", "read-tok")
+    auth = {"Authorization": "Bearer read-tok"}
+    assert c.get("/admin/api/house", headers={**CF, **auth}).status_code == 200  # the token works where it should
+    assert c.get("/admin/api/changes", headers={**CF, **auth}).status_code == 401
+    assert c.post("/admin/api/changes/1/undo", headers={**CF, **auth}).status_code == 401
+
+
 def test_no_mcp_undo_tool_and_nothing_in_ask():
     names = {t[0] for t in MC.TOOLS}
     assert not any(w in n for n in names for w in ("undo", "change", "history"))

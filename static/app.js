@@ -126,6 +126,7 @@ async function route() {
     if (path === "stats" && ADMIN) return await statsView();
     if (path === "eyb" && ADMIN) return await eybView();
     if (path === "links" && ADMIN) return await linksView();
+    if (path === "changes" && ADMIN) return await changesView(new URLSearchParams(qs));
     if (qs) { const p = new URLSearchParams(qs); for (const k of ["q", "cuisine", "tag", "author", "publisher", "ingredient", "location_id"]) S[k] = p.get(k) || ""; if (p.get("sort")) S.sort = p.get("sort"); }
     else { S.author = S.publisher = ""; }
     return await homeView();
@@ -658,7 +659,7 @@ function recipeDialog(r, bookId, done) {
   });
   const del = $("#del", d);
   if (del) del.onclick = () => busy(del, async () => {
-    if (!confirm(`Delete “${r.name}”?`)) return;
+    if (!confirm(`Delete “${r.name}”? You can undo it under More → Recent changes, but its photos are deleted for good.`)) return;
     await api("recipes/" + r.id, { method: "DELETE" }); d.close(); toast("Deleted"); done();
   });
   d.showModal();
@@ -1042,7 +1043,7 @@ async function recipeEditView(uid, params, cap = null) {
   };
   const del = $("#rdel");
   if (del) del.onclick = () => busy(del, async () => {
-    if (!confirm(`Delete “${r.name}”? Its ingredients, steps and photos go too.`)) return;
+    if (!confirm(`Delete “${r.name}”? Its ingredients, steps and photos go too. Undo (More → Recent changes) brings back everything but the photos.`)) return;
     await api("recipes/" + r.id, { method: "DELETE" });
     S.dirty = false; window.onbeforeunload = null; toast("Deleted"); location.hash = `#/book/${house.id}`;
   });
@@ -1253,7 +1254,7 @@ async function editView(id) {
     catch (e) { toast(e.message); }
   });
   $("#delete").onclick = () => busy($("#delete"), async () => {
-    if (!confirm(`Delete “${b.title}” and its ${b.recipes.length} recipes? This can't be undone.`)) return;
+    if (!confirm(`Delete “${b.title}” and its ${b.recipes.length} recipes? You can undo it under More → Recent changes, but its cover and photos are deleted for good.`)) return;
     await api("books/" + id, { method: "DELETE" }); S.facets = null; toast("Deleted"); location.hash = "#/";
   });
 }
@@ -1555,6 +1556,9 @@ async function moreView() {
     <div class="panel"><h3>Shelf locations</h3>
       <p class="small muted" style="margin-top:0">Rooms, shelves, anything nested: add, rename, move, reorder or delete. Each book's location shows on the public catalog.</p>
       <button class="primary" id="loc-more">Manage locations</button></div>
+    <div class="panel"><h3>Recent changes</h3>
+      <p class="small muted" style="margin-top:0">Who changed which book, recipe or shelf, and when. Undo a change or a whole import from here.</p>
+      <a class="btn primary" href="#/changes">Open recent changes</a></div>
     <div class="panel"><h3>Lists</h3><div class="actions" style="margin:0">
       <a class="btn" href="#/try">Want to try</a><a class="btn" href="#/review">Needs review</a>
       <a class="btn" href="#/stats">Dinner Log matching</a></div></div>
@@ -1568,6 +1572,68 @@ async function moreView() {
     <div class="panel"><h3>Public view</h3><p class="small muted">See what visitors see (no ratings, notes or loan details; shelf locations are shown).</p>
       <a class="btn" href="/">Open public catalog</a></div>`;
   $("#loc-more").onclick = () => locationsManager(() => { S.facets = null; });
+}
+
+/* ---------- recent changes (change history and undo) ---------- */
+// Rows come newest first; rows of one batch (an import, a merge, an undo of several) arrive together and are shown
+// as one group with "Undo all". The server says why an undo is refused (changed since, gone, would clash).
+const OPS = { "edit": "Edit", "index import": "Index import", "Eat Your Books import": "Eat Your Books import",
+  "ingredient import": "Ingredient import", "ingredient zip import": "Ingredient zip import", "ingredient tag delete": "Ingredient tag removed",
+  "links from websites": "Links from websites", "fetch details": "Fetched details", "merge": "Merged garbled duplicates",
+  "JSON import": "JSON import", "reorder shelves": "Reordered shelves", "undo": "Undo", "MCP": "Claude (MCP)" };
+const whenUTC = (at) => { const t = new Date(String(at).replace(" ", "T") + "Z"); return isNaN(t) ? at : t.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", year: t.getFullYear() === new Date().getFullYear() ? undefined : "numeric" }); };
+async function changesView(params) {
+  const f = { book: params.get("book") || "", actor: params.get("actor") || "" };
+  const qs = (extra = {}) => new URLSearchParams(Object.entries({ ...f, ...extra }).filter(([, v]) => v)).toString();
+  let d = await api("changes?" + qs({ limit: 60 }));
+  const rows = [...d.changes];
+  view.innerHTML = `<a class="back" href="#/more">← More</a><h1>Recent changes</h1>
+    <p class="small muted" style="margin-top:0">Edits, imports and merges from the last ${d.keep_days > 0 ? d.keep_days + " days" : "while"}, newest first. Undo puts back what a change replaced, or brings back what it deleted with its original ids, so Dinner Log's links match again. <strong>Photos and covers aren't part of it:</strong> a deleted photo or cover is gone for good. An undo is refused if the row was changed again since; undo the later change first.</p>
+    <div class="controls"><select id="ch-book" aria-label="Book"><option value="">All books</option>${d.books.map((b) => `<option value="${esc(b.uid)}" ${b.uid === f.book ? "selected" : ""}>${esc(b.title)}</option>`).join("")}</select>
+      <select id="ch-actor" aria-label="Who"><option value="">Everyone</option>${d.actors.map((a) => `<option ${a === f.actor ? "selected" : ""}>${esc(a)}</option>`).join("")}</select></div>
+    <div id="ch-list"></div><div class="actions"><button id="ch-more" type="button" style="display:none">Show older</button></div>`;
+  const go = () => { location.hash = "#/changes" + (qs() ? "?" + qs() : ""); };
+  $("#ch-book").onchange = (e) => { f.book = e.target.value; go(); };
+  $("#ch-actor").onchange = (e) => { f.actor = e.target.value; go(); };
+  const item = (c) => `<li data-id="${c.id}"><div class="rn"><div>${c.book_id && c.entity !== "location" ? `<a href="#/book/${c.book_id}">${esc(c.summary)}</a>` : esc(c.summary)}</div>
+      ${c.details.length ? `<div class="extra">${c.details.map(esc).join(" · ")}</div>` : ""}
+      ${c.warning ? `<div class="small review">${esc(c.warning)}</div>` : ""}
+      ${!c.batch_id ? `<div class="extra">${esc(whenUTC(c.at))} · ${esc(c.actor)}${c.op && c.op !== "edit" ? " · " + esc(OPS[c.op] || c.op) : ""}${c.undone_by != null ? " · <em>undone</em>" : ""}</div>` : ""}</div>
+      ${c.undone_by == null && (!c.batch_id || c.batch_size > 1) ? `<span class="acts"><button class="btn ch-undo" type="button">Undo</button></span>` : ""}</li>`;
+  const render = () => {
+    const groups = [];
+    for (const c of rows) {
+      const g = groups[groups.length - 1];
+      if (c.batch_id && g && g.batch === c.batch_id) g.items.push(c); else groups.push({ batch: c.batch_id, items: [c] });
+    }
+    $("#ch-list").innerHTML = groups.map((g) => {
+      if (!g.batch) return `<ul class="rlist">${item(g.items[0])}</ul>`;
+      const c = g.items[0], open = c.batch_open;
+      const head = `${esc(OPS[c.op] || c.op || "Changes")} · ${esc(whenUTC(c.at))} · ${esc(c.actor)} · ${c.batch_size} change${c.batch_size > 1 ? "s" : ""}${g.items.length < c.batch_size ? ` (${g.items.length} shown)` : ""}${open === 0 ? " · <em>undone</em>" : ""}`;
+      return `<div class="panel" data-batch="${esc(g.batch)}" style="padding:10px 14px"><div class="section-h" style="margin:0 0 6px"><h2 class="small" style="margin:0">${head}</h2>
+        ${open > 0 ? `<button class="btn ch-undo-all" type="button">Undo all${open < c.batch_size ? " remaining" : ""}</button>` : ""}</div>
+        <ul class="rlist">${g.items.map(item).join("")}</ul></div>`;
+    }).join("") || `<div class="empty">No changes recorded${f.book || f.actor ? " for this filter" : " yet"}.</div>`;
+    $$(".ch-undo", view).forEach((b) => b.onclick = () => busy(b, async () => {
+      const c = rows.find((x) => x.id === +b.closest("li").dataset.id);
+      if (!confirm(`Undo: ${c.summary}?`)) return;
+      const r = await api(`changes/${c.id}/undo`, { method: "POST" });
+      S.facets = null; toast(r.message); route();
+    }));
+    $$(".ch-undo-all", view).forEach((b) => b.onclick = () => busy(b, async () => {
+      const box = b.closest("[data-batch]"), first = rows.find((x) => x.batch_id === box.dataset.batch);
+      if (!confirm(`Undo all ${first.batch_open} change${first.batch_open > 1 ? "s" : ""} of this ${(OPS[first.op] || "batch").toLowerCase()}? It's all or nothing.`)) return;
+      const r = await api(`changes/batch/${box.dataset.batch}/undo`, { method: "POST" });
+      S.facets = null; toast(r.message); route();
+    }));
+    const more = $("#ch-more");
+    more.style.display = d.next_before ? "" : "none";
+    more.onclick = () => busy(more, async () => {
+      d = await api("changes?" + qs({ limit: 60, before: d.next_before }));
+      rows.push(...d.changes); render();
+    });
+  };
+  render();
 }
 
 /* ---------- Dinner Log on a book page ---------- */

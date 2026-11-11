@@ -585,6 +585,10 @@ def dinnerlog_link():
             return make_err(400, "Recipe name is required")
         rid = con.execute("INSERT INTO recipes(book_id, name, page, page_sort, source) VALUES (?,?,?,?, 'dinnerlog')",
                           (bid, name, page, page_sort(page))).lastrowid
+        import changes
+        rec = changes.Recorder(con)
+        rec.created("recipe", rid)
+        rec.finish()  # before rebuild_cooked, which commits
     if rid is None and not d.get("unlink"):
         con.execute("DELETE FROM dl_link WHERE meal_id=?", (meal_id,))  # back to automatic
     else:

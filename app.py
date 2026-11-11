@@ -240,7 +240,7 @@ def _init_db_locked():
     global HAS_FTS
     con = connect()
     con.executescript(SCHEMA)
-    import dinnerlog, cook, wishlist, scan, eyb, ingredients, photos, online, ask, house, capture
+    import dinnerlog, cook, wishlist, scan, eyb, ingredients, photos, online, ask, house, capture, changes
     online.migrate(con)
     house.migrate(con)  # after online: books.kind must exist
     dinnerlog.migrate(con)
@@ -252,6 +252,7 @@ def _init_db_locked():
     photos.migrate(con)
     ask.migrate(con)
     capture.migrate(con)  # no schema: the folder captured photos wait in
+    changes.migrate(con)  # the change history; prunes rows older than CHANGES_KEEP_DAYS
     migrate_uids(con)
     migrate_locations(con)
     old = con.execute("SELECT sql FROM sqlite_master WHERE name='recipes_fts'").fetchone()
@@ -359,10 +360,11 @@ def reindex_book(con, book_id):
     b = con.execute("SELECT * FROM books WHERE id=?", (book_id,)).fetchone()
     if not b:
         return
-    people = " ".join(r[0] for r in con.execute(
-        "SELECT a.name FROM authors a JOIN book_authors ba ON ba.author_id=a.id WHERE ba.book_id=?", (book_id,)))
+    people = " ".join(r[0] for r in con.execute(  # in a fixed order, so a book put back by undo indexes the same
+        "SELECT a.name FROM authors a JOIN book_authors ba ON ba.author_id=a.id WHERE ba.book_id=? ORDER BY ba.pos",
+        (book_id,)))
     tags = " ".join(r[0] for r in con.execute(
-        "SELECT t.name FROM tags t JOIN book_tags bt ON bt.tag_id=t.id WHERE bt.book_id=?", (book_id,)))
+        "SELECT t.name FROM tags t JOIN book_tags bt ON bt.tag_id=t.id WHERE bt.book_id=? ORDER BY t.name", (book_id,)))
     other = " ".join(x for x in (b["subtitle"], b["publisher"], b["cuisine"], tags, b["isbn"]) if x)
     con.execute("INSERT INTO books_fts(rowid, title, people, other) VALUES (?,?,?,?)",
                 (book_id, fold(b["title"]), fold(people), fold(other)))
@@ -1244,6 +1246,9 @@ def create_book():
         except Exception as e:  # noqa: BLE001 — a missing cover shouldn't block the save
             app.logger.warning("cover fetch failed: %s", e)
     reindex_book(con, bid)
+    rec = changes.Recorder(con)
+    rec.created("book", bid)
+    rec.finish()
     con.commit()
     return get_book(bid, private=True), 201
 
@@ -1262,6 +1267,8 @@ def update_book(book_id):
     dup = isbn_conflict(vals.get("isbn"), exclude=book_id)
     if dup:
         return make_err(409, f"Another book already has that ISBN: {dup['title']}", book_id=dup["id"])
+    rec = changes.Recorder(con)
+    rec.book(book_id)
     if vals:
         sets = ",".join(f"{k}=?" for k in vals)
         con.execute(f"UPDATE books SET {sets}, updated_at=CURRENT_TIMESTAMP WHERE id=?", [*vals.values(), book_id])
@@ -1272,8 +1279,9 @@ def update_book(book_id):
                                               "WHERE bt.book_id=?", (book_id,))]
         set_people(con, book_id, data.get("authors", cur_auth), data.get("tags", cur_tags))
     reindex_book(con, book_id)
+    rec.finish()
     con.commit()
-    if data.get("cover_url"):
+    if data.get("cover_url"):  # covers aren't in the change history: their files aren't kept
         try:
             save_cover_from_url(book_id, data["cover_url"])
             con.commit()
@@ -1293,11 +1301,14 @@ def delete_book(book_id):
         return make_err(409, "The house book can't be deleted; delete its recipes instead")
     import photos
     photo_files = photos.files_where(con, "recipe_id IN (SELECT id FROM recipes WHERE book_id=?)", book_id)
+    rec = changes.Recorder(con)
+    rec.book(book_id, deleting=True)  # everything but the cover and photo files, which go for good
     con.execute("DELETE FROM books WHERE id=?", (book_id,))
     if HAS_FTS:
         con.execute("DELETE FROM books_fts WHERE rowid=?", (book_id,))
     con.execute("DELETE FROM authors WHERE id NOT IN (SELECT author_id FROM book_authors)")
     con.execute("DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM book_tags)")
+    rec.finish()
     con.commit()
     if row["cover"]:
         (COVER_DIR / row["cover"]).unlink(missing_ok=True)
@@ -1342,6 +1353,9 @@ def add_location():
     if order is None:
         order = next_sort_order(con, parent)
     lid = con.execute("INSERT INTO locations(parent_id, name, sort_order) VALUES (?,?,?)", (parent, name, order)).lastrowid
+    rec = changes.Recorder(con)
+    rec.created("location", lid)
+    rec.finish()
     con.commit()
     return jsonify(ok=True, location=one_location(con, lid)), 201
 
@@ -1374,7 +1388,10 @@ def edit_location(loc_id):
         order = given
     if location_clash(con, parent, name, exclude=loc_id):
         return make_err(409, f"There is already a “{name}” there")
+    rec = changes.Recorder(con)
+    rec.location(loc_id)
     con.execute("UPDATE locations SET name=?, parent_id=?, sort_order=? WHERE id=?", (name, parent, order, loc_id))
+    rec.finish()
     con.commit()
     return jsonify(ok=True, location=one_location(con, loc_id))
 
@@ -1389,7 +1406,10 @@ def delete_location(loc_id):
     ids = sorted(descendant_location_ids(con, loc_id))
     qs = ",".join("?" * len(ids))
     unshelved = con.execute(f"SELECT count(*) FROM books WHERE location_id IN ({qs})", ids).fetchone()[0]
+    rec = changes.Recorder(con)
+    rec.location(loc_id, deleting=True)  # with the shelves below it and the books that were on them
     con.execute("DELETE FROM locations WHERE id=?", (loc_id,))  # the children cascade, the books' ids go NULL
+    rec.finish()
     con.commit()
     return jsonify(ok=True, deleted_id=loc_id, locations_deleted=len(ids), books_unshelved=unshelved)
 
@@ -1410,7 +1430,11 @@ def reorder_locations():
     have = {r[0] for r in con.execute("SELECT id FROM locations WHERE parent_id IS ?", (parent,))}
     if len(ids) != len(set(ids)) or set(ids) != have:
         return make_err(400, "ids must be exactly the locations under that parent")
+    rec = changes.Recorder(con, op="reorder shelves")
+    for lid in ids:
+        rec.location(lid)
     con.executemany("UPDATE locations SET sort_order=? WHERE id=?", [(i, lid) for i, lid in enumerate(ids)])
+    rec.finish()
     con.commit()
     return jsonify(ok=True, locations=get_locations(con))
 
@@ -1521,6 +1545,9 @@ def add_recipe(book_id):
     cols = ",".join(vals)
     cur = db().execute(f"INSERT INTO recipes(book_id, source, {cols}) VALUES (?, 'manual', {','.join('?' * len(vals))})",
                        [book_id, *vals.values()])
+    rec = changes.Recorder(db())
+    rec.created("recipe", cur.lastrowid)
+    rec.finish()
     db().commit()
     return jsonify(dict(db().execute("SELECT * FROM recipes WHERE id=?", (cur.lastrowid,)).fetchone())), 201
 
@@ -1532,7 +1559,10 @@ def update_recipe(rid):
     if "name" in vals and not vals["name"]:
         return make_err(400, "Recipe name is required")
     if vals:
+        rec = changes.Recorder(db())
+        rec.recipe(rid)
         db().execute(f"UPDATE recipes SET {','.join(f'{k}=?' for k in vals)} WHERE id=?", [*vals.values(), rid])
+        rec.finish()
         db().commit()
     row = db().execute("SELECT * FROM recipes WHERE id=?", (rid,)).fetchone()
     if not row:
@@ -1545,7 +1575,10 @@ def update_recipe(rid):
 def delete_recipe(rid):
     import photos
     files = photos.files_where(db(), "recipe_id=?", rid)
+    rec = changes.Recorder(db())
+    rec.recipe(rid, deleting=True)  # its photo files go for good
     db().execute("DELETE FROM recipes WHERE id=?", (rid,))
+    rec.finish()
     db().commit()
     photos.unlink(files)
     return jsonify(ok=True)
@@ -1631,6 +1664,7 @@ def index_commit(book_id):
     existing = {(fold(r["name"]), fold(r["heading"] or ""), r["page"] or "") for r in
                 con.execute("SELECT name, heading, page FROM recipes WHERE book_id=?", (book_id,))}
     added = skipped = 0
+    rec = changes.Recorder(con, op="index import", bulk=True)
     for r in request.get_json(force=True).get("rows", []):
         name, heading, page = clean(r.get("name")), clean(r.get("heading")), clean(r.get("page"))
         if not name:
@@ -1640,9 +1674,11 @@ def index_commit(book_id):
             skipped += 1
             continue
         existing.add(key)
-        con.execute("INSERT INTO recipes(book_id, name, heading, page, page_sort, source) VALUES (?,?,?,?,?, 'index')",
-                    (book_id, name, heading, page, page_sort(page)))
+        rec.created("recipe", con.execute(
+            "INSERT INTO recipes(book_id, name, heading, page, page_sort, source) VALUES (?,?,?,?,?, 'index')",
+            (book_id, name, heading, page, page_sort(page))).lastrowid)
         added += 1
+    rec.finish()
     con.commit()
     return jsonify(added=added, skipped=skipped)
 
@@ -1844,4 +1880,5 @@ else:
     import ask  # noqa: E402,F401 — AI search
     import house  # noqa: E402,F401 — house recipes
     import capture  # noqa: E402,F401 — start a house recipe from photos or pasted text
+    import changes  # noqa: E402 — the change history and undo (Recent changes)
     init_db()

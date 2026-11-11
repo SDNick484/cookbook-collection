@@ -576,6 +576,10 @@ def create_house_recipe():
     bid = house_book_id(con) or ensure_house_book(con)
     rid = con.execute("INSERT INTO recipes(book_id, name, source) VALUES (?, ?, 'house')", (bid, doc["name"])).lastrowid
     save_doc(con, rid, doc)
+    import changes
+    rec = changes.Recorder(con)
+    rec.created("recipe", rid)
+    rec.finish()
     con.commit()
     app.logger.info("house recipe %s created by %s", rid, g.editor)
     return _saved(con, rid, data, 201)
@@ -594,8 +598,12 @@ def update_house_recipe(rid):
         return make_err(400, "Only recipes in the house book have ingredients and steps")
     data = request.get_json(silent=True)
     doc = _doc_or_400(data)
+    import changes
+    rec = changes.Recorder(con)
+    rec.recipe(rid)
     con.execute("UPDATE recipes SET name=? WHERE id=?", (doc["name"], rid))
     save_doc(con, rid, doc)
+    rec.finish()
     con.commit()
     return _saved(con, rid, data, 200)
 

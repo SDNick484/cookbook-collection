@@ -319,3 +319,27 @@ def test_share_target_and_bookmarklet(w, server):
     w.page.wait_for_timeout(200)
     assert w.page.url == before
     w.assert_clean("share target")
+
+
+def test_recent_changes_and_undo(w, server, book):
+    """More -> Recent changes: the list, its filters, and an undo, with no CSP violation."""
+    c = A.app.test_client()
+    rid = c.get(f"/admin/api/books/{book}").json["recipes"][0]["id"]
+    c.put(f"/admin/api/recipes/{rid}", json={"rating": 9, "want_to_try": True})
+    c.post(f"/admin/api/books/{book}/index/commit", json={"rows": [{"name": "Batch one", "page": "50"},
+                                                                   {"name": "Batch two", "page": "51"}]})
+    w.goto(f"{server}/admin#/more")
+    w.page.locator("a[href='#/changes']").click()
+    w.page.locator("#ch-list .rlist li").first.wait_for()
+    assert "Undo all" in w.page.inner_text("#ch-list")
+    assert "Added 2 recipes" in w.page.inner_text("#ch-list")
+    w.page.select_option("#ch-book", label="CSP Test Kitchen")
+    w.page.wait_for_url("**#/changes?book=*")
+    w.page.locator("#ch-list .rlist li").first.wait_for()
+    w.page.evaluate("window.confirm = () => true")
+    w.page.locator(".ch-undo-all").first.click()
+    w.page.locator("#toast", has_text="Undone").wait_for()
+    w.page.locator("#ch-list em", has_text="undone").first.wait_for()  # the batch now reads "undone"
+    names = [r["name"] for r in c.get(f"/admin/api/books/{book}").json["recipes"]]
+    assert "Batch one" not in names and "Batch two" not in names
+    w.assert_clean("recent changes")

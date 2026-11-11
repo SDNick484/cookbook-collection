@@ -13,6 +13,7 @@ os.environ.setdefault("CF_TEAM_DOMAIN", "team.example.com")
 os.environ.setdefault("CF_AUD", "aud123")
 import app as A  # noqa: E402
 import extras as X  # noqa: E402
+import cook as CK  # noqa: E402
 import dinnerlog as DL  # noqa: E402
 from dl_history import History  # noqa: E402
 
@@ -101,7 +102,7 @@ def test_match_recipe_unit():
 def test_suggest_modes(c, dl):
     old = (date.today() - timedelta(days=200)).isoformat()
     dl(old, "Leeks", title="Downtime", detail="80", rating=9)
-    for mode in X.SUGGEST_MODES:
+    for mode in CK.SUGGEST_MODES:
         r = c.get(f"/admin/api/suggest?mode={mode}&n=4").json
         assert r["mode"] == mode and len(r["recipes"]) <= 4
     want = c.get("/admin/api/suggest?mode=want&n=20").json

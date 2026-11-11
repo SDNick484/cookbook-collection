@@ -12,7 +12,7 @@ os.environ.setdefault("DATA_DIR", tempfile.mkdtemp())
 os.environ.setdefault("CF_TEAM_DOMAIN", "team.example.com")
 os.environ.setdefault("CF_AUD", "aud123")
 import app as A  # noqa: E402
-import extras as X  # noqa: E402
+import cook as CK  # noqa: E402
 from dl_history import History  # noqa: E402
 
 CF = {"Cf-Ray": "abc", "Cf-Connecting-Ip": "203.0.113.9"}  # came through Cloudflare, no Access JWT
@@ -153,14 +153,14 @@ def test_photo_thumbnail_and_star(c):
 def test_one_ranking_behind_cook_suggest_and_pick(c, dl):
     dl(200, LEEKS, rating=9)
     with A.app.test_request_context():
-        a = X.cook_rank("new", n=500)
-        b = X.suggest("untried", n=500)
-        p = X.pick("new", n=500)
+        a = CK.cook_rank("new", n=500)
+        b = CK.suggest("untried", n=500)
+        p = CK.pick("new", n=500)
     ids = lambda rows: {r["id"] for r in rows}
     assert a["pool"] == b["pool"] == p["pool"] > 0
     assert ids(a["recipes"]) == ids(b["recipes"]) == ids(p["recipes"])
     assert cook(c, "mode=new&limit=50")["pool"] == a["pool"]
     # the old endpoint keeps its shape for the MCP tool and anything else calling it
     old = c.get("/admin/api/suggest?mode=favorites&n=5").json
-    assert old["mode"] == "favorites" and old["label"] == X.SUGGEST_MODES["favorites"]
+    assert old["mode"] == "favorites" and old["label"] == CK.SUGGEST_MODES["favorites"]
     assert {"id", "name", "book_id", "book_title", "want_to_try", "cuisine", "status"} <= set(old["recipes"][0])

@@ -57,6 +57,8 @@ Upgrading doesn't change an existing `LAN_EDIT` value. If `cloudflared` runs on 
 ### Security headers and search engines
 Every response carries a Content-Security-Policy (scripts only from the site itself, no inline script; images from the site, `blob:`/`data:` and the cover lookup hosts; no framing), `X-Content-Type-Options: nosniff`, a `Referrer-Policy`, `X-Frame-Options: DENY` and a `Permissions-Policy` that lets only this site use the camera (barcode scanner) and keep the screen on. If you change the front end to load something from another host, add that host to `CSP` in `app.py`, or the browser will block it.
 
+The page's script and stylesheet links carry a hash of the file's content (`/static/app.js?v=1fca0ade5b`), worked out when the service starts, so an update reaches browsers on their next visit without anyone bumping a version. A URL with the current hash is served with a one-year `immutable` cache lifetime; the page itself is revalidated on every visit.
+
 `/robots.txt` always asks crawlers to stay out of `/admin` and `/mcp`. To keep the whole catalog out of search engines, set `PUBLIC_INDEXING=0` in `/etc/conf.d/cookbooks` and restart: robots.txt then disallows everything and every response says `X-Robots-Tag: noindex, nofollow`. This is a request to well-behaved crawlers, not access control; use an Access policy on the whole hostname for that.
 
 ## Adding books

@@ -46,7 +46,9 @@ gitleaks git --redact .                   # secrets in the history
 Chromium for Playwright checks: `/opt/pw-browsers/chromium-*/chrome-linux/chrome` (cloud sessions).
 
 ## Conventions
-- After a change to `static/`, bump `?v=N` on both asset links in `static/index.html` (browsers cache hard).
+- `static/index.html` links `/static/app.js` and `/static/style.css` without a version: `render_index()` adds `?v=<content hash>` at
+  startup and those URLs are served `immutable` for a year (the page itself is `no-cache` with an ETag). Don't hand-write a
+  `?v=`. A new asset file that the page links must be added to `ASSET_FILES` in `app.py`.
 - A new top-level module must be added to the `cp` list in `installer/build.sh` and imported at the bottom of `app.py`.
   Route registration follows that import order and `init_db` runs each module's `migrate(con)` in the order it lists them,
   so add to both at the place you want. Call another module's functions module-qualified (`dinnerlog.ensure_synced()`),

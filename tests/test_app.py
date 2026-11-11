@@ -1,5 +1,5 @@
 """Run: python3 -m pytest -q tests  (from the cookbooks folder)"""
-import io, json, os, sys, tempfile
+import io, json, os, re, sys, tempfile
 from pathlib import Path
 
 import pytest
@@ -305,6 +305,38 @@ def test_cover_url_rejects_bad_scheme_and_disallowed_redirect():
 def test_static_assets_version_and_anonymized_meta(c):
     html = c.get("/").data.decode()
     assert 'content="A family cookbook collection"' in html
-    assert "/static/style.css?v=36" in html and "/static/app.js?v=36" in html
+    hashes = A.asset_hashes(A.APP_DIR / "static")
+    assert f"/static/style.css?v={hashes['style.css']}" in html and f"/static/app.js?v={hashes['app.js']}" in html
+    assert re.fullmatch(r"[0-9a-f]{10}", hashes["app.js"])
+
+
+def test_asset_url_changes_when_the_file_changes(tmp_path):
+    import shutil
+    shutil.copytree(A.APP_DIR / "static", tmp_path / "static")
+    st = tmp_path / "static"
+    html1, etag1, h1 = A.render_index(st)
+    assert f"/static/app.js?v={h1['app.js']}".encode() in html1
+    (st / "app.js").write_text((st / "app.js").read_text() + "\n// changed\n")
+    html2, etag2, h2 = A.render_index(st)
+    assert h2["app.js"] != h1["app.js"] and f"/static/app.js?v={h2['app.js']}".encode() in html2
+    assert h2["style.css"] == h1["style.css"]          # an untouched file keeps its URL
+    assert etag2 != etag1
+    (st / "style.css").write_text((st / "style.css").read_text() + "\n/* changed */\n")
+    assert A.render_index(st)[2]["style.css"] != h1["style.css"]
+    # same bytes, same value: both gunicorn workers (and every host) agree
+    assert A.render_index(st)[2] == A.render_index(st)[2]
+
+
+def test_hashed_assets_are_immutable_and_the_page_revalidates(c):
+    hashes = A.asset_hashes(A.APP_DIR / "static")
+    r = c.get(f"/static/app.js?v={hashes['app.js']}")
+    assert r.status_code == 200 and r.cache_control.max_age == 31536000 and r.cache_control.immutable and r.cache_control.public
+    for url in ("/static/app.js", "/static/app.js?v=0000000000", f"/static/style.css?v={hashes['app.js']}"):
+        r = c.get(url)                                      # unhashed, stale or wrong hash: short lifetime only
+        assert r.cache_control.max_age == 300 and not r.cache_control.immutable, url
+    page = c.get("/")
+    assert page.cache_control.no_cache and not page.cache_control.immutable
+    assert page.headers["ETag"] and c.get("/", headers={"If-None-Match": page.headers["ETag"]}).status_code == 304
+    assert c.get("/admin").data == page.data
 
 

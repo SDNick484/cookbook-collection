@@ -22,7 +22,7 @@ Environment:
                   in it. Unset = the machine's zone, which on a stock Alpine install is UTC
   PUBLIC_INDEXING 1 = search engines may index the public catalog (default); 0 = noindex everywhere
 """
-import csv, fcntl, io, ipaddress, json, os, re, sqlite3, threading, time, unicodedata, urllib.parse, urllib.request, uuid
+import csv, fcntl, hashlib, io, ipaddress, json, os, re, sqlite3, threading, time, unicodedata, urllib.parse, urllib.request, uuid
 from functools import wraps
 from pathlib import Path
 
@@ -728,17 +728,51 @@ def robots_txt():
 
 
 # ------------------------------------------------------------------- pages
+ASSET_FILES = ("app.js", "style.css")
+
+
+def asset_hashes(static_dir):
+    """A short content hash per asset: the same bytes give the same value in every worker and on every host."""
+    return {n: hashlib.sha256((static_dir / n).read_bytes()).hexdigest()[:10] for n in ASSET_FILES}
+
+
+def render_index(static_dir):
+    """index.html with `?v=<hash>` added to its asset links, and its ETag. Computed once at startup."""
+    hashes = asset_hashes(static_dir)
+    html = (static_dir / "index.html").read_text(encoding="utf-8")
+    for name, h in hashes.items():
+        link = f"/static/{name}"
+        assert html.count(f'"{link}"') == 1, f"index.html must link {link} once, without a version"
+        html = html.replace(f'"{link}"', f'"{link}?v={h}"')
+    body = html.encode("utf-8")
+    return body, hashlib.sha256(body).hexdigest()[:16], hashes
+
+
+_INDEX_BODY, _INDEX_ETAG, _ASSET_HASHES = render_index(APP_DIR / "static")
+_INDEX = (_INDEX_BODY, _INDEX_ETAG)
+
+
 @app.get("/")
 @app.get("/admin")
 @app.get("/admin/")
 @app.get("/admin/recipe/new")  # Dinner Log's "new house recipe" link: a path, so ?title=&return= survive the Access login
 def index():
-    return send_from_directory(APP_DIR / "static", "index.html", max_age=0)
+    html, etag = _INDEX
+    resp = Response(html, mimetype="text/html")
+    resp.set_etag(etag)
+    resp.cache_control.no_cache = True  # revalidated on every visit: it names the current asset URLs
+    return resp.make_conditional(request)
 
 
 @app.get("/static/<path:p>")
 def static_files(p):
-    return send_from_directory(APP_DIR / "static", p, max_age=300)
+    # A URL carrying the file's current content hash can never change meaning, so it may be cached for good.
+    # Any other URL (no hash, or an old one from a page cached before a deploy) keeps the short lifetime.
+    hashed = p in _ASSET_HASHES and request.args.get("v") == _ASSET_HASHES[p]
+    resp = send_from_directory(APP_DIR / "static", p, max_age=31536000 if hashed else 300)
+    if hashed:
+        resp.cache_control.immutable = True
+    return resp
 
 
 @app.get("/covers/<path:p>")

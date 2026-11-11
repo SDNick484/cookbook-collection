@@ -5,6 +5,7 @@ import urllib.request
 import pytest
 
 import ask
+import capture
 import dinnerlog
 import mcp
 import scan
@@ -37,7 +38,8 @@ def test_loopback_is_still_reachable():
 
 
 @pytest.mark.parametrize("module, name", [
-    (scan, "messages_api"), (scan, "call_claude"), (scan, "prepare_photo"),
+    (scan, "messages_api"), (scan, "call_claude"), (scan, "prepare_photo"), (scan, "model_call"),
+    (capture, "call_claude"), (capture, "run_capture_job"),
     (dinnerlog, "dl_open"), (dinnerlog, "fetch_dl_photo"), (dinnerlog, "pull_history"),
     (dinnerlog, "start_background"), (mcp, "run_tool"),
 ])

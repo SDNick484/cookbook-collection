@@ -73,6 +73,10 @@ if [ "$SVC" = "cookbooks" ]; then
         : > /run/cookbooks.pid
       fi
       pkill -f 'gunicorn.*app:app' 2>/dev/null || true
+      # like OpenRC, don't return until it has actually stopped (gunicorn shuts down gracefully, which takes a moment)
+      i=0
+      while pgrep -f 'gunicorn.*app:app' >/dev/null 2>&1 && [ "$i" -lt 20 ]; do sleep 1; i=$((i + 1)); done
+      pkill -9 -f 'gunicorn.*app:app' 2>/dev/null || true
       sleep 1
 
       su -s /bin/sh -p cookbooks -c "nohup $GUNICORN --preload --workers 2 --threads 4 --timeout 180 --bind ${BIND}:${PORT} --pid /run/cookbooks.pid --chdir /opt/cookbooks --access-logfile /var/log/cookbooks.log --error-logfile /var/log/cookbooks.log app:app >/dev/null 2>&1 &"
@@ -83,6 +87,10 @@ if [ "$SVC" = "cookbooks" ]; then
         : > /run/cookbooks.pid
       fi
       pkill -f 'gunicorn.*app:app' 2>/dev/null || true
+      # like OpenRC, don't return until it has actually stopped (gunicorn shuts down gracefully, which takes a moment)
+      i=0
+      while pgrep -f 'gunicorn.*app:app' >/dev/null 2>&1 && [ "$i" -lt 20 ]; do sleep 1; i=$((i + 1)); done
+      pkill -9 -f 'gunicorn.*app:app' 2>/dev/null || true
       sleep 1
       ;;
     status)

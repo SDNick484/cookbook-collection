@@ -642,3 +642,13 @@ def test_ask_tools_never_read_the_log(c):
                 {"recipe_id": one("SELECT id FROM recipes LIMIT 1")[0]} if name == "get_recipe" else {}
             res, _err = MC.run_tool(name, args, private=True)
             assert "undone_by" not in json.dumps(res) and "lan" not in json.dumps(res).split('"'), name
+
+
+def test_setting_is_installed_exported_and_documented():
+    head = (A.APP_DIR / "installer" / "setup-head.sh").read_text()
+    assert 'add_setting "$CONF" CHANGES_KEEP_DAYS 180' in head
+    assert "CHANGES_KEEP_DAYS" in head.split("export DATA_DIR", 1)[1].split("\n")[0]  # the service sees it
+    if (A.APP_DIR / ".env.example").exists():  # not shipped by the installer
+        assert "\nCHANGES_KEEP_DAYS=180" in (A.APP_DIR / ".env.example").read_text()
+    assert "`CHANGES_KEEP_DAYS`" in (A.APP_DIR / "README.md").read_text()
+    assert "changes.py" in (A.APP_DIR / "installer" / "build.sh").read_text()

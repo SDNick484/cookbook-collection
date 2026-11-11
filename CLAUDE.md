@@ -19,6 +19,8 @@ and an MCP server at `/mcp`. README.md is the user-facing guide; this file is ho
 | `installer/` | `build.sh` -> `dist/setup-cookbooks.sh` (Alpine/OpenRC installer: `setup-head.sh` + base64 tarball) |
 | `ops/` | Backup and health-check scripts the installer sets up; `migrate-ops` moves files from older container-named paths |
 | `tests/` | pytest; each file sets `DATA_DIR` to a temp dir and seeds from `seed.json`. `test_scan.py` covers scans, merging and the page-number forms |
+| `.github/` | `workflows/ci.yml`: `pytest` (Alpine's python3 and the current stable Python), `alpine` (apk packages, then the real installer under OpenRC, on the production release and `latest`), `ui-tests`, `upgrade-path`, `seam-contract`, `shellcheck`, `ruff`, `gitleaks`. `scripts/`: `install-openrc-stub.sh`, `run-ui-tests.sh`, `upgrade_path.py`. `dependabot.yml`: one weekly PR each for actions and pip. Actions are pinned by commit SHA |
+| `requirements-dev.txt`, `requirements-ui.txt`, `ruff.toml` | CI-only pins (production installs apk packages, so a bump never reaches a deployment) and the ruff config (E9 and F only; each per-file ignore says why) |
 
 Modules register routes onto `app.app` and add their tables in a `migrate(con)` that `init_db` calls.
 
@@ -27,6 +29,14 @@ Modules register routes onto `app.app` and add their tables in a `migrate(con)` 
 python -m pytest -q                      # full suite, ~10 s
 sh installer/build.sh                    # -> dist/setup-cookbooks.sh
 DATA_DIR=$(mktemp -d) LAN_EDIT=1 python3 app.py   # local server on :8767; /admin edits from localhost
+```
+The checks CI runs (see README, "Checks"):
+```sh
+ruff check .                              # E9 + F only; config in ruff.toml
+shellcheck --shell=sh installer/*.sh ops/* .github/scripts/*.sh
+sh .github/scripts/run-ui-tests.sh        # browser tests; fails on any skip (PYTHON=python3 to pick the interpreter)
+python3 .github/scripts/upgrade_path.py   # database from b25b194 -> current code; needs full git history
+gitleaks git --redact .                   # secrets in the history
 ```
 Chromium for Playwright checks: `/opt/pw-browsers/chromium-*/chrome-linux/chrome` (cloud sessions).
 
@@ -59,10 +69,18 @@ Chromium for Playwright checks: `/opt/pw-browsers/chromium-*/chrome-linux/chrome
 - Every write route uses `@editor_required`, which refuses cross-site edits (Origin check) before auth.
   LAN editing (`lan_identity()`) trusts only the socket peer, never forwarded headers.
 - Don't `pkill -f`/`pgrep -f` a server by a pattern that also matches your own shell command.
+- Shell scripts are POSIX sh (BusyBox ash on Alpine) and `shellcheck --shell=sh` stays clean. Disable a finding inline,
+  with the reason in a comment on the line above the directive.
+- The browser tests (`pytest.importorskip("playwright...")`) skip quietly without Chromium; CI's `ui-tests` job fails on
+  any skip. A new browser test file must be added to the list in `.github/scripts/run-ui-tests.sh`.
+- A schema or migration change must keep `upgrade_path.py` passing. If it adds something an old database has to gain
+  (a backfilled column, a new table), add a check for it there.
 - Keep the owner's domain, server names and personal setup out of the repo; use `cookbooks.example.com`.
   `tests/test_hygiene.py` fails on container/VM IDs and home-directory paths; names, hostnames and emails
   can't be listed there, so check diffs for them yourself.
 
 ## Release flow
-Develop on a branch, run the tests, open a PR, merge it, then build the installer and hand over `dist/setup-cookbooks.sh`.
+Develop on a branch, run the tests and the checks above, open a PR, wait for every CI job to pass, merge it, then build
+the installer and hand over `dist/setup-cookbooks.sh`. When production moves to a new Alpine release, change the `alpine`
+matrix and the first Python in the `pytest` matrix in `ci.yml` (the `python3` that release ships) in the same PR.
 The installer is safe to rerun. It keeps `/var/lib/cookbooks` and `/etc/conf.d/cookbooks` and backs up the DB first.

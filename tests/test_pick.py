@@ -1,5 +1,5 @@
 """Dinner Log's "Pick for tonight": /admin/api/pick (ingredients in/out, favorite vs. new, READ_TOKEN)."""
-import os, sqlite3, sys, tempfile
+import os, sys, tempfile
 from datetime import date, timedelta
 from pathlib import Path
 

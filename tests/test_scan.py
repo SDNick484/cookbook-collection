@@ -1,6 +1,6 @@
 """Whole-index scanning: a parent photo job with one child per page, merged across pages, plus the
 page-number prefixes and odd page forms those indexes use, and the daily page limit."""
-import io, json, os, sys, tempfile, time
+import io, os, sys, tempfile, time
 from pathlib import Path
 
 import pytest

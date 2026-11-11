@@ -1,6 +1,8 @@
 #!/bin/sh
 # Every 15 minutes: check the web apps on this server; tell Home Assistant when one goes down
 # (2 failed checks in a row, ~30 min) and when it comes back. Only state changes are sent.
+# /etc/conf.d/app-ops is written on the host by the installer and is optional, so it isn't in the repo.
+# shellcheck source=/dev/null
 [ -f /etc/conf.d/app-ops ] && . /etc/conf.d/app-ops
 STATE=/var/lib/app-ops/health
 LABEL=${HOST_LABEL:-$(hostname)}

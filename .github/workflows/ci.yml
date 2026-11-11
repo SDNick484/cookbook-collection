@@ -69,9 +69,15 @@ jobs:
           sh -n installer/build.sh installer/setup-head.sh ops/* .github/scripts/*.sh
 
   alpine:
-    name: alpine smoke test (alpine:3.21)
+    name: alpine smoke test (alpine:${{ matrix.alpine }})
     runs-on: ubuntu-latest
-    container: alpine:3.21
+    container: alpine:${{ matrix.alpine }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.24 is the release production runs (keep it in step with the server). `latest` is the next upgrade:
+        # it shows apk package changes before they reach production.
+        alpine: ["3.24", "latest"]
 
     steps:
       - name: Install git in container

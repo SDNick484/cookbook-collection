@@ -20,14 +20,14 @@ if [ "$(id -u)" != 0 ]; then echo "Run as root"; exit 1; fi
 if [ "${1:-}" = "--uninstall" ]; then
   rc-service cookbooks stop 2>/dev/null || true
   rc-update del cookbooks default 2>/dev/null || true
-  rm -f /etc/init.d/cookbooks /etc/periodic/daily/app-backup /etc/periodic/15min/app-health
+  rm -f /etc/init.d/cookbooks /etc/periodic/daily/app-backup /etc/periodic/15min/app-health /usr/local/bin/app-restore
   rm -rf "$APP_DIR"
   echo "Removed app, service and scheduled jobs. Data kept in $DATA_DIR, backups in /var/backups/apps."
   exit 0
 fi
 
 echo "==> Installing packages"
-apk add --no-cache python3 py3-flask py3-gunicorn py3-pillow py3-jwt py3-cryptography sqlite >/dev/null
+apk add --no-cache python3 py3-flask py3-gunicorn py3-pillow py3-jwt py3-cryptography sqlite tzdata logrotate >/dev/null
 
 if ! python3 -c "import sqlite3; c=sqlite3.connect(':memory:'); c.execute('create virtual table t using fts5(x)')" 2>/dev/null; then
   echo "    note: this sqlite has no FTS5; search will fall back to simple matching"
@@ -109,6 +109,7 @@ add_setting "$CONF" MCP_URL_TOKEN 1 "1 = also accept the token in the URL, /mcp/
 add_setting "$CONF" WISHLIST_URL http://127.0.0.1:8766 "Family wish list app (local) for 'Add to a wish list'"
 add_setting "$CONF" WISHLIST_BOOK_URL "https://www.amazon.com/s?k={q}" "Shopping link put on wish list items; {q} = ISBN (or title + author)"
 add_setting "$CONF" DINNERLOG_URL "" "Dinner Log's public address, e.g. https://dinners.example.com — turns on 'Log this dinner' links"
+add_setting "$CONF" TZ "" "Time zone, e.g. America/Los_Angeles: daily limits (Ask, photo import) reset at local midnight in it; empty = this server's own zone (UTC unless /etc/localtime is set)"
 add_setting "$CONF" HOUSE_BOOK_TITLE "House Recipes" "Title of the house book (your own recipes) when it is first created; rename it in the editor later"
 add_setting "$CONF" RETURN_URL_ORIGINS "" "Origins the recipe editor may send you back to after a save, e.g. https://dinners.example.com (comma separated)"
 add_setting "$CONF" READ_TOKEN "$(head -c 24 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')" \
@@ -132,6 +133,8 @@ description="Cookbook Collection"
 : ${DATA_DIR:=/var/lib/cookbooks}
 : ${BIND:=0.0.0.0}
 export DATA_DIR CF_TEAM_DOMAIN CF_AUD ADMIN_EMAILS LAN_EDIT LAN_CIDRS LAN_HOSTS ALLOWED_ORIGINS DINNERLOG_API_URL DINNERLOG_TOKEN ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_EFFORT ANTHROPIC_SEARCH_KEY ANTHROPIC_SEARCH_MODEL ASK_DAILY_LIMIT PHOTO_DAILY_LIMIT MCP_TOKEN MCP_PUBLIC MCP_WRITE MCP_URL_TOKEN WISHLIST_URL WISHLIST_BOOK_URL DINNERLOG_URL READ_TOKEN HOUSE_BOOK_TITLE RETURN_URL_ORIGINS
+# TZ is exported only when set: an empty TZ would mean UTC and override /etc/localtime
+if [ -n "${TZ:-}" ]; then export TZ; else unset TZ; fi
 supervisor="supervise-daemon"
 respawn_delay=5
 respawn_max=10
@@ -144,9 +147,54 @@ start_pre() { checkpath -f -o cookbooks /var/log/cookbooks.log; }
 EOF
 chmod +x /etc/init.d/cookbooks
 
+# ---------------------------------------------------------------- log rotation
+# gunicorn keeps /var/log/cookbooks.log open, so that one is rotated by copy-and-truncate: no restart, and at worst
+# a line written in the instant between the copy and the truncate is lost. app-ops.log is appended to by short-lived
+# scripts that reopen it each time, so it rotates normally. The file is written only when it doesn't exist: once
+# it's there it belongs to the owner, and an upgrade never touches it.
+echo "==> Setting up log rotation"
+LOGROTATE_CONF=/etc/logrotate.d/cookbooks
+mkdir -p /etc/logrotate.d
+if [ -f "$LOGROTATE_CONF" ]; then
+  echo "    keeping your existing $LOGROTATE_CONF"
+else
+  cat > "$LOGROTATE_CONF" <<'EOF'
+/var/log/cookbooks.log {
+    weekly
+    maxsize 10M
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}
+
+/var/log/app-ops.log {
+    monthly
+    maxsize 5M
+    rotate 6
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 root root
+}
+EOF
+  chmod 644 "$LOGROTATE_CONF"  # logrotate ignores files in logrotate.d that aren't 0644/0444, whatever the umask was
+fi
+# the logrotate package may or may not bring its own daily job; make sure there is one
+if [ ! -e /etc/periodic/daily/logrotate ]; then
+  mkdir -p /etc/periodic/daily
+  printf '#!/bin/sh\nexec %s /etc/logrotate.conf\n' "$(command -v logrotate)" > /etc/periodic/daily/logrotate
+  chmod 755 /etc/periodic/daily/logrotate
+fi
+logrotate -d "$LOGROTATE_CONF" >/dev/null 2>&1 \
+  || echo "    note: $LOGROTATE_CONF doesn't pass 'logrotate -d'; logs won't rotate until it does"
+
 # ---------------------------------------------------------------- ops jobs
 echo "==> Installing nightly backups and health checks"
-install -m 755 "$APP_DIR/ops/app-backup" "$APP_DIR/ops/app-notify" /usr/local/bin/
+install -m 755 "$APP_DIR/ops/app-backup" "$APP_DIR/ops/app-notify" "$APP_DIR/ops/app-restore" /usr/local/bin/
 mkdir -p /etc/periodic/daily /etc/periodic/15min
 ln -sf /usr/local/bin/app-backup /etc/periodic/daily/app-backup
 install -m 755 "$APP_DIR/ops/app-health" /etc/periodic/15min/app-health
@@ -178,12 +226,15 @@ grep -q '^HA_URL=\(""\|'\'''\''\)\?$' "$OPS_CONF" && echo "  - Health alerts are
 grep -q '^HA_WEBHOOK_ID=\(""\|'\'''\''\)\?$' "$OPS_CONF" && echo "  - Health alerts also need HA_WEBHOOK_ID in $OPS_CONF (the HA automation's webhook)"
 grep -q '^DINNERLOG_API_URL=\(""\|'\'''\''\)\?$' "$CONF" && echo "  - Cooking history is off until you set DINNERLOG_API_URL and DINNERLOG_TOKEN in $CONF"
 grep -q '^DINNERLOG_URL=\(""\|'\'''\''\)\?$' "$CONF" && echo "  - 'Log this dinner' links are off until you set DINNERLOG_URL in $CONF"
+# same wording as the nightly warning (app-backup prints it, or nothing when images are covered or absent)
+if msg=$(/usr/local/bin/app-backup --check-images); then echo "  - Warning: $msg"; fi
 echo "  - Private MCP: https://<your public address>/mcp with header 'Authorization: Bearer <MCP_TOKEN>'"
 echo "    (or read-only /mcp/<MCP_TOKEN> for clients that can't send headers); the token is MCP_TOKEN in $CONF"
 case " ${ADDED:-} " in
   *" MCP_WRITE "*) if [ "$UPGRADE" = 1 ]; then echo "  - The private MCP is now read-only until you set MCP_WRITE=1 in $CONF (write tools need the Bearer header)"; fi ;;
 esac
-echo "Config: $CONF, $OPS_CONF   Backups: /var/backups/apps   Logs: /var/log/cookbooks.log, /var/log/app-ops.log"
+echo "Config: $CONF, $OPS_CONF   Backups: /var/backups/apps   Logs: /var/log/cookbooks.log, /var/log/app-ops.log (rotated by logrotate: $LOGROTATE_CONF)"
+echo "Restore the database from a backup: app-restore --list, then app-restore --dry-run <snapshot>, then app-restore <snapshot>"
 if grep -Eq "^LAN_EDIT=[\"']?1[\"']?[[:space:]]*(#.*)?$" "$CONF"; then
   echo
   echo "!!  LAN editing is ON (LAN_EDIT=1 in $CONF): any device in LAN_CIDRS can edit at"

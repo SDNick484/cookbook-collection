@@ -6,7 +6,7 @@ and an MCP server at `/mcp`. README.md is the user-facing guide; this file is ho
 ## Map
 | File | What's in it |
 |---|---|
-| `app.py` | Core: schema + `init_db`, `connect()`/`db()`, `fold()` (accent/case folding, also an SQL function), FTS (`books_fts`, `recipes_fts`), auth (`editor_required`), books/recipes/facets API, index paste import (`parse_index`, `mark_duplicates`, `index_commit`), `PUBLIC_BOOKS`, `cuisine_condition()`, `env_int`/`local_midnight` |
+| `app.py` | Core: schema + `init_db`, `connect()`/`db()`, `fold()` (accent/case folding, also an SQL function), FTS (`books_fts`, `recipes_fts`), auth (`editor_required`), books/recipes/facets API, index paste import (`parse_index`, `mark_duplicates`, `index_commit`), `PUBLIC_BOOKS`, `cuisine_condition()`, `env_int`/`local_midnight`, `/healthz` (deep check: database, both FTS tables, DATA_DIR) |
 | `extras.py` | Dinner Log history (pulled over HTTP into `dl_meals` and `dl_photos`, rebuilt into `cooked`; `fetch_dl_photo`; `ensure_synced()` starts background pulls under a DB lease), `cook_rank` (the one ranking behind the Cook page `/admin/api/cook`, `/admin/api/suggest`, MCP `suggest_recipes` and Dinner Log's `/admin/api/pick`; those are thin wrappers, so change modes and ordering there), stats, photo index import (Claude API, background jobs in `photo_jobs`; whole-index scans are a parent row with one child per page, `scan_state` derives the status, `merge_pages` joins them, `pages_today` enforces `PHOTO_DAILY_LIMIT`), MCP server (`TOOLS`, `WRITE_TOOLS`, `handle_rpc`, `run_tool`), `messages_api` (Claude API call), wishlist |
 | `ask.py` | AI search: `POST /admin/api/ask`, `ask_log`, tool loop over `run_tool`, `show_results` hydration |
 | `ingredients.py` | Ingredient tags and search hints, CSV/zip import, `resolve()`, `ranked()` search ranking |
@@ -16,9 +16,11 @@ and an MCP server at `/mcp`. README.md is the user-facing guide; this file is ho
 | `house.py` | House recipes: the one `books.kind='house'` book (`ensure_house_book`, after seeding), `books.visibility`, `recipe_details` / `recipe_ingredient_lines` / `recipe_steps`, `parse_quantity`, `parse_doc`/`save_doc`, read/write routes, `safe_return_url` (`RETURN_URL_ORIGINS`), `ROLLBACK_SQL` |
 | `importer.py` | Loads the JSON export back in (`python3 -m importer`, also `import_data(con, data, ...)`): reconcile by uid, then ISBN, then title + first author; `--replace`, `--dry-run`, `--photos`. One transaction; needs `app.connect()` for `fold()`. `SKIP_SEED=1` stops `init_db` seeding an empty DB. No routes. Export carries `version` (`EXPORT_VERSION`, bump only for breaking shape changes) |
 | `static/` | Single-page app (`app.js`, `style.css`, `index.html`) |
-| `installer/` | `build.sh` -> `dist/setup-cookbooks.sh` (Alpine/OpenRC installer: `setup-head.sh` + base64 tarball) |
-| `ops/` | Backup and health-check scripts the installer sets up; `migrate-ops` moves files from older container-named paths |
+| `installer/` | `build.sh` -> `dist/setup-cookbooks.sh` (Alpine/OpenRC installer: `setup-head.sh` + base64 tarball). Also writes `/etc/logrotate.d/cookbooks` (only if absent) and installs `tzdata` |
+| `ops/` | `app-backup` (nightly snapshots; warns when images have no `BACKUP_TARGET`), `app-restore` (`--list`, `--dry-run`, restore), `app-health`, `app-notify`, all POSIX `sh` for BusyBox (no bash); `migrate-ops` moves files from older container-named paths. `tests/test_app_backup.py` and `test_app_restore.py` run the real scripts against a fake root through env overrides (`LIB_DIR`, `LOCAL_DIR`, `RC_SERVICE`, ...) and need the `sqlite3` CLI |
 | `tests/` | pytest; each file sets `DATA_DIR` to a temp dir and seeds from `seed.json`. `test_scan.py` covers scans, merging and the page-number forms |
+| `.github/` | `workflows/ci.yml`: `pytest` (Alpine's python3 and the current stable Python), `alpine` (apk packages, then the real installer under OpenRC, on the production release and `latest`), `ui-tests`, `upgrade-path`, `seam-contract`, `shellcheck`, `ruff`, `gitleaks`. `scripts/`: `install-openrc-stub.sh`, `run-ui-tests.sh`, `upgrade_path.py`. `dependabot.yml`: one weekly PR each for actions and pip. Actions are pinned by commit SHA |
+| `requirements-dev.txt`, `requirements-ui.txt`, `ruff.toml` | CI-only pins (production installs apk packages, so a bump never reaches a deployment) and the ruff config (E9 and F only; each per-file ignore says why) |
 
 Modules register routes onto `app.app` and add their tables in a `migrate(con)` that `init_db` calls.
 
@@ -26,7 +28,16 @@ Modules register routes onto `app.app` and add their tables in a `migrate(con)` 
 ```sh
 python -m pytest -q                      # full suite, ~10 s
 sh installer/build.sh                    # -> dist/setup-cookbooks.sh
+for f in installer/*.sh ops/* .github/scripts/*.sh; do sh -n "$f"; done   # one file per `sh -n`: it only parses the first
 DATA_DIR=$(mktemp -d) LAN_EDIT=1 python3 app.py   # local server on :8767; /admin edits from localhost
+```
+The checks CI runs (see README, "Checks"):
+```sh
+ruff check .                              # E9 + F only; config in ruff.toml
+shellcheck --shell=sh installer/*.sh ops/* .github/scripts/*.sh
+sh .github/scripts/run-ui-tests.sh        # browser tests; fails on any skip (PYTHON=python3 to pick the interpreter)
+python3 .github/scripts/upgrade_path.py   # database from b25b194 -> current code; needs full git history
+gitleaks git --redact .                   # secrets in the history
 ```
 Chromium for Playwright checks: `/opt/pw-browsers/chromium-*/chrome-linux/chrome` (cloud sessions).
 
@@ -34,6 +45,14 @@ Chromium for Playwright checks: `/opt/pw-browsers/chromium-*/chrome-linux/chrome
 - After a change to `static/`, bump `?v=N` on both asset links in `static/index.html` (browsers cache hard).
 - A new top-level module must be added to the `cp` list in `installer/build.sh` and imported at the bottom of `app.py`.
 - A new env var must be added to the `export` line in `installer/setup-head.sh`, or the service never sees it.
+  `TZ` is the exception: it is exported on its own line only when non-empty, because an empty `TZ` means UTC and
+  overrides `/etc/localtime`. It sets when `local_midnight()` (the Ask and photo daily limits) falls; the default is
+  the machine's zone, which is UTC on a stock Alpine install.
+- `/healthz` is public and unauthenticated. It returns only `ok`, `fts` and, on failure, a short `reason`
+  (`db`, `fts`, `data-dir`) with 503; exception text goes to the log, never the response. It must not write
+  (a public probe must not make the app touch the disk). `ops/app-health` only looks at the status code.
+- The installer never overwrites a file the owner may have edited: `/etc/conf.d/*` only gains missing keys,
+  `/etc/logrotate.d/cookbooks` is written only when absent. New ops files follow the same rule.
 - Production runs gunicorn with `--workers 2`: no state in process memory between requests (use the DB).
   Long work (> ~90 s, Cloudflare's limit) goes in a background thread with a DB row the browser polls.
 - Recipe text goes through `clean()`; comparisons go through `fold()`. Write recipes only through the app,
@@ -64,10 +83,20 @@ Chromium for Playwright checks: `/opt/pw-browsers/chromium-*/chrome-linux/chrome
 - Every write route uses `@editor_required`, which refuses cross-site edits (Origin check) before auth.
   LAN editing (`lan_identity()`) trusts only the socket peer, never forwarded headers.
 - Don't `pkill -f`/`pgrep -f` a server by a pattern that also matches your own shell command.
+- Shell scripts are POSIX sh (BusyBox ash on Alpine) and `shellcheck --shell=sh` stays clean. Disable a finding inline,
+  with the reason in a comment on the line above the directive.
+- The browser tests (`pytest.importorskip("playwright...")`) skip quietly without Chromium; CI's `ui-tests` job fails on
+  any skip. A new browser test file must be added to the list in `.github/scripts/run-ui-tests.sh`.
+- A schema or migration change must keep `upgrade_path.py` passing. If it adds something an old database has to gain
+  (a backfilled column, a new table), add a check for it there.
 - Keep the owner's domain, server names and personal setup out of the repo; use `cookbooks.example.com`.
   `tests/test_hygiene.py` fails on container/VM IDs and home-directory paths; names, hostnames and emails
   can't be listed there, so check diffs for them yourself.
 
 ## Release flow
-Develop on a branch, run the tests, open a PR, merge it, then build the installer and hand over `dist/setup-cookbooks.sh`.
-The installer is safe to rerun. It keeps `/var/lib/cookbooks` and `/etc/conf.d/cookbooks` and backs up the DB first.
+Develop on a branch, run the tests and the checks above, open a PR, wait for every CI job to pass, merge it, then build
+the installer and hand over `dist/setup-cookbooks.sh`. When production moves to a new Alpine release, change the `alpine`
+matrix and the first Python in the `pytest` matrix in `ci.yml` (the `python3` that release ships) in the same PR.
+The installer is safe to rerun. It keeps `/var/lib/cookbooks` and `/etc/conf.d/cookbooks` and backs up the DB first
+(`app-restore --list` shows that copy as `cookbooks-before-upgrade-<time>`; the CI Alpine job runs a full
+backup, change, `app-restore` cycle against the installed system).

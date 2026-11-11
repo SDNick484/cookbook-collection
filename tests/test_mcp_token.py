@@ -1,5 +1,4 @@
 """The private MCP token: accepted forms, bad input, and keeping it out of logs."""
-import io
 
 import pytest
 from werkzeug.test import EnvironBuilder

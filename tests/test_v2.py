@@ -1,5 +1,5 @@
 """v2 features: Dinner Log link, photo import, suggestions, stats, shelf, MCP."""
-import io, json, os, sqlite3, sys, tempfile, time, urllib.error
+import io, json, os, sys, tempfile, time, urllib.error
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -474,7 +474,7 @@ def test_second_cuisine_by_tag(c):
     main = c.post("/admin/api/books", json={"title": "Zz Portuguese Main", "cuisine": "Portuguese"}).json
     second = c.post("/admin/api/books", json={"title": "Zz Provincetown", "cuisine": "American",
                                                "tags": ["portuguese", "New England"]}).json
-    r = c.post(f"/admin/api/books/{second['id']}/recipes", json={"name": "Zz kale soup", "page": "40"}).json
+    c.post(f"/admin/api/books/{second['id']}/recipes", json={"name": "Zz kale soup", "page": "40"})
     titles = lambda url: {b["title"] for b in c.get(url).json["books"]}
     assert {"Zz Portuguese Main", "Zz Provincetown"} <= titles("/api/books?cuisine=Portuguese")
     assert "Zz Provincetown" in titles("/api/books?cuisine=American")

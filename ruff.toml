@@ -1,0 +1,14 @@
+# Used only by the `ruff` job in .github/workflows/ci.yml and by running `ruff check .` locally.
+# Errors only: syntax errors (E9) and pyflakes (F). No formatter, no style rules.
+[lint]
+select = ["E9", "F"]
+
+[lint.per-file-ignores]
+# `import sqlite3` is unused in extras.py itself, but tests/test_dinnerlog_http.py raises X.sqlite3.OperationalError,
+# so removing it needs a test change too. Left as is: this CI change doesn't touch app code.
+"extras.py" = ["F401"]
+# `A` is unpacked in _recipe() and never used. Harmless dead code, left alone for the same reason.
+"importer.py" = ["F841"]
+# Imports pytest fixtures (`configured` ...) from test_dinnerlog_http and takes them as test arguments,
+# which pyflakes reports as redefinitions (F811).
+"tests/test_cooked_uids.py" = ["F811"]

@@ -329,8 +329,14 @@ def t_suggest(a, private):
     return res
 
 
+SHELF_LIST_MAX = 25  # books in cooking_stats' shelf_check.lapsed; the tool output stays in the assistant's context
+
+
 def t_stats(a, private):
-    return cook.stats()
+    res = cook.stats()
+    sc = res["shelf_check"]
+    sc["lapsed_total"], sc["lapsed"] = len(sc["lapsed"]), sc["lapsed"][:SHELF_LIST_MAX]  # longest ago first
+    return res
 
 
 def t_set_want(a, private):
@@ -438,7 +444,10 @@ TOOLS = [
         count={"type": "integer", "minimum": 1, "maximum": 20, "default": 5,
                "description": "How many ideas, default 5, at most 20"})),
     ("cooking_stats", True, t_stats,
-     "What we've cooked from our cookbooks (from Dinner Log): most-used books, top-rated recipes, books never cooked from.",
+     "What we've cooked from our cookbooks (from Dinner Log): most-used books, top-rated recipes, books never cooked from. "
+     "shelf_check says what the collection is neglecting: lapsed (cooked from before, not in a year, longest ago first, "
+     f"at most {SHELF_LIST_MAX} of lapsed_total), unrated_most_cooked (books we cook from most that have no rating) "
+     "and index (cookbooks with and without a recipe index).",
      _S()),
     ("set_want_to_try", True, t_set_want, "Star (or unstar) a recipe as want-to-try.",
      {**_S(recipe_id={"type": "integer"}, want={"type": "boolean"}), "required": ["recipe_id"]}),

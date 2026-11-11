@@ -57,7 +57,7 @@ COOK_MODES = {
 }
 COOK_REST_DAYS = 90   # "lately" on the Cook page and for old favorites; Dinner Log's picker rests a dish for 21
 COOK_MAX_LIMIT = 50
-PICK_MODES = ("any", "fav", "new")
+PICK_MODES = ("any", "fav", "new", "neglected")
 PICK_FAV_MIN = 8      # the line Dinner Log draws for a favorite (its ratings are 1–10)
 PICK_MAX_TERMS = 5    # ingredients per list
 # Each recipe's cooking history: Dinner Log dinners matched to it, plus what an editor typed on the recipe.
@@ -67,6 +67,11 @@ PICK_HIST = ("LEFT JOIN (SELECT recipe_id, max(rating) AS best, max(day) AS last
 PICK_BEST = "max(coalesce(h.best, 0), coalesce(r.rating, 0))"
 PICK_LAST = "nullif(max(coalesce(h.last, ''), coalesce(r.last_made, '')), '')"
 NEVER_MADE = "h.recipe_id IS NULL AND r.last_made IS NULL"
+# "A book we haven't cooked from in a year" (cookbooks only: not websites or the house book; each ? is the date a year
+# ago). The neglected Cook mode and Stats' Shelf check both use it, so they always name the same books.
+QUIET_BOOK = ("b.kind IS NULL "
+              "AND b.id NOT IN (SELECT book_id FROM cooked WHERE book_id IS NOT NULL AND day >= ?) "
+              "AND b.id NOT IN (SELECT book_id FROM recipes WHERE last_made >= ?)")
 
 
 def pick_terms(raw):
@@ -87,7 +92,7 @@ def cook_rank(mode="any", include=(), exclude=(), cuisine=None, tag=None, rest_d
     mode  any: every recipe  new: never made  want: starred and never made
           stale: made before, but not within rest_days  rested: not made within rest_days (never made counts)
           fav: rated >= PICK_FAV_MIN (Dinner Log or the recipe's own), not made within rest_days
-          neglected: from a book we haven't cooked from in a year
+          neglected: from a cookbook we haven't cooked from in a year (never counts)
     "Made" is a Dinner Log dinner matched to the recipe, or the date an editor typed on it.
     include  every one must be used: tagged with it or in the title, exactly like the ingredient chips.
     exclude  drop recipes that use any of them. Tags cover only some recipes and few ingredients, so this is best
@@ -134,8 +139,7 @@ def cook_rank(mode="any", include=(), exclude=(), cuisine=None, tag=None, rest_d
         where += [f"{PICK_BEST} >= ?", f"coalesce({PICK_LAST}, '') < ?"]
         args += [PICK_FAV_MIN, rest]
     elif mode == "neglected":
-        where += ["b.id NOT IN (SELECT book_id FROM cooked WHERE book_id IS NOT NULL AND day >= ?)",
-                  "b.id NOT IN (SELECT book_id FROM recipes WHERE last_made >= ?)"]
+        where.append(QUIET_BOOK)
         args += [year_ago, year_ago]
     base = f" FROM recipes r JOIN books b ON b.id=r.book_id {PICK_HIST} WHERE " + " AND ".join(where)
 
@@ -253,11 +257,12 @@ def pick(mode="any", include=(), exclude=(), n=10, rest_days=21, seed=None, toda
 
     mode  fav: best rating (from Dinner Log or the recipe itself) >= PICK_FAV_MIN, not cooked in rest_days
           new: never cooked
+          neglected: from a cookbook we haven't cooked from in a year (so rest_days never applies)
           any: not cooked in rest_days (never cooked counts)
     include / exclude and the weights are cook_rank's; starred recipes outside fav mode count x3 here."""
     if mode not in PICK_MODES:
         raise ValueError("mode must be one of " + ", ".join(PICK_MODES))
-    res = cook_rank({"any": "rested", "fav": "fav", "new": "new"}[mode], include, exclude, rest_days=rest_days,
+    res = cook_rank({"any": "rested", "fav": "fav", "new": "new", "neglected": "neglected"}[mode], include, exclude, rest_days=rest_days,
                     seed=seed, today=today, n=n, star_boost=3)
     out = [{"id": r["id"], "uid": r["uid"], "name": r["name"], "page": r["page"], "url": r["url"],
             "book_id": r["book_id"], "book_uid": r["book_uid"], "book_title": r["book_title"],
@@ -276,7 +281,7 @@ def pick(mode="any", include=(), exclude=(), n=10, rest_days=21, seed=None, toda
 @app.get("/admin/api/pick")
 @core.reader_required
 def pick_route():
-    """GET ?mode=any|fav|new&with=chicken,leeks&without=pork&n=10&rest=21. Read-only; Dinner Log calls it
+    """GET ?mode=any|fav|new|neglected&with=chicken,leeks&without=pork&n=10&rest=21. Read-only; Dinner Log calls it
     over localhost with READ_TOKEN."""
     p = request.args
     try:
@@ -331,11 +336,49 @@ def collection_stats(con):
     }
 
 
+# A cookbook nobody has cooked from: no dinner matched to it, and no recipe in it with a date or rating typed on it.
+NEVER_COOKED_BOOK = ("b.id NOT IN (SELECT book_id FROM cooked WHERE book_id IS NOT NULL) "
+                     "AND b.id NOT IN (SELECT book_id FROM recipes WHERE last_made IS NOT NULL OR rating IS NOT NULL)")
+SHELF_TOP = 10  # rows in Shelf check's "most cooked, no rating"
+
+
+def books_by_dinners(con, extra="", limit=SHELF_TOP):
+    """Cookbooks by how many dinners came from them, most first (the Stats bars and Shelf check share this)."""
+    return [dict(r) for r in con.execute(
+        "SELECT b.id, b.title, count(*) AS n, max(c.day) AS last FROM cooked c JOIN books b ON b.id=c.book_id "
+        f"WHERE b.kind IS NULL{extra} GROUP BY b.id ORDER BY n DESC, last DESC LIMIT ?", (limit,))]
+
+
+def index_coverage(con):
+    """Cookbooks on the shelves, and how many have an index in the catalog (the Stats tiles and Shelf check)."""
+    one = lambda sql: con.execute(sql).fetchone()[0]
+    total = one(f"SELECT count(*) FROM books b WHERE {OWNED}")
+    indexed = one(f"SELECT count(*) FROM books b WHERE {OWNED} AND EXISTS (SELECT 1 FROM recipes r WHERE r.book_id=b.id)")
+    return {"total": total, "indexed": indexed, "not_indexed": total - indexed}
+
+
+def shelf_check(con, today=None):
+    """Editors' "Shelf check": what the collection is neglecting. Built from the same pieces as the rest of Stats:
+    `lapsed` are cookbooks cooked from before but not in the last year (the books the neglected Cook mode draws
+    from, minus the never-cooked ones, which Stats lists as `never_cooked`), longest ago first, with the date;
+    `unrated_most_cooked` the books we cook from most that have no star rating; `index` how many have an index."""
+    year_ago = ((today or date.today()) - timedelta(days=365)).isoformat()
+    lapsed = [dict(r) for r in con.execute(
+        "SELECT b.id, b.title, nullif(max(coalesce((SELECT max(day) FROM cooked WHERE book_id=b.id), ''), "
+        "coalesce((SELECT max(last_made) FROM recipes WHERE book_id=b.id), '')), '') AS last "
+        f"FROM books b WHERE {OWNED} AND {QUIET_BOOK} AND NOT ({NEVER_COOKED_BOOK}) "
+        "ORDER BY last IS NULL, last, b.title", (year_ago, year_ago))]
+    return {"lapsed": lapsed,
+            "unrated_most_cooked": books_by_dinners(con, " AND b.rating IS NULL"),
+            "index": index_coverage(con)}
+
+
 def stats():
     dinnerlog.ensure_synced()
     con = db()
     one = lambda sql, *a: con.execute(sql, a).fetchone()[0]
     year_ago = (date.today() - timedelta(days=365)).isoformat()
+    coverage = index_coverage(con)
     months = []
     # Cookbook dinners only, like the other dinner counts: saved websites (kind 'online') and no-book meals are left out.
     for r in con.execute("SELECT substr(c.day,1,7) AS m, count(*) AS n FROM cooked c JOIN books b ON b.id=c.book_id "
@@ -343,12 +386,11 @@ def stats():
                          ((date.today().replace(day=1) - timedelta(days=335)).isoformat(),)):
         months.append(dict(r))
     return {
-        "books": one(f"SELECT count(*) FROM books b WHERE {OWNED}"),
+        "books": coverage["total"],
         "online": [dict(r) for r in con.execute(  # recipe websites: not counted as cookbooks
             "SELECT b.id, b.title, count(r.id) AS recipes FROM books b LEFT JOIN recipes r ON r.book_id=b.id "
             "WHERE b.kind='online' GROUP BY b.id ORDER BY recipes DESC")],
-        "books_indexed": one(f"SELECT count(*) FROM books b WHERE {OWNED} "
-                             "AND EXISTS (SELECT 1 FROM recipes r WHERE r.book_id=b.id)"),
+        "books_indexed": coverage["indexed"],
         "recipes": one(f"SELECT count(*) FROM recipes r JOIN books b ON b.id=r.book_id WHERE {OWNED}"),  # as in books_indexed
         "want_to_try": one("SELECT count(*) FROM recipes WHERE want_to_try=1"),
         "off_shelf": [dict(r) for r in con.execute(
@@ -359,9 +401,7 @@ def stats():
             year_ago),
         "books_cooked_from": one(
             "SELECT count(DISTINCT c.book_id) FROM cooked c JOIN books b ON b.id=c.book_id WHERE b.kind IS NULL"),
-        "top_books": [dict(r) for r in con.execute(
-            "SELECT b.id, b.title, count(*) AS n, max(c.day) AS last FROM cooked c JOIN books b ON b.id=c.book_id "
-            "WHERE b.kind IS NULL GROUP BY b.id ORDER BY n DESC, last DESC LIMIT 10")],
+        "top_books": books_by_dinners(con),
         "top_recipes": [dict(r) for r in con.execute(
             "SELECT r.id, r.name, r.heading, b.id AS book_id, b.title AS book_title, count(c.meal_id) AS n, "
             "round(coalesce(avg(c.rating), r.rating),1) AS avg FROM recipes r JOIN books b ON b.id=r.book_id "
@@ -372,10 +412,8 @@ def stats():
             f"FROM books b LEFT JOIN cooked c ON c.book_id=b.id WHERE {OWNED} "
             "GROUP BY 1 ORDER BY books DESC")],
         "never_cooked": [dict(r) for r in con.execute(
-            f"SELECT b.id, b.title FROM books b WHERE {OWNED} "
-            "AND b.id NOT IN (SELECT book_id FROM cooked WHERE book_id IS NOT NULL) "
-            "AND b.id NOT IN (SELECT book_id FROM recipes WHERE last_made IS NOT NULL OR rating IS NOT NULL) "
-            "ORDER BY b.title")],
+            f"SELECT b.id, b.title FROM books b WHERE {OWNED} AND {NEVER_COOKED_BOOK} ORDER BY b.title")],
+        "shelf_check": shelf_check(con),
         "months": months,
         "dinnerlog": dinnerlog.meta_get(con, "dl_synced"),
         **collection_stats(con),

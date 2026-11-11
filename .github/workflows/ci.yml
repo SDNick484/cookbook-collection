@@ -23,7 +23,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13"]
+        # 3.14 is the python3 that alpine:3.24 (production) ships; 3.15 is the current stable release.
+        # When production moves to a new Alpine release, update the first entry along with the alpine job.
+        python-version: ["3.14", "3.15"]
 
     steps:
       - name: Checkout code

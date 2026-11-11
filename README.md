@@ -311,6 +311,25 @@ python3 -m pytest -q tests
 `set -a; . ./.env; set +a` before `python3 app.py`. (`.env` is ignored by git; on a server the settings live in
 `/etc/conf.d/cookbooks`.)
 
+### Checks
+Every pull request runs these in GitHub Actions (`.github/workflows/ci.yml`). Each can be run locally too.
+
+| Check | What it covers | Run it locally |
+|---|---|---|
+| `pytest` | The suite on the `python3` that the production Alpine release ships (3.14) and on the current stable Python (3.15) | `python3 -m pytest -q tests` |
+| `alpine` | Alpine's own packages (`apk`): the suite, then the real installer under OpenRC, `/healthz`, `/mcp`, backups, rerun and `--uninstall`. Runs on the production release and on `alpine:latest` | needs an Alpine container |
+| `ui-tests` | The browser tests (`test_ask_ui`, `test_ask_gate`, `test_frontend_errors`, `test_uid_route`). They skip without Chromium, so this job fails on any skip | `pip install -r requirements-ui.txt && python3 -m playwright install chromium && sh .github/scripts/run-ui-tests.sh` |
+| `upgrade-path` | Builds a database with the code from before uids, shelf locations and house recipes, starts the current code on it, and checks the service starts, every book and recipe has a uid, row counts hold, and search works | `python3 .github/scripts/upgrade_path.py` |
+| `seam-contract` | [Dinner Log](https://github.com/SDNick484/dinner-log)'s contract tests against this checkout (see [docs/seam.md](docs/seam.md)) | see that repo's `contract.yml` |
+| `shellcheck` | `installer/`, `ops/` and `.github/scripts/` as POSIX sh (BusyBox ash on Alpine) | `shellcheck --shell=sh installer/*.sh ops/* .github/scripts/*.sh` |
+| `ruff` | Errors only: syntax errors and pyflakes (rules in `ruff.toml`). No formatter, no style rules | `ruff check .` |
+| `gitleaks` | Secrets anywhere in the git history | `gitleaks git --redact .` |
+
+`requirements-dev.txt` and `requirements-ui.txt` are **CI-only** pins. A server installed with `installer/build.sh`
+uses Alpine's `apk` packages, so bumping a pin there never changes a deployment. Dependabot opens one grouped pull
+request a week for GitHub Actions and one for these pins. The Alpine release in the `alpine` job and the Python in the
+`pytest` job should follow the release your server runs.
+
 ### Rolling back the house recipes release
 The previous release runs on the upgraded database as is: it ignores the new column and tables, and its own checks
 keep the house book (`kind='house'`) out of every public view. To also remove the schema, run this with the service

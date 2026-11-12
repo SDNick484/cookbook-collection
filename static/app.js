@@ -34,8 +34,50 @@ async function busy(btn, fn) {
 }
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 
+/* ---------- modal dialogs: focus in, and back out ---------- */
+// A selector that finds `el` again after its view is redrawn (closing a dialog often re-renders the book page, which
+// replaces the button that opened it): its id, or its tag, classes and data-i inside the nearest [data-id] row.
+function focusPath(el) {
+  if (!el || el === document.body) return null;
+  if (el.id) return "#" + CSS.escape(el.id);
+  const own = el.tagName.toLowerCase() + [...el.classList].filter((c) => c !== "on").map((c) => "." + CSS.escape(c)).join("")
+    + (el.dataset.i != null ? `[data-i="${CSS.escape(el.dataset.i)}"]` : "");
+  const row = el.parentElement && el.parentElement.closest("[data-id]");
+  return row ? `${row.tagName.toLowerCase()}[data-id="${CSS.escape(row.dataset.id)}"] ${own}` : null;
+}
+// After a redraw: put focus back on the control that opened the dialog, unless something else already has it. Only
+// for a redraw that follows the close (a save); a dialog that was cancelled must not pull focus on a later redraw.
+function refocus() {
+  const r = S.refocus; S.refocus = null;
+  const el = r && Date.now() - r.t < 5000 && $(r.sel);
+  if (el && (!document.activeElement || document.activeElement === document.body)) el.focus();
+}
+// Open `d` as a modal: focus `first` (a selector or element; else the browser's pick, its first control). On close,
+// focus returns to whatever opened it, now or after the page behind redraws (views call refocus()). The dialog is
+// named by its first heading unless it already has a name.
+function openModal(d, first) {
+  const opener = document.activeElement;
+  $$("[data-cancel]", d).forEach((b) => b.onclick = () => d.close("cancel"));
+  S.refocus = null;
+  const back = focusPath(opener);
+  d.addEventListener("close", () => {
+    S.refocus = back && { sel: back, t: Date.now() };   // for a view that redraws after this (a save re-renders the book page)
+    if (opener && opener.isConnected && opener !== document.body) opener.focus();
+    else refocus();
+  }, { once: true });
+  const h = $("h2", d);
+  if (h && !d.hasAttribute("aria-label") && !d.hasAttribute("aria-labelledby")) {
+    h.id = h.id || "dlg-" + Math.random().toString(36).slice(2, 8);
+    d.setAttribute("aria-labelledby", h.id);
+  }
+  d.showModal();
+  const f = typeof first === "string" ? $(first, d) : first;
+  if (f) f.focus();
+}
+
 /* ---------- covers ---------- */
-const SPINES = ["#7a3b2e", "#2f5d50", "#3f4e78", "#8a6a2c", "#5b3a5e", "#2d5a73", "#6b4a32", "#4a6a3a", "#8b3c4f", "#355c5c"];
+// Placeholder-cover colours: each keeps the cream title and the dimmed author line at 4.5:1 or better (WCAG AA).
+const SPINES = ["#7a3b2e", "#2f5d50", "#3f4e78", "#7a5c22", "#5b3a5e", "#2d5a73", "#6b4a32", "#4a6a3a", "#8b3c4f", "#355c5c"];
 function spine(t) { let h = 0; for (const c of t || "") h = (h * 31 + c.charCodeAt(0)) >>> 0; return SPINES[h % SPINES.length]; }
 function coverHTML(b) {
   if (b.kind === "house" && !b.cover) return `<div class="cover ph house"><span class="t">${esc(b.title)}</span><span class="a">Our recipes</span></div>`;
@@ -101,6 +143,7 @@ async function route() {
   const cut = hash.indexOf("?");   // everything after the first "?", so an unencoded ?return=…?x=1 stays whole
   const path = cut < 0 ? hash : hash.slice(0, cut), qs = cut < 0 ? "" : hash.slice(cut + 1);
   renderNav(path);
+  S.refocus = null;
   if (S.wake) { S.wake.release().catch(() => {}); S.wake = null; }   // a recipe page's "keep screen on"
   const m = path.match(/^book\/(\d+)(?:\/(edit|index))?$/);
   const u = path.match(/^uid\/([0-9a-f]{32})(?:\/([0-9a-f]{32}))?$/);
@@ -204,13 +247,13 @@ async function homeView() {
     ]);
     if (seq !== loadSeq || !$("#summary")) return;
     const chips = [];
-    if (S.author) chips.push(`<button class="chip x" data-clear="author">${esc(S.author)}</button>`);
-    if (S.publisher) chips.push(`<button class="chip x" data-clear="publisher">${esc(S.publisher)}</button>`);
-    if (S.cuisine) chips.push(`<button class="chip x" data-clear="cuisine">${esc(S.cuisine)}</button>`);
-    if (S.tag) chips.push(`<button class="chip x" data-clear="tag">${esc(S.tag)}</button>`);
+    if (S.author) chips.push(`<button class="chip x" data-clear="author" aria-label="Remove filter: ${esc(S.author)}">${esc(S.author)}</button>`);
+    if (S.publisher) chips.push(`<button class="chip x" data-clear="publisher" aria-label="Remove filter: ${esc(S.publisher)}">${esc(S.publisher)}</button>`);
+    if (S.cuisine) chips.push(`<button class="chip x" data-clear="cuisine" aria-label="Remove filter: ${esc(S.cuisine)}">${esc(S.cuisine)}</button>`);
+    if (S.tag) chips.push(`<button class="chip x" data-clear="tag" aria-label="Remove filter: ${esc(S.tag)}">${esc(S.tag)}</button>`);
     const shelf = S.location_id && shelves.find((l) => String(l.id) === String(S.location_id));
-    if (shelf) chips.push(`<button class="chip x" data-clear="location_id">${esc(shelf.path)}</button>`);
-    if (S.ingredient) chips.push(`<button class="chip x" data-clear="ingredient">Uses ${esc(S.ingredient.toLowerCase())}</button>`);
+    if (shelf) chips.push(`<button class="chip x" data-clear="location_id" aria-label="Remove filter: ${esc(shelf.path)}">${esc(shelf.path)}</button>`);
+    if (S.ingredient) chips.push(`<button class="chip x" data-clear="ingredient" aria-label="Remove filter: uses ${esc(S.ingredient.toLowerCase())}">Uses ${esc(S.ingredient.toLowerCase())}</button>`);
     const nb = bk.books.length === bk.total ? `${bk.total} books` : bk.books.length ? `${bk.books.length} of ${bk.total} books` : "No matching books";
     $("#summary").innerHTML = `<span>${rc.count ? `${rc.count.toLocaleString()} recipe${rc.count > 1 ? "s" : ""} · ` : ""}${nb}</span>${chips.join("")}`;
     $$("[data-clear]").forEach((b) => b.onclick = () => {
@@ -293,7 +336,7 @@ const fold = (s) => (s || "").toLowerCase().normalize("NFKD").replace(/\p{M}/gu,
 const num = (x) => (+x % 1 ? (+x).toFixed(1) : String(Math.round(+x)));
 // Book rating, 0–5 in half stars: outline stars with a filled layer clipped to the rating.
 const starLabel = (v) => v == null ? "Not rated" : `${num(v)} star${v === 1 ? "" : "s"}`;
-const starsHTML = (v, cls = "") => `<span class="stars ${cls}" title="${starLabel(v)}" aria-label="${starLabel(v)}">
+const starsHTML = (v, cls = "") => `<span class="stars ${cls}" role="img" title="${starLabel(v)}" aria-label="${starLabel(v)}">
   <span class="on" style="width:${(v || 0) * 20}%">★★★★★</span>☆☆☆☆☆</span>`;
 function rateWidget(el, value, save) {
   const stars = $(".stars", el), on = $(".on", stars), txt = $(".ratev", el);
@@ -344,11 +387,11 @@ function recipeRow(r) {
   return `<li data-id="${r.id}"${r.made != null ? ` data-made="${r.made ? 1 : 0}"` : ""}><div class="rn">${r.heading ? `<span class="rh">${esc(r.heading)} · </span>` : ""}${esc(r.name)}
     ${extra.length ? `<div class="extra">${extra.join(" · ")}</div>` : ""}</div>
     ${whereHTML(r)}
-    ${ADMIN ? `<span class="acts">${S.features && S.features.dinnerlog_url && S.bookTitle ? `<a class="log" title="Log this dinner in Dinner Log" target="_blank" rel="noopener"
+    ${ADMIN ? `<span class="acts">${S.features && S.features.dinnerlog_url && S.bookTitle ? `<a class="log" title="Log this dinner in Dinner Log" aria-label="Log ${esc(r.name)} in Dinner Log" target="_blank" rel="noopener"
         href="${esc(S.features.dinnerlog_url)}/new?source_type=${r.has_detail ? "original" : "cookbook"}&source_title=${encodeURIComponent(S.bookTitle)}&source_detail=${encodeURIComponent(r.page || r.url || "")}&cookbook_book_id=${r.book_id}&cookbook_recipe_id=${r.id}${uidParams(r)}&name=${encodeURIComponent(r.heading && r.name[0] === r.name[0].toLowerCase() ? r.heading + ", " + r.name : r.name)}">🍽</a>` : ""}
-      <button title="${nph ? `${nph} photo${nph > 1 ? "s" : ""}` : "Add photos"}" class="pho ${nph ? "on" : ""}">📷${nph ? `<span class="n">${nph}</span>` : ""}</button>
-      <button title="Want to try" class="want ${r.want_to_try ? "on" : ""}">${r.want_to_try ? "★" : "☆"}</button>
-      <button title="Edit" class="edit">✎</button></span>` : ""}</li>`;
+      <button title="${nph ? `${nph} photo${nph > 1 ? "s" : ""}` : "Add photos"}" aria-label="${nph ? `Photos (${nph})` : "Add photos"}: ${esc(r.name)}" class="pho ${nph ? "on" : ""}"><span aria-hidden="true">📷${nph ? `<span class="n">${nph}</span>` : ""}</span></button>
+      <button title="Want to try" aria-label="Want to try: ${esc(r.name)}" aria-pressed="${!!r.want_to_try}" class="want ${r.want_to_try ? "on" : ""}">${r.want_to_try ? "★" : "☆"}</button>
+      <button title="Edit" aria-label="Edit ${esc(r.name)}" class="edit">✎</button></span>` : ""}</li>`;
 }
 async function bookView(id, focus) {
   const b = await api("books/" + id);
@@ -379,7 +422,7 @@ async function bookView(id, focus) {
       <div>${coverHTML(b)}</div>
       <div>
         <h1>${esc(b.title)}</h1>
-        <div class="muted">${(b.authors || []).map((a) => `<a href="#/?author=${encodeURIComponent(a)}">${esc(a)}</a>`).join(", ")}</div>
+        <div class="muted authors">${(b.authors || []).map((a) => `<a href="#/?author=${encodeURIComponent(a)}">${esc(a)}</a>`).join(", ")}</div>
         ${ADMIN && !b.kind ? `<div class="rate" id="rate">
           <span class="stars big" role="slider" tabindex="0" aria-label="Book rating" aria-valuemin="0" aria-valuemax="5"
             aria-valuenow="${b.rating ?? 0}" aria-valuetext="${starLabel(b.rating)}"><span class="on" style="width:${(b.rating || 0) * 20}%">★★★★★</span>☆☆☆☆☆</span>
@@ -404,7 +447,7 @@ async function bookView(id, focus) {
       <div class="photos">${S.bookPhotos.map((p, i) => `<button class="ph" data-i="${i}"><img loading="lazy" src="${esc(p.thumb)}" alt="${esc(p.recipe_name)}">
         <span class="pn">${esc(p.recipe_name)}</span><span class="pd">${fmtDay(p.taken_on)}${p.recipe_page ? " · p. " + esc(p.recipe_page) : ""}</span></button>`).join("")}</div>` : ""}
     <div class="section-h"><h2>Recipes <span class="muted small">${b.recipes.length || ""}</span></h2>
-      ${b.recipes.length > 12 ? `<input id="rf" type="search" placeholder="Filter recipes" style="max-width:240px">` : ""}</div>
+      ${b.recipes.length > 12 ? `<input id="rf" type="search" placeholder="Filter recipes" aria-label="Filter recipes" style="max-width:240px">` : ""}</div>
     ${ADMIN && b.made_count != null && b.recipes.length ? `<div class="seg mf" role="group" aria-label="Which recipes">${[
       ["all", `All ${b.recipes.length}`], ["made", `Made ${b.made_count}`], ["todo", `Not yet made ${b.recipes.length - b.made_count}`]].map(([k, t]) =>
       `<button type="button" data-f="${k}" aria-pressed="${k === "all"}" class="${k === "all" ? "on" : ""}">${t}</button>`).join("")}</div>` : ""}
@@ -430,6 +473,7 @@ async function bookView(id, focus) {
   });
   const hit = focus && $(`#rl li[data-id="${+focus}"]`);  // arrived from the Cook page: show which recipe
   if (hit) { hit.classList.add("hl"); hit.scrollIntoView({ block: "center" }); }
+  refocus();
   if (!ADMIN) return;
   $$(".photos .ph").forEach((el) => el.onclick = () => lightbox(S.bookPhotos, +el.dataset.i));
   if ($("#rate")) rateWidget($("#rate"), b.rating, (v) => api("books/" + id, { method: "PUT", body: { rating: v } }));
@@ -445,7 +489,7 @@ async function bookView(id, focus) {
     $(".want", li).onclick = () => busy($(".want", li), async () => {
       await api("recipes/" + r.id, { method: "PUT", body: { want_to_try: !r.want_to_try } });
       r.want_to_try = !r.want_to_try; const b2 = $(".want", li);
-      b2.classList.toggle("on", !!r.want_to_try); b2.textContent = r.want_to_try ? "★" : "☆";
+      b2.classList.toggle("on", !!r.want_to_try); b2.textContent = r.want_to_try ? "★" : "☆"; b2.setAttribute("aria-pressed", !!r.want_to_try);
     });
     $(".edit", li).onclick = () => b.kind === "house" ? (location.hash = `#/recipe/${r.uid}/edit`)
       : recipeDialog(r, id, () => bookView(id));
@@ -523,7 +567,7 @@ function askView() {
     if (r) $(".want", li).onclick = () => busy($(".want", li), async () => {
       await api("recipes/" + r.id, { method: "PUT", body: { want_to_try: !r.want_to_try } });
       r.want_to_try = !r.want_to_try; const b2 = $(".want", li);
-      b2.classList.toggle("on", !!r.want_to_try); b2.textContent = r.want_to_try ? "★" : "☆";
+      b2.classList.toggle("on", !!r.want_to_try); b2.textContent = r.want_to_try ? "★" : "☆"; b2.setAttribute("aria-pressed", !!r.want_to_try);
     });
   });
 }
@@ -540,24 +584,27 @@ function photoDialog(r, done) {
       <label class="f">Caption<input name="caption" placeholder="optional"></label></div>
     <p class="small muted" style="margin:0">Leave the date empty to use the day each photo was taken.</p>
     <div class="actions" style="justify-content:space-between;align-items:center">
-      <label class="btn primary">📷 Add photos<input type="file" accept="image/*" multiple hidden></label>
+      <label class="btn primary">📷 Add photos<input type="file" accept="image/*" multiple class="vh"></label>
       <span class="small muted" id="pst"></span><button value="close">Done</button></div>
   </form>`;
   document.body.append(d);
   const grid = $(".pgrid", d), form = $("form", d);
   const show = (list) => {
-    grid.innerHTML = list.length ? list.map((p) => `<div class="pt" data-id="${p.id}"><img src="${esc(p.thumb)}" alt="">
+    grid.innerHTML = list.length ? list.map((p) => `<div class="pt" data-id="${p.id}"><button type="button" class="pv" aria-label="View photo${p.taken_on ? ", " + fmtDay(p.taken_on) : ""}"><img src="${esc(p.thumb)}" alt=""></button>
       <span class="small muted">${fmtDay(p.taken_on)}${p.caption ? " · " + esc(p.caption) : ""}${p.from_dinner_log ? " · from Dinner Log" : ""}</span>
       <button type="button" class="x" title="Delete photo" aria-label="Delete photo">×</button></div>`).join("")
       : `<p class="muted small" style="margin:0">No photos yet. Add some of the dish you made.</p>`;
     $$(".pt", grid).forEach((el) => {
-      $("img", el).onclick = () => lightbox(list.map((p) => ({ ...p, recipe_name: r.name, recipe_page: r.page })), list.findIndex((p) => p.id === +el.dataset.id));
+      $(".pv", el).onclick = () => lightbox(list.map((p) => ({ ...p, recipe_name: r.name, recipe_page: r.page })), list.findIndex((p) => p.id === +el.dataset.id));
       $(".x", el).onclick = async () => {
         const p = list.find((x) => x.id === +el.dataset.id);
         if (!confirm(p && p.from_dinner_log
           ? "Delete this photo? It came from Dinner Log and won't be imported again, even if it's shared there again."
           : "Delete this photo?")) return;
-        try { await api("photos/" + el.dataset.id, { method: "DELETE" }); changed = true; show(list.filter((p) => p.id !== +el.dataset.id)); }
+        try {
+          await api("photos/" + el.dataset.id, { method: "DELETE" }); changed = true; show(list.filter((p) => p.id !== +el.dataset.id));
+          ($(".pgrid .x", d) || $("input[type=file]", d)).focus();   // the button that had focus is gone
+        }
         catch (e) { toast(e.message); }
       };
     });
@@ -576,14 +623,16 @@ function photoDialog(r, done) {
     st.textContent = "";
   };
   d.addEventListener("close", () => { d.remove(); if (changed) done(); });
-  d.showModal();
+  openModal(d);
 }
 
 function lightbox(list, i) {
   const d = document.createElement("dialog");
   d.className = "lb";
+  d.setAttribute("aria-label", "Photo viewer");
   const draw = () => {
     const p = list[i];
+    const had = d.contains(document.activeElement), was = had && document.activeElement.dataset.go;   // redrawn below
     d.innerHTML = `<img src="${esc(p.url)}" alt="${esc(p.recipe_name)}">
       <div class="lbbar"><div class="rn"><strong>${esc(p.recipe_name)}</strong>${p.recipe_page ? ` <span class="muted">p. ${esc(p.recipe_page)}</span>` : ""}
         <div class="small muted">${fmtDay(p.taken_on)}${p.caption ? " · " + esc(p.caption) : ""}</div></div>
@@ -591,6 +640,7 @@ function lightbox(list, i) {
         <button data-close aria-label="Close">✕</button></div>`;
     $$("[data-go]", d).forEach((b) => b.onclick = () => go(+b.dataset.go));
     $("[data-close]", d).onclick = () => d.close();
+    if (had) ($(`[data-go="${was}"]`, d) || $("[data-close]", d)).focus();   // stay on ‹ or › (or Close)
   };
   const go = (n) => { i = (i + n + list.length) % list.length; draw(); };
   d.onkeydown = (e) => { if (e.key === "ArrowLeft") go(-1); else if (e.key === "ArrowRight") go(1); };
@@ -598,7 +648,7 @@ function lightbox(list, i) {
   d.addEventListener("close", () => d.remove());
   document.body.append(d);
   draw();
-  d.showModal();
+  openModal(d, "[data-close]");
 }
 
 /* ---------- photo gallery: everything we've cooked, newest first ---------- */
@@ -662,7 +712,7 @@ function recipeDialog(r, bookId, done) {
     <label class="f">Notes<textarea name="notes">${esc(v.notes)}</textarea></label>
     <div class="actions" style="justify-content:space-between">
       ${r ? `<button type="button" class="danger" id="del">Delete</button>` : "<span></span>"}
-      <span style="display:flex;gap:8px"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="save">Save</button></span></div>
+      <span style="display:flex;gap:8px"><button type="button" data-cancel>Cancel</button><button class="primary" value="save">Save</button></span></div>
   </form>`;
   document.body.append(d);
   d.addEventListener("close", async () => {
@@ -681,7 +731,7 @@ function recipeDialog(r, bookId, done) {
     if (!confirm(`Delete “${r.name}”? You can undo it under More → Recent changes, but its photos are deleted for good.`)) return;
     await api("recipes/" + r.id, { method: "DELETE" }); d.close(); toast("Deleted"); done();
   });
-  d.showModal();
+  openModal(d, "input[name=name]");
 }
 
 /* ---------- house recipes: the recipe page (cooking mode) and the editor ---------- */
@@ -725,6 +775,7 @@ async function recipeView(uid) {
   view.innerHTML = `<a class="back" href="#/book/${r.book.id}">← ${esc(r.book.title)}</a>
     <article class="recipe">
       <h1>${esc(r.name)}</h1>
+      <p class="print-only" id="psv"></p>
       ${facts.length ? `<dl class="facts">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("")}</dl>` : ""}
       ${d.description ? `<p class="desc">${esc(d.description)}</p>` : ""}
       ${chips.length ? `<div class="tags">${chips.map((c) => `<span class="chip">${esc(c)}</span>`).join("")}</div>` : ""}
@@ -740,7 +791,7 @@ async function recipeView(uid) {
       <div class="rcols">
         <section><h2>Ingredients</h2>${r.ingredients.length ? `<ul class="ings" id="ings"></ul>` : `<p class="muted">None listed.</p>`}</section>
         <section><h2>Steps</h2>${r.steps.length ? `<ol class="rsteps">${sectioned(r.steps, (x, i) => `<li data-i="${i}"><p>${esc(x.text)}</p>
-          ${x.timer_minutes ? `<button type="button" class="timer" data-m="${x.timer_minutes}">⏱ ${MINUTES(x.timer_minutes)}</button>` : ""}</li>`)}</ol>`
+          ${x.timer_minutes ? `<button type="button" class="timer" data-m="${x.timer_minutes}" aria-label="Timer, ${MINUTES(x.timer_minutes)}">⏱ ${MINUTES(x.timer_minutes)}</button>` : ""}</li>`)}</ol>`
           : `<p class="muted">None yet.</p>`}</section>
       </div>
       ${d.notes ? `<section class="rnotes"><h2>Notes</h2><p>${esc(d.notes)}</p></section>` : ""}
@@ -754,13 +805,15 @@ async function recipeView(uid) {
       <span><span class="q">${esc([qtyText(l, st.k), l.unit].filter(Boolean).join(" "))}</span> ${esc(l.item)}${l.prep_note ? `<span class="muted">, ${esc(l.prep_note)}</span>` : ""}${l.optional ? ` <span class="muted small">(optional)</span>` : ""}</span></label></li>`);
     $$("#ings input").forEach((x) => x.onchange = () => x.closest("li").classList.toggle("done", x.checked));
   };
-  drawIngs();
+  // The printed page has no controls, so it says how the recipe is scaled: "Serves 6", or "2× the recipe".
+  const printServes = () => { $("#psv").textContent = st.servings ? `Serves ${st.servings}` : st.k !== 1 ? `${fmtQty(st.k)}× the recipe` : ""; };
+  drawIngs(); printServes();
   $$(".scale button").forEach((b) => b.onclick = () => {
     st.servings = Math.max(1, Math.min(99, st.servings + +b.dataset.d));
-    st.k = st.servings / base; $("#sv").textContent = `Serves ${st.servings}`; drawIngs();
+    st.k = st.servings / base; $("#sv").textContent = `Serves ${st.servings}`; drawIngs(); printServes();
   });
   $$(".cookctl .seg button").forEach((b) => b.onclick = () => {
-    st.k = +b.dataset.k; drawIngs();
+    st.k = +b.dataset.k; drawIngs(); printServes();
     $$(".cookctl .seg button").forEach((x) => { x.classList.toggle("on", x === b); x.setAttribute("aria-pressed", x === b); });
   });
   $$(".rsteps li[data-i] p").forEach((p) => p.onclick = () => p.closest("li").classList.toggle("done"));
@@ -826,8 +879,8 @@ function captureHTML(cap) {
       <div id="cap-photo-box" class="hidden">
         <p class="small muted">Up to ${CAP_MAX} photos of one recipe (a card, a notebook page, a printed page), in order. They are sent to
           Claude (Anthropic's API) to read; the result fills the form for you to check.</p>
-        <div class="actions"><label class="btn">📷 Take photo<input id="cap-snap" type="file" accept="image/*" capture="environment" hidden></label>
-          <label class="btn">Choose photos<input id="cap-pick" type="file" accept="image/*" multiple hidden></label>
+        <div class="actions"><label class="btn">📷 Take photo<input id="cap-snap" type="file" accept="image/*" capture="environment" class="vh"></label>
+          <label class="btn">Choose photos<input id="cap-pick" type="file" accept="image/*" multiple class="vh"></label>
           <button type="button" class="primary" id="cap-read" disabled>Read recipe</button></div>
         <div id="cap-pages" class="scanpages hidden"></div></div>
       <div id="cap-text-box" class="hidden">
@@ -992,14 +1045,14 @@ async function recipeEditView(uid, params, cap = null) {
   const ctl = (i, n) => `<div class="ectl"><button type="button" data-a="up" aria-label="Move up" ${i ? "" : "disabled"}>↑</button>
     <button type="button" data-a="down" aria-label="Move down" ${i < n - 1 ? "" : "disabled"}>↓</button><button type="button" data-a="del" aria-label="Remove">✕</button></div>`;
   const rowHTML = {
-    ing: (x, i, n) => "sec" in x ? `<li class="erow sec" data-i="${i}"><div class="ef"><input data-k="sec" placeholder="Section, e.g. For the sauce" value="${esc(x.sec)}"></div>${ctl(i, n)}</li>`
+    ing: (x, i, n) => "sec" in x ? `<li class="erow sec" data-i="${i}"><div class="ef"><input data-k="sec" placeholder="Section, e.g. For the sauce" aria-label="Ingredient section" value="${esc(x.sec)}"></div>${ctl(i, n)}</li>`
       : `<li class="erow" data-i="${i}"><div class="ef iline">
           <input data-k="quantity_text" placeholder="Qty" aria-label="Quantity" value="${esc(x.quantity_text)}">
           <input data-k="unit" placeholder="Unit" aria-label="Unit" list="dl-units" value="${esc(x.unit)}">
           <input data-k="item" placeholder="Ingredient" aria-label="Ingredient" enterkeyhint="next" value="${esc(x.item)}">
           <input data-k="prep_note" placeholder="Note, e.g. finely chopped" aria-label="Note" value="${esc(x.prep_note)}">
           <label class="chk"><input type="checkbox" data-k="optional" ${x.optional ? "checked" : ""}> optional</label></div>${ctl(i, n)}</li>`,
-    step: (x, i, n) => "sec" in x ? `<li class="erow sec" data-i="${i}"><div class="ef"><input data-k="sec" placeholder="Section, e.g. The day before" value="${esc(x.sec)}"></div>${ctl(i, n)}</li>`
+    step: (x, i, n) => "sec" in x ? `<li class="erow sec" data-i="${i}"><div class="ef"><input data-k="sec" placeholder="Section, e.g. The day before" aria-label="Step section" value="${esc(x.sec)}"></div>${ctl(i, n)}</li>`
       : `<li class="erow" data-i="${i}"><div class="ef step"><textarea data-k="text" rows="2" placeholder="What to do" aria-label="Step">${esc(x.text)}</textarea>
           <input data-k="timer_minutes" inputmode="numeric" placeholder="Timer (min)" aria-label="Timer in minutes" value="${esc(x.timer_minutes ?? "")}"></div>${ctl(i, n)}</li>`,
   };
@@ -1090,7 +1143,9 @@ function wireLocationPicker(form) {
 function locationsManager(changed = () => {}) {
   const d = document.createElement("dialog");
   d.className = "locmgr";
+  d.setAttribute("aria-label", "Shelf locations");
   let locs = [], sel = null, mode = null, err = "", note = "", dirty = false;
+  let keep = null;   // the control that was used: each change redraws the dialog, and focus goes back to it
   const kids = (parent) => locs.filter((l) => l.parent_id === parent);          // tree order, so siblings are in sort order
   const below = (id) => { const s = new Set([id]); for (const l of locs) if (s.has(l.parent_id)) s.add(l.id); return s; };   // id and its descendants
   const books = (n) => `${n} book${n === 1 ? "" : "s"}`;
@@ -1120,6 +1175,12 @@ function locationsManager(changed = () => {}) {
         <button type="button" class="primary" data-do="addtop">Add</button></div>`;
     const f = $("#lm-in", d);
     if (f) { f.focus(); if (f.select) f.select(); }
+    else {   // the same button if it's still there (↑ ↓), else the selected location, else Done
+      const k = keep && $(keep, d), other = { '[data-do="up"]': '[data-do="down"]', '[data-do="down"]': '[data-do="up"]' }[keep];
+      const k2 = other && $(other, d);   // moved to the end of its shelf: ↓ is disabled now, so ↑
+      ((k && !k.disabled && k) || (k2 && !k2.disabled && k2) || (sel != null && $(`[data-sel="${sel}"]`, d)) || $("[data-do=close]", d)).focus();
+    }
+    keep = null;
     const on = $("li.on", d);
     if (on) on.scrollIntoView({ block: "nearest" });     // the action bar can sit below the fold of a long list
   };
@@ -1134,6 +1195,7 @@ function locationsManager(changed = () => {}) {
   d.addEventListener("click", (e) => {
     const t = e.target.closest("button");
     if (!t) return;
+    keep = t.dataset.sel ? `[data-sel="${t.dataset.sel}"]` : t.dataset.do === "addtop" ? "#lm-top" : t.dataset.do ? `[data-do="${t.dataset.do}"]` : null;
     if (t.dataset.sel) { const id = +t.dataset.sel; sel = sel === id ? null : id; mode = null; err = note = ""; return render(); }
     const l = locs.find((x) => x.id === sel), v = ($("#lm-in", d) || {}).value, act = t.dataset.do;
     if (act === "close") return d.close();
@@ -1184,8 +1246,8 @@ function locationsManager(changed = () => {}) {
   d.addEventListener("cancel", (e) => { if (mode) { e.preventDefault(); mode = null; render(); } });   // Esc backs out of an open form first
   d.addEventListener("close", () => { d.remove(); if (dirty) changed(); });
   document.body.append(d);
-  d.showModal();
   d.innerHTML = `<p class="muted">Loading…</p>`;
+  openModal(d);
   reload().then(render).catch((e) => { err = e.message; render(); });
 }
 
@@ -1254,7 +1316,7 @@ async function editView(id) {
   const b = await api("books/" + id);
   view.innerHTML = `<a class="back" href="#/book/${id}">← ${esc(b.title)}</a><h1>Edit book</h1>
     <div class="panel"><div class="coverpick">${coverHTML(b)}
-      <div style="display:grid;gap:8px"><label class="btn">Upload / photograph cover<input id="cf" type="file" accept="image/*" capture="environment" hidden></label>
+      <div style="display:grid;gap:8px"><label class="btn">Upload / photograph cover<input id="cf" type="file" accept="image/*" capture="environment" class="vh"></label>
       <button id="ol">Find matches on Open Library</button></div><div id="newcover" class="coverpick"></div></div>
       <div id="cands" class="cands"></div></div>
     ${bookForm(b)}
@@ -1303,7 +1365,7 @@ async function addView() {
     <div class="panel">
       <p class="small muted" style="margin-top:0">Scan the barcode on the back cover, or type the ISBN. Details and the cover are filled in for you.</p>
       <div class="isbnrow">${canScan ? `<button class="primary" id="scan">📷 Scan barcode</button>` : ""}
-        <input id="isbn" inputmode="numeric" placeholder="ISBN (10 or 13 digits)"><button id="look">Look up</button></div>
+        <input id="isbn" inputmode="numeric" placeholder="ISBN (10 or 13 digits)" aria-label="ISBN"><button id="look">Look up</button></div>
       ${!canScan ? `<p class="small muted">Barcode scanning needs Chrome on Android over HTTPS (the site's public address, not the LAN IP).</p>` : ""}
       <div id="lookres" class="small" style="margin-top:10px"></div>
       <div id="newcover" class="coverpick" style="margin-top:10px"></div>
@@ -1379,12 +1441,12 @@ async function indexView(id) {
       (or pick them all with <strong>Choose photos</strong>); the pages are read in the background and merged into one table to check
       and add in one go. Or paste the index text: Google Lens on Android can copy it from a photo. Lines without a page number
       become headings (like “Chicken”), and the lowercase or indented lines under them become sub-entries.</p>
-      <div class="actions" style="margin-top:0"><span id="photobtns"><label class="btn primary">📷 Take photo<input id="snap" type="file" accept="image/*" capture="environment" hidden></label>
-        <label class="btn">Choose photos<input id="photos" type="file" accept="image/*" multiple hidden></label></span></div>
+      <div class="actions" style="margin-top:0"><span id="photobtns"><label class="btn primary">📷 Take photo<input id="snap" type="file" accept="image/*" capture="environment" class="vh"></label>
+        <label class="btn">Choose photos<input id="photos" type="file" accept="image/*" multiple class="vh"></label></span></div>
       <div id="scanpages" class="scanpages hidden"></div>
       <div id="photostatus" class="small muted"></div>
       <details id="pastebox"><summary class="small muted">Paste index text instead</summary>
-        <textarea id="txt" rows="8" placeholder="Chicken&#10;  braised with figs, honey, and vinegar, 350&#10;  roast, with bread salad, 342&#10;Zuni Caesar Salad, 154"></textarea>
+        <textarea id="txt" rows="8" aria-label="Index text" placeholder="Chicken&#10;  braised with figs, honey, and vinegar, 350&#10;  roast, with bread salad, 342&#10;Zuni Caesar Salad, 154"></textarea>
         <div class="actions"><button id="parse">Preview pasted text</button></div></details>
     </div>
     <div id="prev"></div>`;
@@ -1511,9 +1573,9 @@ async function indexView(id) {
     $("#prev").innerHTML = `<div class="section-h"><h2>${fresh} to add</h2><span class="muted small">${rows.length - fresh} already in this book${flagged ? ` · ${flagged} ⚠ page${flagged === 1 ? "" : "s"} to check` : ""}</span></div>
       ${rows.some((r) => r.carried) ? `<p class="small muted" style="margin:0 0 6px">Tinted headings were carried over from the page before; fix any that belong to a new section.</p>` : ""}
       <div class="overflow"><table class="preview"><thead><tr><th></th><th>Heading / recipe</th><th>Page</th></tr></thead><tbody>
-      ${rows.map((r, i) => { const k = rowKey(r, i), e = edits[k] || {}; return `<tr class="${r.duplicate ? "dup" : ""} ${r.carried ? "carried" : ""}" data-k="${esc(k)}"><td><input type="checkbox" ${(e.checked ?? !r.duplicate) ? "checked" : ""}></td>
-        <td class="hn"><input type="text" name="heading" placeholder="(no heading)" value="${esc(e.heading ?? r.heading)}"><input type="text" name="name" value="${esc(e.name ?? r.name)}"></td>
-        <td class="pg ${r.warn ? "warn" : ""}" ${r.warn ? `title="Unusual page number: check it"` : ""}><input type="text" name="page" value="${esc(e.page ?? r.page)}">${r.warn ? "<span>⚠</span>" : ""}</td></tr>`; }).join("")}</tbody></table></div>
+      ${rows.map((r, i) => { const k = rowKey(r, i), e = edits[k] || {}; return `<tr class="${r.duplicate ? "dup" : ""} ${r.carried ? "carried" : ""}" data-k="${esc(k)}"><td><input type="checkbox" aria-label="Import this line" ${(e.checked ?? !r.duplicate) ? "checked" : ""}></td>
+        <td class="hn"><input type="text" name="heading" placeholder="(no heading)" aria-label="Heading" value="${esc(e.heading ?? r.heading)}"><input type="text" name="name" aria-label="Recipe" value="${esc(e.name ?? r.name)}"></td>
+        <td class="pg ${r.warn ? "warn" : ""}" ${r.warn ? `title="Unusual page number: check it"` : ""}><input type="text" name="page" aria-label="Page" value="${esc(e.page ?? r.page)}">${r.warn ? "<span>⚠</span>" : ""}</td></tr>`; }).join("")}</tbody></table></div>
       <div class="actions"><button class="primary" id="commit">Add checked entries</button><button id="again">Start over</button></div>`;
     $("#again").onclick = () => indexView(id);
     $("#commit").onclick = () => busy($("#commit"), async () => {
@@ -1699,7 +1761,7 @@ async function wishDialog(b) {
       <span style="--pc:${esc(p.color || "#777")}">${esc(p.name)}</span></label>`).join("")}</div>
     <div class="row2"><label class="f">Price (optional)<input name="price" inputmode="decimal" placeholder="35.00"></label>
       <label class="f">Priority<select name="priority"><option value="1">High</option><option value="2" selected>Normal</option><option value="3">Low</option></select></label></div>
-    <div class="actions" style="justify-content:flex-end"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="add">Add</button></div></form>`;
+    <div class="actions" style="justify-content:flex-end"><button type="button" data-cancel>Cancel</button><button class="primary" value="add">Add</button></div></form>`;
   document.body.append(d);
   d.addEventListener("close", async () => {
     if (d.returnValue === "add") {
@@ -1711,7 +1773,7 @@ async function wishDialog(b) {
     }
     d.remove();
   });
-  d.showModal();
+  openModal(d);
 }
 
 /* ---------- Eat Your Books import ---------- */
@@ -1721,19 +1783,19 @@ async function eybView() {
       <li><strong>Bookshelf:</strong> on EYB, My Bookshelf → Export (CSV). Matches your books by ISBN and title, fills in ISBNs and formats, and adds books you don't have here yet.</li>
       <li><strong>Recipes:</strong> EYB's recipe CSV exports, one page at a time or combined into a single file. Recipes already here are skipped, so overlapping files are fine.</li>
       <li><strong>Covers:</strong> once books have ISBNs, fetch covers and details below.</li></ol>
-      <label class="btn primary">Choose an EYB CSV file<input id="eybfile" type="file" accept=".csv,text/csv" hidden></label>
+      <label class="btn primary">Choose an EYB CSV file<input id="eybfile" type="file" accept=".csv,text/csv" class="vh"></label>
       <span id="eybname" class="small muted"></span></div>
     <div id="eybprev"></div>
     <div class="panel"><h3>Ingredient lists</h3>
       <p class="small muted" style="margin-top:0">Search an ingredient on EYB (e.g. Chicken), export the results, and import them here.
         Those recipes get tagged, so searching “chicken” here also finds recipes that use chicken without saying so in the title.
         A <strong>search hint</strong> (zucchini, kale…) works the same for search and Claude, but gets no chip on the catalog page.</p>
-      <div class="isbnrow"><input id="ingname" placeholder="Ingredient, e.g. Chicken" autocomplete="off" list="dl-ing">
-        <label class="btn primary">Choose ingredient CSV<input id="ingfile" type="file" accept=".csv,text/csv" hidden></label></div>
+      <div class="isbnrow"><input id="ingname" placeholder="Ingredient, e.g. Chicken" aria-label="Ingredient" autocomplete="off" list="dl-ing">
+        <label class="btn primary">Choose ingredient CSV<input id="ingfile" type="file" accept=".csv,text/csv" class="vh"></label></div>
       <label class="chk"><input type="checkbox" id="inghint" checked> Search hint only (no chip on the catalog page)</label>
       <datalist id="dl-ing"></datalist>
       <div id="ingprev"></div>
-      <div class="zipimp"><label class="btn">Choose a zip of CSVs<input id="ingzip" type="file" accept=".zip,application/zip" hidden></label>
+      <div class="zipimp"><label class="btn">Choose a zip of CSVs<input id="ingzip" type="file" accept=".zip,application/zip" class="vh"></label>
         <span class="small muted">Many lists at once, one CSV per ingredient. Files given the same tag name are combined into one tag
         (“chicken broth” and “white stock” → Chicken stock). Or add a <code>tags.csv</code> to the zip with columns <code>file,tag,hint</code>.</span></div>
       <div id="zipprev"></div><div id="inglist" style="margin-top:12px"></div></div>
@@ -1764,7 +1826,7 @@ async function eybView() {
     $("#inglist").innerHTML = ingredients.length ? `<ul class="rlist">${ingredients.map((i) => `<li data-id="${i.id}" data-hint="${i.hint ? 1 : 0}"><div class="rn">
       <a href="#/?ingredient=${encodeURIComponent(i.name)}">${esc(i.name)}</a>${i.hint ? ` <span class="small muted">· search hint</span>` : ""}</div><span class="pg">${i.n.toLocaleString()} recipes</span>
       <span class="acts"><button class="kind" title="${i.hint ? "Show as a chip on the catalog page" : "Make it a search hint: no chip on the catalog page"}">${i.hint ? "Show chip" : "Hide chip"}</button>
-      <button class="rm" title="Remove this ingredient tag (recipes stay)">✕</button></span></li>`).join("")}</ul>` : "";
+      <button class="rm" title="Remove this ingredient tag (recipes stay)" aria-label="Remove the tag ${esc(i.name)} (recipes stay)">✕</button></span></li>`).join("")}</ul>` : "";
     $$("#inglist .kind").forEach((b) => b.onclick = async () => {
       const li = b.closest("li");
       try { await api("ingredients/" + li.dataset.id, { method: "PUT", body: { hint: li.dataset.hint !== "1" } }); } catch (e) { toast(e.message); return; }
@@ -1794,7 +1856,7 @@ async function eybView() {
     box.innerHTML = `<p class="small" style="margin:12px 0 4px"><strong>${r.total.toLocaleString()} recipes</strong> in ${r.groups.length} books: ${parts.join(", ")}.
         ${un.length ? `${un.length} book${un.length > 1 ? "s aren't" : " isn't"} in your catalog (skipped unless you pick one).` : ""}</p>
       ${un.length ? `<div class="overflow"><table class="preview eyb"><tbody>${un.map((g) => `<tr data-t="${esc(g.eyb_title)}"><td><strong>${esc(g.eyb_title)}</strong>
-        <div class="small muted">${esc(g.author)} · ${g.count} recipes</div></td><td><select class="dec">${opt(null)}</select></td></tr>`).join("")}</tbody></table></div>` : ""}
+        <div class="small muted">${esc(g.author)} · ${g.count} recipes</div></td><td><select class="dec" aria-label="Which book">${opt(null)}</select></td></tr>`).join("")}</tbody></table></div>` : ""}
       <div class="actions"><button class="primary" id="inggo">Tag recipes</button></div>`;
     $("#inggo").onclick = () => busy($("#inggo"), async () => {
       const name = $("#ingname").value.trim();
@@ -1885,7 +1947,7 @@ async function eybView() {
       `<option value="create" ${m ? "" : "selected"}>Add as a new book</option><option value="skip">Skip</option>` +
       (others.length ? `<optgroup label="Or link to">${others.map((b) => `<option value="${b.id}">${esc(b.title)}</option>`).join("")}</optgroup>` : "");
     return `<tr data-i="${x.i}"><td><strong>${esc(e.title)}</strong><div class="small muted">${esc(e.authors.join(", "))}${e.isbn ? " · " + esc(e.isbn) : ""}${e.format ? " · " + esc(e.format) : ""}</div></td>
-      <td><select class="dec">${opts}</select>
+      <td><select class="dec" aria-label="Which book">${opts}</select>
       ${x.retitle ? `<label class="chk small"><input type="checkbox" class="rt" ${x.retitle_default ? "checked" : ""}> Use EYB's title</label>` : ""}
       ${x.fills.length ? `<div class="small muted">adds ${esc(x.fills.join(", "))}</div>` : ""}</td></tr>`;
   }
@@ -1925,7 +1987,7 @@ async function eybView() {
       box.innerHTML = `<div class="section-h"><h2>Recipes: ${r.total}</h2><span class="small muted">${r.groups.length} books</span></div>
         <div class="overflow"><table class="preview eyb"><tbody>${r.groups.map((g) => `<tr data-t="${esc(g.eyb_title)}">
           <td><strong>${esc(g.eyb_title)}</strong><div class="small muted">${g.count} recipe${g.count === 1 ? "" : "s"}${g.with_pages < g.count ? ` (${g.count - g.with_pages} without page numbers)` : ""} · ${g.new} new</div></td>
-          <td><select class="dec">${opt(g.match)}</select>${g.match ? (g.method === "eyb title" ? "" : `<div class="small muted">matched by ${esc(g.method)}</div>`) : `<div class="small review hint">Not in your catalog: pick the book, add it, or skip</div>`}</td></tr>`).join("")}</tbody></table></div>
+          <td><select class="dec" aria-label="Which book">${opt(g.match)}</select>${g.match ? (g.method === "eyb title" ? "" : `<div class="small muted">matched by ${esc(g.method)}</div>`) : `<div class="small review hint">Not in your catalog: pick the book, add it, or skip</div>`}</td></tr>`).join("")}</tbody></table></div>
         ${r.groups.some((g) => !g.match) ? `<div class="actions" style="margin:6px 0"><button id="unadd">Add all unmatched as new books</button><button id="unskip">Skip all unmatched</button></div>` : ""}
         <div class="actions"><button class="primary" id="eybgo">Import recipes</button></div>`;
       const setUn = (v) => r.groups.forEach((g) => { if (!g.match) { const sel = $(`tr[data-t="${CSS.escape(g.eyb_title)}"] select`, box); if (sel) { sel.value = v; sel.onchange && sel.onchange(); } } });
@@ -2111,7 +2173,7 @@ async function statsView() {
       <p class="small muted" style="margin-top:0">${dl.meals} cookbook dinners · ${dl.recipe_matched} matched to a recipe${dl.linked ? ` (${dl.linked} logged from here)` : ""} · ${dl.book_only} matched to a book only · fetched ${esc(dl.pulled || "")}</p>
       ${dl.unmatched_titles.length ? `<p class="small">These cookbook names from Dinner Log don't match a book here. Pick the book once and every dinner with that name follows.</p>
         <ul class="rlist">${dl.unmatched_titles.map((t) => `<li data-title="${esc(t.title)}"><div class="rn">${esc(t.title)} <span class="muted small">${t.n} dinner${t.n > 1 ? "s" : ""}</span></div>
-        <select class="alias" style="max-width:55%"><option value="">Pick a book…</option></select></li>`).join("")}</ul>` : `<p class="small">Every cookbook name in Dinner Log matches a book.</p>`}`
+        <select class="alias" aria-label="Which book" style="max-width:55%"><option value="">Pick a book…</option></select></li>`).join("")}</ul>` : `<p class="small">Every cookbook name in Dinner Log matches a book.</p>`}`
       : dl.source ? `<p class="small muted" style="margin-top:0">Couldn't get cooking history from Dinner Log at <code>${esc(dl.source)}</code>${dl.error ? ` (${esc(dl.error)})` : ""}.${dl.pulled ? ` Showing what it sent at ${esc(dl.pulled)}.` : ""}</p>`
       : `<p class="small muted" style="margin-top:0">Cooking history is off. Set <code>DINNERLOG_API_URL</code> and <code>DINNERLOG_TOKEN</code> to Dinner Log's private address and its <code>HISTORY_TOKEN</code>.</p>`}</div>`;
   const sels = $$("select.alias");
@@ -2140,7 +2202,7 @@ async function linksView() {
   S.shared = null;
   view.innerHTML = `<h1 style="margin-top:18px">Recipes from websites</h1>
     <p class="muted small">Paste links to recipes from NYT Cooking, Serious Eats or other sites: one or many, in any text. Each is saved with its name and link under its website, like a cookbook's index, and opens on the site where you're signed in. Nothing is downloaded from the site, so the name comes from the link: check it below.</p>
-    <div class="panel"><textarea id="lt" rows="6" placeholder="https://cooking.nytimes.com/recipes/1017256-french-onion-soup">${esc(prefill)}</textarea>
+    <div class="panel"><textarea id="lt" rows="6" aria-label="Recipe links" placeholder="https://cooking.nytimes.com/recipes/1017256-french-onion-soup">${esc(prefill)}</textarea>
       <div class="actions"><button class="primary" id="lp">Preview</button></div><div id="lres"></div></div>
     <div class="panel"><h3>Your whole NYT Cooking Recipe Box</h3>
       <ol class="small"><li>On a computer, drag this button to the browser's bookmarks bar: <a class="btn" id="bml" href="${esc(BOOKMARKLET)}">Copy recipe links</a></li>

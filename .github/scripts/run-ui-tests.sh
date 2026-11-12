@@ -3,7 +3,7 @@
 #
 #   sh .github/scripts/run-ui-tests.sh            # PYTHON=python3 to pick the interpreter (default: python)
 #
-# These five files call pytest.importorskip("playwright.sync_api") and skip a test when Chromium can't launch. On a
+# These six files call pytest.importorskip("playwright.sync_api") and skip a test when Chromium can't launch. On a
 # machine with a broken browser install that leaves a green run that tested nothing, so here every file is run on its
 # own and must report passes and no skips. Needs Playwright and Chromium (see requirements-ui.txt).
 set -eu
@@ -13,7 +13,7 @@ out=$(mktemp)
 trap 'rm -f "$out"' EXIT
 
 failed=0
-for f in tests/test_ask_ui.py tests/test_ask_gate.py tests/test_frontend_errors.py tests/test_uid_route.py tests/test_csp_browser.py; do
+for f in tests/test_ask_ui.py tests/test_ask_gate.py tests/test_frontend_errors.py tests/test_uid_route.py tests/test_csp_browser.py tests/test_tap_targets.py; do
     printf '\n== %s\n' "$f"
     status=0
     "$PYTHON" -m pytest -q -rs -p no:cacheprovider "$f" > "$out" 2>&1 || status=$?

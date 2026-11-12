@@ -169,7 +169,9 @@ afterwards, the setting only names a new one) and can't be deleted or shelved.
   - What the model returns is treated as text: it is stripped of control characters, cut to the editor's limits, and
     never shown as HTML or acted on. A photo that says "ignore your instructions" just gets transcribed.
 - **Cook from it:** the recipe page scales by servings (or ½×–3×), lets you tick off ingredients and steps, runs a
-  timer per step, and can keep the phone's screen on while it's open.
+  timer per step, and can keep the phone's screen on while it's open. Printing it (the browser's Print) gives a clean
+  page: the title, the servings as you've scaled them, the ingredients at that scale and the steps, without the
+  buttons, timers or ticks.
 - **Who sees it:** the house book is **members only**: only someone signed in (the editors behind Access) sees it or its
   recipes. It is left out of every public view, the public search, the public MCP and every public count. Every book
   has a **Visible to** setting (Everyone / Signed-in members only) on its edit page, so you can publish the house book,

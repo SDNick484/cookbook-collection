@@ -379,7 +379,7 @@ async function bookView(id, focus) {
       <div>${coverHTML(b)}</div>
       <div>
         <h1>${esc(b.title)}</h1>
-        <div class="muted">${(b.authors || []).map((a) => `<a href="#/?author=${encodeURIComponent(a)}">${esc(a)}</a>`).join(", ")}</div>
+        <div class="muted authors">${(b.authors || []).map((a) => `<a href="#/?author=${encodeURIComponent(a)}">${esc(a)}</a>`).join(", ")}</div>
         ${ADMIN && !b.kind ? `<div class="rate" id="rate">
           <span class="stars big" role="slider" tabindex="0" aria-label="Book rating" aria-valuemin="0" aria-valuemax="5"
             aria-valuenow="${b.rating ?? 0}" aria-valuetext="${starLabel(b.rating)}"><span class="on" style="width:${(b.rating || 0) * 20}%">★★★★★</span>☆☆☆☆☆</span>

@@ -34,6 +34,47 @@ async function busy(btn, fn) {
 }
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 
+/* ---------- modal dialogs: focus in, and back out ---------- */
+// A selector that finds `el` again after its view is redrawn (closing a dialog often re-renders the book page, which
+// replaces the button that opened it): its id, or its tag, classes and data-i inside the nearest [data-id] row.
+function focusPath(el) {
+  if (!el || el === document.body) return null;
+  if (el.id) return "#" + CSS.escape(el.id);
+  const own = el.tagName.toLowerCase() + [...el.classList].filter((c) => c !== "on").map((c) => "." + CSS.escape(c)).join("")
+    + (el.dataset.i != null ? `[data-i="${CSS.escape(el.dataset.i)}"]` : "");
+  const row = el.parentElement && el.parentElement.closest("[data-id]");
+  return row ? `${row.tagName.toLowerCase()}[data-id="${CSS.escape(row.dataset.id)}"] ${own}` : null;
+}
+// After a redraw: put focus back on the control that opened the dialog, unless something else already has it. Only
+// for a redraw that follows the close (a save); a dialog that was cancelled must not pull focus on a later redraw.
+function refocus() {
+  const r = S.refocus; S.refocus = null;
+  const el = r && Date.now() - r.t < 5000 && $(r.sel);
+  if (el && (!document.activeElement || document.activeElement === document.body)) el.focus();
+}
+// Open `d` as a modal: focus `first` (a selector or element; else the browser's pick, its first control). On close,
+// focus returns to whatever opened it, now or after the page behind redraws (views call refocus()). The dialog is
+// named by its first heading unless it already has a name.
+function openModal(d, first) {
+  const opener = document.activeElement;
+  $$("[data-cancel]", d).forEach((b) => b.onclick = () => d.close("cancel"));
+  S.refocus = null;
+  const back = focusPath(opener);
+  d.addEventListener("close", () => {
+    S.refocus = back && { sel: back, t: Date.now() };   // for a view that redraws after this (a save re-renders the book page)
+    if (opener && opener.isConnected && opener !== document.body) opener.focus();
+    else refocus();
+  }, { once: true });
+  const h = $("h2", d);
+  if (h && !d.hasAttribute("aria-label") && !d.hasAttribute("aria-labelledby")) {
+    h.id = h.id || "dlg-" + Math.random().toString(36).slice(2, 8);
+    d.setAttribute("aria-labelledby", h.id);
+  }
+  d.showModal();
+  const f = typeof first === "string" ? $(first, d) : first;
+  if (f) f.focus();
+}
+
 /* ---------- covers ---------- */
 const SPINES = ["#7a3b2e", "#2f5d50", "#3f4e78", "#8a6a2c", "#5b3a5e", "#2d5a73", "#6b4a32", "#4a6a3a", "#8b3c4f", "#355c5c"];
 function spine(t) { let h = 0; for (const c of t || "") h = (h * 31 + c.charCodeAt(0)) >>> 0; return SPINES[h % SPINES.length]; }
@@ -101,6 +142,7 @@ async function route() {
   const cut = hash.indexOf("?");   // everything after the first "?", so an unencoded ?return=…?x=1 stays whole
   const path = cut < 0 ? hash : hash.slice(0, cut), qs = cut < 0 ? "" : hash.slice(cut + 1);
   renderNav(path);
+  S.refocus = null;
   if (S.wake) { S.wake.release().catch(() => {}); S.wake = null; }   // a recipe page's "keep screen on"
   const m = path.match(/^book\/(\d+)(?:\/(edit|index))?$/);
   const u = path.match(/^uid\/([0-9a-f]{32})(?:\/([0-9a-f]{32}))?$/);
@@ -430,6 +472,7 @@ async function bookView(id, focus) {
   });
   const hit = focus && $(`#rl li[data-id="${+focus}"]`);  // arrived from the Cook page: show which recipe
   if (hit) { hit.classList.add("hl"); hit.scrollIntoView({ block: "center" }); }
+  refocus();
   if (!ADMIN) return;
   $$(".photos .ph").forEach((el) => el.onclick = () => lightbox(S.bookPhotos, +el.dataset.i));
   if ($("#rate")) rateWidget($("#rate"), b.rating, (v) => api("books/" + id, { method: "PUT", body: { rating: v } }));
@@ -546,18 +589,21 @@ function photoDialog(r, done) {
   document.body.append(d);
   const grid = $(".pgrid", d), form = $("form", d);
   const show = (list) => {
-    grid.innerHTML = list.length ? list.map((p) => `<div class="pt" data-id="${p.id}"><img src="${esc(p.thumb)}" alt="">
+    grid.innerHTML = list.length ? list.map((p) => `<div class="pt" data-id="${p.id}"><button type="button" class="pv" aria-label="View photo${p.taken_on ? ", " + fmtDay(p.taken_on) : ""}"><img src="${esc(p.thumb)}" alt=""></button>
       <span class="small muted">${fmtDay(p.taken_on)}${p.caption ? " · " + esc(p.caption) : ""}${p.from_dinner_log ? " · from Dinner Log" : ""}</span>
       <button type="button" class="x" title="Delete photo" aria-label="Delete photo">×</button></div>`).join("")
       : `<p class="muted small" style="margin:0">No photos yet. Add some of the dish you made.</p>`;
     $$(".pt", grid).forEach((el) => {
-      $("img", el).onclick = () => lightbox(list.map((p) => ({ ...p, recipe_name: r.name, recipe_page: r.page })), list.findIndex((p) => p.id === +el.dataset.id));
+      $(".pv", el).onclick = () => lightbox(list.map((p) => ({ ...p, recipe_name: r.name, recipe_page: r.page })), list.findIndex((p) => p.id === +el.dataset.id));
       $(".x", el).onclick = async () => {
         const p = list.find((x) => x.id === +el.dataset.id);
         if (!confirm(p && p.from_dinner_log
           ? "Delete this photo? It came from Dinner Log and won't be imported again, even if it's shared there again."
           : "Delete this photo?")) return;
-        try { await api("photos/" + el.dataset.id, { method: "DELETE" }); changed = true; show(list.filter((p) => p.id !== +el.dataset.id)); }
+        try {
+          await api("photos/" + el.dataset.id, { method: "DELETE" }); changed = true; show(list.filter((p) => p.id !== +el.dataset.id));
+          ($(".pgrid .x", d) || $("input[type=file]", d)).focus();   // the button that had focus is gone
+        }
         catch (e) { toast(e.message); }
       };
     });
@@ -576,14 +622,16 @@ function photoDialog(r, done) {
     st.textContent = "";
   };
   d.addEventListener("close", () => { d.remove(); if (changed) done(); });
-  d.showModal();
+  openModal(d);
 }
 
 function lightbox(list, i) {
   const d = document.createElement("dialog");
   d.className = "lb";
+  d.setAttribute("aria-label", "Photo viewer");
   const draw = () => {
     const p = list[i];
+    const had = d.contains(document.activeElement), was = had && document.activeElement.dataset.go;   // redrawn below
     d.innerHTML = `<img src="${esc(p.url)}" alt="${esc(p.recipe_name)}">
       <div class="lbbar"><div class="rn"><strong>${esc(p.recipe_name)}</strong>${p.recipe_page ? ` <span class="muted">p. ${esc(p.recipe_page)}</span>` : ""}
         <div class="small muted">${fmtDay(p.taken_on)}${p.caption ? " · " + esc(p.caption) : ""}</div></div>
@@ -591,6 +639,7 @@ function lightbox(list, i) {
         <button data-close aria-label="Close">✕</button></div>`;
     $$("[data-go]", d).forEach((b) => b.onclick = () => go(+b.dataset.go));
     $("[data-close]", d).onclick = () => d.close();
+    if (had) ($(`[data-go="${was}"]`, d) || $("[data-close]", d)).focus();   // stay on ‹ or › (or Close)
   };
   const go = (n) => { i = (i + n + list.length) % list.length; draw(); };
   d.onkeydown = (e) => { if (e.key === "ArrowLeft") go(-1); else if (e.key === "ArrowRight") go(1); };
@@ -598,7 +647,7 @@ function lightbox(list, i) {
   d.addEventListener("close", () => d.remove());
   document.body.append(d);
   draw();
-  d.showModal();
+  openModal(d, "[data-close]");
 }
 
 /* ---------- photo gallery: everything we've cooked, newest first ---------- */
@@ -662,7 +711,7 @@ function recipeDialog(r, bookId, done) {
     <label class="f">Notes<textarea name="notes">${esc(v.notes)}</textarea></label>
     <div class="actions" style="justify-content:space-between">
       ${r ? `<button type="button" class="danger" id="del">Delete</button>` : "<span></span>"}
-      <span style="display:flex;gap:8px"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="save">Save</button></span></div>
+      <span style="display:flex;gap:8px"><button type="button" data-cancel>Cancel</button><button class="primary" value="save">Save</button></span></div>
   </form>`;
   document.body.append(d);
   d.addEventListener("close", async () => {
@@ -681,7 +730,7 @@ function recipeDialog(r, bookId, done) {
     if (!confirm(`Delete “${r.name}”? You can undo it under More → Recent changes, but its photos are deleted for good.`)) return;
     await api("recipes/" + r.id, { method: "DELETE" }); d.close(); toast("Deleted"); done();
   });
-  d.showModal();
+  openModal(d, "input[name=name]");
 }
 
 /* ---------- house recipes: the recipe page (cooking mode) and the editor ---------- */
@@ -1093,7 +1142,9 @@ function wireLocationPicker(form) {
 function locationsManager(changed = () => {}) {
   const d = document.createElement("dialog");
   d.className = "locmgr";
+  d.setAttribute("aria-label", "Shelf locations");
   let locs = [], sel = null, mode = null, err = "", note = "", dirty = false;
+  let keep = null;   // the control that was used: each change redraws the dialog, and focus goes back to it
   const kids = (parent) => locs.filter((l) => l.parent_id === parent);          // tree order, so siblings are in sort order
   const below = (id) => { const s = new Set([id]); for (const l of locs) if (s.has(l.parent_id)) s.add(l.id); return s; };   // id and its descendants
   const books = (n) => `${n} book${n === 1 ? "" : "s"}`;
@@ -1123,6 +1174,12 @@ function locationsManager(changed = () => {}) {
         <button type="button" class="primary" data-do="addtop">Add</button></div>`;
     const f = $("#lm-in", d);
     if (f) { f.focus(); if (f.select) f.select(); }
+    else {   // the same button if it's still there (↑ ↓), else the selected location, else Done
+      const k = keep && $(keep, d), other = { '[data-do="up"]': '[data-do="down"]', '[data-do="down"]': '[data-do="up"]' }[keep];
+      const k2 = other && $(other, d);   // moved to the end of its shelf: ↓ is disabled now, so ↑
+      ((k && !k.disabled && k) || (k2 && !k2.disabled && k2) || (sel != null && $(`[data-sel="${sel}"]`, d)) || $("[data-do=close]", d)).focus();
+    }
+    keep = null;
     const on = $("li.on", d);
     if (on) on.scrollIntoView({ block: "nearest" });     // the action bar can sit below the fold of a long list
   };
@@ -1137,6 +1194,7 @@ function locationsManager(changed = () => {}) {
   d.addEventListener("click", (e) => {
     const t = e.target.closest("button");
     if (!t) return;
+    keep = t.dataset.sel ? `[data-sel="${t.dataset.sel}"]` : t.dataset.do === "addtop" ? "#lm-top" : t.dataset.do ? `[data-do="${t.dataset.do}"]` : null;
     if (t.dataset.sel) { const id = +t.dataset.sel; sel = sel === id ? null : id; mode = null; err = note = ""; return render(); }
     const l = locs.find((x) => x.id === sel), v = ($("#lm-in", d) || {}).value, act = t.dataset.do;
     if (act === "close") return d.close();
@@ -1187,8 +1245,8 @@ function locationsManager(changed = () => {}) {
   d.addEventListener("cancel", (e) => { if (mode) { e.preventDefault(); mode = null; render(); } });   // Esc backs out of an open form first
   d.addEventListener("close", () => { d.remove(); if (dirty) changed(); });
   document.body.append(d);
-  d.showModal();
   d.innerHTML = `<p class="muted">Loading…</p>`;
+  openModal(d);
   reload().then(render).catch((e) => { err = e.message; render(); });
 }
 
@@ -1702,7 +1760,7 @@ async function wishDialog(b) {
       <span style="--pc:${esc(p.color || "#777")}">${esc(p.name)}</span></label>`).join("")}</div>
     <div class="row2"><label class="f">Price (optional)<input name="price" inputmode="decimal" placeholder="35.00"></label>
       <label class="f">Priority<select name="priority"><option value="1">High</option><option value="2" selected>Normal</option><option value="3">Low</option></select></label></div>
-    <div class="actions" style="justify-content:flex-end"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="add">Add</button></div></form>`;
+    <div class="actions" style="justify-content:flex-end"><button type="button" data-cancel>Cancel</button><button class="primary" value="add">Add</button></div></form>`;
   document.body.append(d);
   d.addEventListener("close", async () => {
     if (d.returnValue === "add") {
@@ -1714,7 +1772,7 @@ async function wishDialog(b) {
     }
     d.remove();
   });
-  d.showModal();
+  openModal(d);
 }
 
 /* ---------- Eat Your Books import ---------- */

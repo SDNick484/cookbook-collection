@@ -725,6 +725,7 @@ async function recipeView(uid) {
   view.innerHTML = `<a class="back" href="#/book/${r.book.id}">← ${esc(r.book.title)}</a>
     <article class="recipe">
       <h1>${esc(r.name)}</h1>
+      <p class="print-only" id="psv"></p>
       ${facts.length ? `<dl class="facts">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("")}</dl>` : ""}
       ${d.description ? `<p class="desc">${esc(d.description)}</p>` : ""}
       ${chips.length ? `<div class="tags">${chips.map((c) => `<span class="chip">${esc(c)}</span>`).join("")}</div>` : ""}
@@ -754,13 +755,15 @@ async function recipeView(uid) {
       <span><span class="q">${esc([qtyText(l, st.k), l.unit].filter(Boolean).join(" "))}</span> ${esc(l.item)}${l.prep_note ? `<span class="muted">, ${esc(l.prep_note)}</span>` : ""}${l.optional ? ` <span class="muted small">(optional)</span>` : ""}</span></label></li>`);
     $$("#ings input").forEach((x) => x.onchange = () => x.closest("li").classList.toggle("done", x.checked));
   };
-  drawIngs();
+  // The printed page has no controls, so it says how the recipe is scaled: "Serves 6", or "2× the recipe".
+  const printServes = () => { $("#psv").textContent = st.servings ? `Serves ${st.servings}` : st.k !== 1 ? `${fmtQty(st.k)}× the recipe` : ""; };
+  drawIngs(); printServes();
   $$(".scale button").forEach((b) => b.onclick = () => {
     st.servings = Math.max(1, Math.min(99, st.servings + +b.dataset.d));
-    st.k = st.servings / base; $("#sv").textContent = `Serves ${st.servings}`; drawIngs();
+    st.k = st.servings / base; $("#sv").textContent = `Serves ${st.servings}`; drawIngs(); printServes();
   });
   $$(".cookctl .seg button").forEach((b) => b.onclick = () => {
-    st.k = +b.dataset.k; drawIngs();
+    st.k = +b.dataset.k; drawIngs(); printServes();
     $$(".cookctl .seg button").forEach((x) => { x.classList.toggle("on", x === b); x.setAttribute("aria-pressed", x === b); });
   });
   $$(".rsteps li[data-i] p").forEach((p) => p.onclick = () => p.closest("li").classList.toggle("done"));

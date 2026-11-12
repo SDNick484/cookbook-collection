@@ -59,7 +59,16 @@ h1 { font-size: 1.8rem; } h2 { font-size: 1.3rem; } h3 { font-size: 1.05rem; }
 .search::before { content: "⌕"; position: absolute; left: 13px; top: 50%; transform: translateY(-52%); color: var(--muted); font-size: 1.15rem; }
 input, select, textarea { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line);
   border-radius: 8px; padding: 8px 10px; min-width: 0; }
-input:focus, select:focus, textarea:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); border-color: var(--accent); }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 0; border-color: var(--accent); }
+::placeholder { color: var(--muted); opacity: 1; }
+/* Keyboard focus: one ring for every control, in the accent colour (3:1 or better against both themes' backgrounds) */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+:is(button, .btn).primary:focus-visible { outline-color: var(--ink); }
+/* A file picker styled as a button: the input stays focusable (not `hidden`), and its label shows the ring */
+.vh { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); border: 0; white-space: nowrap; }
+label.btn { position: relative; }
+label.btn:has(.vh:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+label.btn.primary:has(.vh:focus-visible) { outline-color: var(--ink); }
 textarea { width: 100%; min-height: 90px; resize: vertical; }
 select { padding-right: 28px; }
 button, .btn { font: inherit; font-size: .95rem; border: 1px solid var(--line); background: var(--card); color: var(--ink);

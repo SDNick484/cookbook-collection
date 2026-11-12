@@ -76,7 +76,8 @@ function openModal(d, first) {
 }
 
 /* ---------- covers ---------- */
-const SPINES = ["#7a3b2e", "#2f5d50", "#3f4e78", "#8a6a2c", "#5b3a5e", "#2d5a73", "#6b4a32", "#4a6a3a", "#8b3c4f", "#355c5c"];
+// Placeholder-cover colours: each keeps the cream title and the dimmed author line at 4.5:1 or better (WCAG AA).
+const SPINES = ["#7a3b2e", "#2f5d50", "#3f4e78", "#7a5c22", "#5b3a5e", "#2d5a73", "#6b4a32", "#4a6a3a", "#8b3c4f", "#355c5c"];
 function spine(t) { let h = 0; for (const c of t || "") h = (h * 31 + c.charCodeAt(0)) >>> 0; return SPINES[h % SPINES.length]; }
 function coverHTML(b) {
   if (b.kind === "house" && !b.cover) return `<div class="cover ph house"><span class="t">${esc(b.title)}</span><span class="a">Our recipes</span></div>`;

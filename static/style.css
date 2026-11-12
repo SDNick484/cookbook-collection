@@ -1,6 +1,7 @@
 :root {
-  --paper: #f4efe6; --card: #fbf8f2; --ink: #2a2520; --muted: #6f665b; --line: #e2d9ca;
-  --accent: #a2412b; --accent-ink: #fff; --chip: #ece4d6; --ok: #3d6b45; --warn: #9a6a12;
+  --paper: #f4efe6; --card: #fbf8f2; --ink: #2a2520; --muted: #675e54; --line: #e2d9ca;
+  --accent: #a2412b; --accent-ink: #fff; --chip: #ece4d6; --ok: #3d6b45; --warn: #865a0e;
+  /* text colours meet WCAG AA (4.5:1) on --paper, --card and --chip in both themes; check a new pair before using it */
   --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --radius: 10px;
@@ -131,7 +132,7 @@ button:disabled { opacity: .5; cursor: default; }
 .rlist .acts button.on { color: var(--accent); }
 .rlist .extra { font-size: .85rem; color: var(--muted); margin-top: 2px; }
 .rating { color: var(--warn); font-weight: 600; font-size: .85rem; }
-.stars { position: relative; display: inline-block; color: color-mix(in srgb, var(--muted) 55%, transparent); font-size: .9rem; letter-spacing: 1px; line-height: 1; white-space: nowrap; }
+.stars { position: relative; display: inline-block; color: color-mix(in srgb, var(--muted) 80%, transparent); font-size: .9rem; letter-spacing: 1px; line-height: 1; white-space: nowrap; }
 .stars .on { position: absolute; inset: 0 auto 0 0; overflow: hidden; color: var(--warn); }
 .stars.big { font-size: 1.6rem; cursor: pointer; touch-action: manipulation; }
 .stars.big:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
@@ -398,7 +399,7 @@ dialog.locmgr { width: min(560px, calc(100vw - 24px)); max-height: calc(100dvh -
 .lm-note { color: var(--muted); margin: 6px 0; }
 
 /* house recipes: the house book's cover, the recipe page (cooking mode) and the editor */
-.cover.ph.house { background: var(--ok); }
+.cover.ph.house { background: #3d6b45; }   /* fixed: dark mode's light --ok put the cream title at 1.8:1 */
 .recipe { max-width: 900px; }
 .recipe .desc { font-size: 1.02rem; }
 .facts { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 6px 0 10px; }

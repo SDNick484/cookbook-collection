@@ -364,7 +364,7 @@ def test_push_usd_price_has_no_currency_note(c, monkeypatch):
     calls = []
     monkeypatch.setattr(WL, "wishlist_call", fake_wishlist(calls))
     bid, _ = add_wanted("Push Dollars", price_cents=3500, price_currency="USD")
-    c.post(f"/admin/api/books/{bid}/wishlist", json={"person_id": 2, "price": "99"})
+    c.post(f"/admin/api/books/{bid}/wishlist", json={"person_id": 2})  # no price sent: the book's
     item = calls[-1][2]
     assert item["price"] == "35.00" and "USD" not in item["notes"]
 
@@ -426,3 +426,61 @@ def test_list_wanted_order_priority_then_release():
              {"title": "a2", "want_priority": 1, "release_date": "2028"},
              {"title": "a1", "want_priority": 1, "release_date": "2027-05"}]
     assert [b["title"] for b in MC.wanted_order(books)] == ["a1", "a2", "b", "c"]
+
+
+# ---------- final review fixes ----------
+
+def test_fingerprint_ignores_unset_want_columns():
+    """A change recorded before the upgrade (no want columns in its snapshot) must still undo after it."""
+    import changes as CH
+    import wanted as W
+    bid = q("SELECT id FROM books WHERE kind IS NULL LIMIT 1")[0][0]
+    con = A.connect()
+    now = CH.STATE["book"](con, bid)
+    con.close()
+    before_upgrade = {**now, "row": {k: v for k, v in now["row"].items() if k not in W.COLS}}
+    assert all(now["row"][k] is None for k in W.COLS)
+    assert CH.fingerprint("book", before_upgrade) == CH.fingerprint("book", now)
+    set_ = {**now, "row": {**now["row"], "price_cents": 100}}
+    assert CH.fingerprint("book", set_) != CH.fingerprint("book", now)  # a set want field is still a change
+
+
+def test_editor_total_counts_the_collection_only(c):
+    add_wanted("Total Wanted Book")
+    r = c.get("/admin/api/books").json
+    assert len(r["books"]) == r["total"]
+    r = c.get("/admin/api/books?status=wanted").json
+    assert r["total"] == q("SELECT count(*) FROM books WHERE status='wanted'")[0][0]
+
+
+def test_shelf_counts_skip_wanted_books(c):
+    loc = a_location(c)
+    before = next(x for x in c.get("/admin/api/facets").json["locations"] if x["id"] == loc)["direct"]
+    add_wanted("Shelved Wanted Book", location_id=loc)
+    after = next(x for x in c.get("/admin/api/facets").json["locations"] if x["id"] == loc)["direct"]
+    assert after == before
+
+
+def test_becoming_wanted_takes_a_book_off_its_shelf(c):
+    loc = a_location(c)
+    bid = c.post("/admin/api/books", json={"title": "Shelf Then Wanted", "location_id": loc}).json["id"]
+    b = c.put(f"/admin/api/books/{bid}", json={"status": "wanted", "location_id": loc}).json
+    assert b["status"] == "wanted" and b["location_id"] is None
+
+
+def test_private_list_categories_skip_wanted(c, monkeypatch):
+    import mcp as MC
+    monkeypatch.setattr(MC, "MCP_TOKEN", "t0k")
+    add_wanted("Cuisine Wanted Book", cuisine="Wantedonian")
+    cats = mcp(c, "list_categories", {}, token="t0k")["structuredContent"]
+    assert all(x["name"] != "Wantedonian" for x in cats["cuisines"])
+
+
+def test_push_prefers_what_the_dialog_sends(c, monkeypatch):
+    import wishlist as WL
+    calls = []
+    monkeypatch.setattr(WL, "wishlist_call", fake_wishlist(calls))
+    bid, _ = add_wanted("Dialog Wins", price_cents=2450, price_currency="EUR", want_priority=1)
+    c.post(f"/admin/api/books/{bid}/wishlist", json={"person_id": 2, "price": "30.00", "priority": 3})
+    item = calls[-1][2]
+    assert item["price"] == "30.00" and item["priority"] == 3 and "EUR 30.00" in item["notes"]

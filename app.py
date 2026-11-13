@@ -864,7 +864,7 @@ def get_locations(con, public=False):
     least one, themselves or below, so no empty rooms and nothing from editor-only recipe websites is exposed."""
     tree = location_tree(con)
     direct = dict(con.execute("SELECT b.location_id, count(*) FROM books b WHERE b.location_id IS NOT NULL"
-                              + (f" AND {PUBLIC_BOOKS}" if public else "") + " GROUP BY b.location_id").fetchall())
+                              + f" AND {PUBLIC_BOOKS if public else IN_COLLECTION}" + " GROUP BY b.location_id").fetchall())
     n = {l["id"]: direct.get(l["id"], 0) for l in tree}
     for l in reversed(tree):  # a child comes after its parent, so this adds each subtree into its parent once
         if l["parent_id"] in n and l["parent_id"] != l["id"]:
@@ -998,8 +998,9 @@ def list_books(private):
             a = b["authors"][0] if b["authors"] else "~"
             return fold(a.split()[-1] if " " in a else a), fold(b["title"])
         books.sort(key=sname)
-    return jsonify(books=books, total=db().execute(
-        "SELECT count(*) FROM books b" + ("" if private else " WHERE " + PUBLIC_BOOKS)).fetchone()[0])
+    every = (PUBLIC_BOOKS if not private else "b.status = 'wanted'" if request.args.get("status") == "wanted"
+             else IN_COLLECTION)  # "N of M books": M is what this list holds with no filter
+    return jsonify(books=books, total=db().execute("SELECT count(*) FROM books b WHERE " + every).fetchone()[0])
 
 
 def get_book(book_id, private):
@@ -1223,6 +1224,8 @@ def book_values(data):
         else:
             v = clean(v if isinstance(v, str) else (str(v) if v is not None else None))
         vals[k] = v
+    if vals.get("status") == "wanted":  # a book we don't own isn't on a shelf
+        vals["location_id"] = None
     try:  # price, release date, buy link, priority (wanted.py); only the keys sent
         vals.update(wanted.clean_fields(data))
     except ValueError as e:

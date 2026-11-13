@@ -209,7 +209,7 @@ Keep a list of cookbooks you want to buy, both books already out and ones not re
 - **Bought it:** on a wanted book's page. It joins the catalog in place (same page, link and history), optionally straight onto a shelf. Its price and buy link are kept. Undo it under **More → Recent changes**.
 
 ### Family wish list (optional)
-If a companion wish list app runs on the same server, a wanted book's page has **Add to a wish list…**. It adds the book to the chosen person's list through the wish list app's own API on localhost, so nothing in the wish list app changes. The item uses the book's buy link, price and priority when they're set; otherwise it gets a shopping link built from the ISBN (`WISHLIST_BOOK_URL`). Cookbooks never reads or writes whether an item was bought or reserved, so there are no spoilers. **Bought it** reminds you to take the book off any wish list it's on.
+If a companion wish list app runs on the same server, a wanted book's page has **Add to a wish list…**. It adds the book to the chosen person's list through the wish list app's own API on localhost, so nothing in the wish list app changes. The dialog starts from the book's price and priority (change them there if you like), and the item links to the book's buy page when it has one; otherwise it gets a shopping link built from the ISBN (`WISHLIST_BOOK_URL`). Cookbooks never reads or writes whether an item was bought or reserved, so there are no spoilers. **Bought it** reminds you to take the book off any wish list it's on.
 
 | Setting | Default | |
 |---|---|---|

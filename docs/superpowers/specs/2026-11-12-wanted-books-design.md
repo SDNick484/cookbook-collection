@@ -181,7 +181,7 @@ authors, recipes and notes.
 | `price` | `price_cents` / 100, with currency in the notes when not USD | the dialog's price field |
 | `priority` | `want_priority` | the dialog's priority, default 2 |
 
-The dialog pre-fills price and priority from the book, so it is one tap when they're set.
+The dialog pre-fills price and priority from the book, so it is one tap when they're set. Revised in the final review: what the dialog sends wins, since the editor may have changed the pre-filled values; the book's values apply only when the dialog sends none.
 
 ### No write-back, no read-back
 

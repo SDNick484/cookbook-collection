@@ -81,8 +81,12 @@ def add_to_wishlist(book_id):
     notes = ["Cookbook"]
     if b["isbn"]:
         notes.append(f"ISBN {b['isbn']}")
-    # A wanted book's own price, buy page and priority (wanted.py) win over the dialog's and the search link.
-    price = f"{b['price_cents'] / 100:.2f}" if b["price_cents"] is not None else None
+    # The dialog starts from the book's own price and priority (wanted.py) and the editor may change them, so what
+    # it sends wins; the book's values fill in for a caller that sends none. The buy page beats the search link.
+    if d.get("price") not in (None, ""):
+        price = str(d["price"]).strip()
+    else:
+        price = f"{b['price_cents'] / 100:.2f}" if b["price_cents"] is not None else None
     if price and b["price_currency"] and b["price_currency"] != "USD":
         notes.append(f"{b['price_currency']} {price}")
     if d.get("notes"):
@@ -90,11 +94,9 @@ def add_to_wishlist(book_id):
     buy = b["buy_url"] if b["buy_url"] and b["buy_url"].lower().startswith(("http://", "https://")) else None
     item = {"name": f"{b['title']}{by}"[:200], "kind": "online",
             "url": buy or WISHLIST_BOOK_URL.replace("{q}", urllib.parse.quote_plus(q)),
-            "notes": " · ".join(notes), "priority": b["want_priority"] or int(d.get("priority") or 2)}
+            "notes": " · ".join(notes), "priority": int(d.get("priority") or b["want_priority"] or 2)}
     if price:
         item["price"] = price
-    elif d.get("price") not in (None, ""):
-        item["price"] = d["price"]
     try:
         people = {p["id"]: p["name"] for p in wishlist_call("GET", "/api/people")}
         if pid not in people:

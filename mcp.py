@@ -306,8 +306,8 @@ def t_get_recipe(a, private):
 
 def t_list_categories(a, private):
     con = db()
-    pub = "" if private else f" WHERE {core.PUBLIC_BOOKS}"
-    pub_and = "" if private else f" AND {core.PUBLIC_BOOKS}"
+    pub = f" WHERE {core.IN_COLLECTION}" if private else f" WHERE {core.PUBLIC_BOOKS}"
+    pub_and = f" AND {core.IN_COLLECTION}" if private else f" AND {core.PUBLIC_BOOKS}"
     return {
         "ingredients": [dict(r) for r in con.execute(
             "SELECT i.name, count(ri.recipe_id) AS recipes, i.hint = 1 AS search_hint FROM ingredients i "

@@ -160,3 +160,25 @@ def test_recipe_delete_error_shows_toast(browser, server, book):
     page.wait_for_selector("dialog[open] #del")
     page.click("dialog[open] #del")
     assert "Recipe delete exploded" in toast_text(page)
+
+
+def test_cover_can_be_picked_from_gallery_not_only_camera(browser, server, book):
+    """The edit screen must offer a plain file input next to the camera one.
+
+    `capture` on an <input type=file> makes Android open the camera directly with no gallery
+    option, so a lone capture input means a cover can only be replaced by taking a new photo.
+    """
+    uploads = []
+    page, _ = open_admin(browser, server, f"#/book/{book}/edit", {})
+    page.route("**/admin/api/books/*/cover", lambda route, request: (
+        uploads.append(request.method),
+        route.fulfill(status=200, content_type="application/json", body=json.dumps({"ok": True})),
+    ))
+    page.wait_for_selector("#cf-snap", state="attached")
+    assert page.locator("#cf-snap").get_attribute("capture") == "environment"
+    pick = page.locator("#cf-pick")
+    assert pick.count() == 1 and pick.get_attribute("capture") is None
+    assert pick.get_attribute("accept") == "image/*"
+    pick.set_input_files(files=[{"name": "c.jpg", "mimeType": "image/jpeg", "buffer": b"\xff\xd8\xff\xd9"}])
+    assert "Cover updated" in toast_text(page)
+    assert uploads == ["POST"]

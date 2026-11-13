@@ -139,3 +139,34 @@ export carries `dl_file` on imported photos and the importer restores it, so a r
 Cookbook Collection's public field lists in `app.py` decide what anonymous visitors get:
 `PUBLIC_RECIPE` for recipe fields and `PUBLIC_RECIPE_COOKED` (`cooked_count`) for cooking history. Last-made
 dates, ratings and per-book totals are editor-only. The public MCP tools return no cooking history.
+
+## Wanted books (for the family wish list app)
+
+Cookbooks we want to buy are books rows with `status='wanted'`. They are never public and never on the catalog.
+A companion wish list app can read them to offer "Add a cookbook from the Wanted list" on its side:
+
+`GET /admin/api/wanted[?q=words]` — editor auth, like every `/admin/api` route (Cloudflare Access, or a LAN
+editor when `LAN_EDIT=1`).
+
+```json
+{"books": [{"id": 212, "uid": "3f9c0d6e2b8a4c1f9e7d5b3a1c0e8f6d", "title": "Example Pasta Book",
+            "authors": ["A. Author"], "publisher": "Publisher", "isbn": "9780000000000",
+            "cover_url": "/covers/212.jpg", "price_cents": 3500, "price_currency": "USD",
+            "release_date": "2027-03", "released": false, "buy_url": "https://publisher.example/pasta",
+            "want_priority": 1, "on_wish_lists": ["Sam"], "created_at": "2026-11-12 09:30:00"}]}
+```
+
+| Key | Meaning |
+|---|---|
+| `uid` | The stable key: store this, not `id` (see Identifiers) |
+| `price_cents`, `price_currency` | Integer cents and an ISO 4217 code; either may be null (null currency means USD) |
+| `release_date` | `YYYY`, `YYYY-MM` or `YYYY-MM-DD`; older imported data may hold free text |
+| `released` | The release date's first day is today or earlier, in the server's `TZ`; true when there's no date or it doesn't parse |
+| `buy_url` | Publisher or shop page. Written values are http(s) only; check the scheme before linking to it |
+| `want_priority` | 1 (most wanted) to 3, or null; the same scale as the wish list app's priority |
+| `on_wish_lists` | Names of the wish lists Cookbooks has added the book to |
+
+Fields are only ever added. Renaming or removing one needs a version note here first.
+
+Cookbooks never reads or writes a wish list item's purchase or reservation state: which gift is bought, and by
+whom, stays in the wish list app.

@@ -8,6 +8,12 @@ import datetime
 import re
 from decimal import Decimal, InvalidOperation
 
+from flask import jsonify, request
+
+import app as core
+import changes
+from app import app, db, editor_required, make_err
+
 COLS = {
     "price_cents":    "INTEGER CHECK (price_cents IS NULL OR price_cents >= 0)",
     "price_currency": "TEXT",   # ISO 4217, upper-cased on write; NULL is shown as USD
@@ -121,3 +127,73 @@ def clean_fields(data):
                 raise ValueError("Priority is 1, 2 or 3")
             out["want_priority"] = p
     return out
+
+
+# ---------- the Wanted list (editors only) ----------
+
+def wanted_payload(rows):
+    """The Wanted list's books: a stable, uid-keyed shape (docs/seam.md). Fields are only ever added."""
+    import wishlist
+    today_ = today()
+    out = []
+    for b in core.book_dicts(rows, private=True):
+        out.append({
+            "id": b["id"], "uid": b["uid"], "title": b["title"], "authors": b["authors"],
+            "publisher": b["publisher"], "isbn": b["isbn"],
+            "cover_url": f"/covers/{b['cover']}" if b["cover"] else None,
+            "price_cents": b["price_cents"], "price_currency": b["price_currency"],
+            "release_date": b["release_date"], "released": is_released(b["release_date"], today_),
+            "buy_url": b["buy_url"], "want_priority": b["want_priority"],
+            "on_wish_lists": [w["person_name"] for w in wishlist.wishes_for_book(b["id"])],
+            "created_at": b["created_at"],
+        })
+    return out
+
+
+@app.get("/admin/api/wanted")
+@editor_required
+def list_wanted():
+    """Every wanted book (tens, not thousands: no paging). ?q= matches title, subtitle, author or publisher."""
+    sql, args = "SELECT b.* FROM books b WHERE b.status = 'wanted'", []
+    words, runs = core.search_words(request.args.get("q", "").strip())
+    if words:
+        if core.HAS_FTS:
+            sql += " AND b.id IN (SELECT rowid FROM books_fts WHERE books_fts MATCH ?)"
+            args.append(core.fts_query(" ".join(words)))
+        else:
+            sql += " AND fold(b.title) LIKE ?"
+            args.append(f"%{core.fold(' '.join(words))}%")
+    for t in runs:
+        sql += " AND instr(fold(b.title || ' ' || coalesce(b.subtitle, '')), ?) > 0"
+        args.append(core.fold(t))
+    return jsonify(books=wanted_payload(db().execute(sql + " ORDER BY b.id", args).fetchall()))
+
+
+@app.post("/admin/api/books/<int:book_id>/bought")
+@editor_required
+def bought(book_id):
+    """Turn a wanted book into one we own, in place: same id and uid, optionally on a shelf. The want fields stay
+    (a record of the price and buy page) and stop being shown. Recorded as op 'bought', so it can be undone."""
+    con = db()
+    row = con.execute("SELECT status, kind FROM books WHERE id=?", (book_id,)).fetchone()
+    if not row:
+        return make_err(404, "No such book")
+    if row["status"] != "wanted":
+        return make_err(409, "That book isn't on the wanted list")
+    data = request.get_json(force=True, silent=True) or {}
+    loc = core.location_arg(data.get("location_id"))
+    if loc is not None:
+        if row["kind"]:
+            return make_err(400, "Only cookbooks go on a shelf")
+        if not con.execute("SELECT 1 FROM locations WHERE id=?", (loc,)).fetchone():
+            return make_err(400, "That shelf location doesn't exist")
+    rec = changes.Recorder(con, op="bought")
+    rec.book(book_id)
+    cur = con.execute("UPDATE books SET status='owned', location_id=?, updated_at=CURRENT_TIMESTAMP "
+                      "WHERE id=? AND status='wanted'", (loc, book_id))
+    if cur.rowcount == 0:  # bought in another tab between the read and the write
+        con.rollback()
+        return make_err(409, "That book isn't on the wanted list")
+    rec.finish()
+    con.commit()
+    return core.get_book(book_id, private=True)

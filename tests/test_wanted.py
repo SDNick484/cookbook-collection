@@ -258,3 +258,76 @@ def test_private_mcp_search_books_skips_wanted(c, monkeypatch):
     add_wanted("Mcp Wanted Qzx")
     books = mcp(c, "search_books", {"query": "qzx"}, token="t0k")["structuredContent"]["books"]
     assert books == []
+
+
+# ---------- Task 4: the Wanted list and Bought it ----------
+
+WANTED_KEYS = {"id", "uid", "title", "authors", "publisher", "isbn", "cover_url", "price_cents", "price_currency",
+               "release_date", "released", "buy_url", "want_priority", "on_wish_lists", "created_at"}
+
+
+def a_location(c):
+    row = q("SELECT id FROM locations LIMIT 1")
+    if row:
+        return row[0][0]
+    return c.post("/admin/api/locations", json={"name": "Test shelf"}).json["location"]["id"]
+
+
+def test_wanted_api_lists_only_wanted(c):
+    bid, uid = add_wanted("Api Wanted", price_cents=3500, price_currency="USD", release_date="2099-01",
+                          buy_url="https://publisher.example/a", want_priority=1)
+    books = c.get("/admin/api/wanted").json["books"]
+    b = next(x for x in books if x["id"] == bid)
+    assert b["uid"] == uid and b["released"] is False and b["want_priority"] == 1
+    assert set(b) == WANTED_KEYS
+    assert all(x["id"] not in _ids(c.get("/admin/api/books")) for x in books)
+    assert {x["id"] for x in books} == {r[0] for r in q("SELECT id FROM books WHERE status='wanted'")}
+
+
+def test_wanted_api_search(c):
+    bid, _ = add_wanted("Searchable Vvwanted Book")
+    add_wanted("Something Else Wanted")
+    assert [b["id"] for b in c.get("/admin/api/wanted?q=vvwanted").json["books"]] == [bid]
+
+
+def test_wanted_api_is_editor_only(c):
+    assert c.get("/admin/api/wanted", environ_base=ANON).status_code in (401, 403)
+
+
+def test_wanted_api_survives_imported_junk(c):
+    bid, _ = add_wanted("Junk Import", release_date="Spring 2027", buy_url="javascript:alert(1)")
+    r = c.get("/admin/api/wanted")
+    assert r.status_code == 200 and next(x for x in r.json["books"] if x["id"] == bid)["released"] is True
+
+
+def test_bought_it_flips_in_place_and_undoes(c):
+    bid, uid = add_wanted("Bought Book")
+    loc = a_location(c)
+    r = c.post(f"/admin/api/books/{bid}/bought", json={"location_id": loc})
+    assert r.status_code == 200 and r.json["status"] == "owned" and r.json["uid"] == uid
+    assert r.json["location_id"] == loc
+    assert bid in _ids(c.get("/admin/api/books"))
+    assert c.get(f"/api/books/{bid}", environ_base=ANON).status_code == 200
+    change = c.get("/admin/api/changes").json["changes"][0]
+    assert change["op"] == "bought"
+    assert c.post(f"/admin/api/changes/{change['id']}/undo").status_code == 200
+    assert q("SELECT status, location_id FROM books WHERE id=?", bid)[0][:] == ("wanted", None)
+
+
+def test_bought_twice_is_409_and_records_once(c):
+    bid, _ = add_wanted("Double Tap")
+    before = q("SELECT count(*) FROM changes")[0][0]
+    assert c.post(f"/admin/api/books/{bid}/bought", json={}).status_code == 200
+    r = c.post(f"/admin/api/books/{bid}/bought", json={})
+    assert r.status_code == 409 and "wanted" in r.json["error"]
+    assert q("SELECT count(*) FROM changes")[0][0] == before + 1
+
+
+def test_bought_bad_location_is_400(c):
+    bid, _ = add_wanted("Nowhere Book")
+    assert c.post(f"/admin/api/books/{bid}/bought", json={"location_id": 987654}).status_code == 400
+    assert q("SELECT status FROM books WHERE id=?", bid)[0][0] == "wanted"
+
+
+def test_bought_unknown_book_is_404(c):
+    assert c.post("/admin/api/books/999999/bought", json={}).status_code == 404

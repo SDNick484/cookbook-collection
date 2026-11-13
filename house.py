@@ -417,7 +417,7 @@ def recipe_full(con, row, private):
 
 
 RECIPE_SQL = ("SELECT r.*, b.uid AS book_uid, b.title AS book_title, b.kind AS book_kind, b.visibility AS visibility, "
-              "b.kind AS kind FROM recipes r JOIN books b ON b.id=r.book_id")
+              "b.kind AS kind, b.status AS status FROM recipes r JOIN books b ON b.id=r.book_id")  # status: for book_public
 
 
 def _line_text(x):

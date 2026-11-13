@@ -154,7 +154,7 @@ def test_collection_stats(c):
     assert s["missing"]["year"] == before["missing"]["year"]
     # the publisher filter the bars link to matches every spelling
     titles = {b["title"] for b in c.get("/api/books?publisher=TEN SPEED PRESS").json["books"]}
-    assert {"Stats A", "Stats B", "Stats C"} <= titles and len(titles) == ten["books"] + 3
+    assert {"Stats A", "Stats B"} <= titles and len(titles) == ten["books"] + 2  # Stats C is wanted: never public
     for bid in new:
         c.delete(f"/admin/api/books/{bid}")
 

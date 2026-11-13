@@ -72,6 +72,8 @@ Chromium for Playwright checks: `/opt/pw-browsers/chromium-*/chrome-linux/chrome
 - Anonymous reads filter with `PUBLIC_BOOKS` (SQL, alias `b`) or `book_public(row)`: an allow-list of kinds (NULL
   cookbooks, `'house'`) AND `visibility='public'`. `kind='online'` is never public. Every new read path (route, MCP
   tool, count) needs one of the two, and a test in `tests/test_house.py`. "How many cookbooks" counts use `COOKBOOKS`.
+  `PUBLIC_BOOKS` and `COOKBOOKS` also exclude `status='wanted'` (`IN_COLLECTION`); editor lists of the collection
+  add `IN_COLLECTION` themselves (see wanted.py).
 - Editor-only cooking history (`made_count`, a recipe's `made`, `shelf_check`) is added only inside `private` branches, never to `book_dicts` or the public recipe fields; `PUBLIC_RECIPE_COOKED` stays the whole public view of it. "Made" has one definition (`dinnerlog.MADE_RECIPE`, the complement of `cook.NEVER_MADE`); `tests/test_insights.py` checks they agree and `tests/test_house.py::test_cooking_insights_are_editor_only` checks nothing leaks.
 - `recipe_ingredients` is the EYB tag table; a house recipe's own lines are `recipe_ingredient_lines`. Only recipes in
   the house book carry details.

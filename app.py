@@ -421,14 +421,16 @@ PUBLIC_RECIPE_COOKED = ("cooked_count",)
 PUBLIC_RECIPE_FLAGS = ("has_detail",)
 # Who may read a book without signing in. An allow-list of kinds: cookbooks (kind NULL) and the house book
 # (kind 'house', house.py) can be public; recipe websites (kind 'online') are for editors only, whatever their
-# visibility. Every anonymous read path (pages, JSON API, MCP, search, counts) filters with this or book_public().
-PUBLIC_BOOKS = "((b.kind IS NULL OR b.kind = 'house') AND b.visibility = 'public')"
-COOKBOOKS = "b.kind IS NULL"  # physical cookbooks: what "books in the collection" counts, separate from visibility
+# visibility. Wanted books (status 'wanted', wanted.py) are a shopping list, never public. Every anonymous read
+# path (pages, JSON API, MCP, search, counts) filters with this or book_public().
+IN_COLLECTION = "b.status <> 'wanted'"  # status is NOT NULL; editor lists of the collection add this themselves
+PUBLIC_BOOKS = f"({IN_COLLECTION} AND (b.kind IS NULL OR b.kind = 'house') AND b.visibility = 'public')"
+COOKBOOKS = f"(b.kind IS NULL AND {IN_COLLECTION})"  # physical cookbooks we own: what "books in the collection" counts
 
 
 def book_public(row):
-    """PUBLIC_BOOKS for a books row already loaded (a sqlite3.Row or dict with kind and visibility)."""
-    return row["kind"] in (None, "house") and row["visibility"] == "public"
+    """PUBLIC_BOOKS for a books row already loaded (a sqlite3.Row or dict with status, kind and visibility)."""
+    return row["status"] != "wanted" and row["kind"] in (None, "house") and row["visibility"] == "public"
 
 
 def book_dicts(rows, private):

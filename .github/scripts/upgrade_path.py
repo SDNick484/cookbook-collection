@@ -38,6 +38,8 @@ ROOT = Path(__file__).resolve().parents[2]
 # b25b194, "feat(ui): move Ask to a header button beside the title (#6)". Its schema has no uid columns, no
 # locations table and no house book. Keep this fixed: it is the "old" end of the upgrade.
 OLD_COMMIT = "b25b19441eb6dd568ab4c18d73cdc932cdbd0927"
+# Columns the current code adds to books for wanted books (wanted.py; this script runs old code, so no import).
+WANT_COLS = ("price_cents", "price_currency", "release_date", "buy_url", "want_priority")
 
 FTS_SHADOW = re.compile(r"^(books|recipes)_fts_(config|content|data|docsize|idx)$")
 # Tables compared by row count. `meta` is excluded: it is key/value config and gains keys as features arrive.
@@ -158,6 +160,8 @@ def verify(old_data, new_data, base, health, log_text):
             check(before == after, f"{table}: {before} before, {after} after")
     check(count(new, "books_fts") == count(new, "books"), "books_fts has one row per book")
     check(count(new, "recipes_fts") == count(new, "recipes"), "recipes_fts has one row per recipe")
+    book_cols = {r[1] for r in new.execute("PRAGMA table_info(books)")}
+    check(set(WANT_COLS) <= book_cols, "books gained the wanted columns")
 
     step("Change history")
     cols = [r[1] for r in new.execute("PRAGMA table_info(changes)")]

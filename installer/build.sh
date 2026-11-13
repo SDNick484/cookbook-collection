@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p dist "$STAGE/cookbooks"
-cp -r app.py dinnerlog.py cook.py scan.py mcp.py wishlist.py eyb.py ingredients.py photos.py online.py ask.py house.py capture.py changes.py importer.py seed.json README.md ops static tests "$STAGE/cookbooks/"
+cp -r app.py dinnerlog.py cook.py scan.py mcp.py wishlist.py wanted.py eyb.py ingredients.py photos.py online.py ask.py house.py capture.py changes.py importer.py seed.json README.md ops static tests "$STAGE/cookbooks/"
 find "$STAGE" \( -name __pycache__ -o -name .pytest_cache \) -prune -exec rm -rf {} +
 OUT=dist/setup-cookbooks.sh
 ESC_HOOK=$(printf '%s' "${HA_WEBHOOK_ID:-}" | sed 's/[\\&|]/\\&/g')

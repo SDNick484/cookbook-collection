@@ -240,9 +240,10 @@ def _init_db_locked():
     global HAS_FTS
     con = connect()
     con.executescript(SCHEMA)
-    import dinnerlog, cook, wishlist, scan, eyb, ingredients, photos, online, ask, house, capture, changes
+    import dinnerlog, cook, wishlist, scan, eyb, ingredients, photos, online, ask, house, capture, changes, wanted
     online.migrate(con)
     house.migrate(con)  # after online: books.kind must exist
+    wanted.migrate(con)
     dinnerlog.migrate(con)
     cook.migrate(con)
     wishlist.migrate(con)
@@ -449,6 +450,7 @@ def book_dicts(rows, private):
                           f"GROUP BY book_id", ids):
         counts[r[0]] = (r[1], r[2] or 0)
     paths = location_paths(db())
+    today = wanted.today() if private else None
     out = []
     for r in rows:
         d = dict(r) if private else {k: r[k] for k in PUBLIC_BOOK}
@@ -461,6 +463,7 @@ def book_dicts(rows, private):
         d["recipe_count"] = counts.get(r["id"], (0, 0))[0]
         if private:
             d["want_count"] = counts.get(r["id"], (0, 0))[1]
+            d["released"] = wanted.is_released(r["release_date"], today)  # the want fields: private only
         out.append(d)
     return out
 
@@ -1217,6 +1220,10 @@ def book_values(data):
         else:
             v = clean(v if isinstance(v, str) else (str(v) if v is not None else None))
         vals[k] = v
+    try:  # price, release date, buy link, priority (wanted.py); only the keys sent
+        vals.update(wanted.clean_fields(data))
+    except ValueError as e:
+        abort(make_err(400, str(e)))
     return vals
 
 
@@ -1882,6 +1889,7 @@ else:
     import scan  # noqa: E402,F401 — photo index import
     import mcp  # noqa: E402,F401 — features and the MCP server
     import wishlist  # noqa: E402,F401 — wish list link
+    import wanted  # noqa: E402 — books we want to buy (status 'wanted')
     import eyb  # noqa: E402,F401 — Eat Your Books import
     import ingredients  # noqa: E402,F401 — ingredient tags
     import photos  # noqa: E402,F401 — photos of dishes cooked from the books

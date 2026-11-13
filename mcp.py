@@ -193,6 +193,8 @@ def t_search_books(a, private):
     sql, args = "SELECT b.* FROM books b WHERE 1=1", []
     if not private:
         sql += " AND b.status NOT IN ('gone') AND " + core.PUBLIC_BOOKS
+    else:  # wanted books aren't the collection: list_wanted has them
+        sql += " AND " + core.IN_COLLECTION
     q = (a.get("query") or "").strip()
     if q:
         fts_words, like_words = core.search_words(q)

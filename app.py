@@ -929,6 +929,8 @@ def list_books(private):
     sql, args = "SELECT b.* FROM books b WHERE 1=1", []
     if not private:
         sql += " AND " + PUBLIC_BOOKS
+    elif request.args.get("status") != "wanted":  # wanted books show only on the Wanted screen
+        sql += " AND " + IN_COLLECTION
     words, runs = search_words(q)
     if words:
         if HAS_FTS:
@@ -1047,7 +1049,7 @@ def recipe_filter(params, private):
     """WHERE clause + args for recipe search. Each word of q must match the recipe's name/index heading or
     one of its ingredient tags; ingredient= limits to recipes that use it (see ingredients.ingredient_condition)."""
     import ingredients
-    where, args = ([] if private else [PUBLIC_BOOKS]), []
+    where, args = ([IN_COLLECTION] if private else [PUBLIC_BOOKS]), []
     q = (params.get("q") or "").strip()
     words, runs = search_words(q)
     for tok in (words + runs)[:8]:
@@ -1132,8 +1134,8 @@ def recipe_books(private):
 def facets(private):
     d = db()
     by_name = lambda rows: sorted((dict(r) for r in rows), key=lambda x: fold(x["name"]))  # É with E, not after Z
-    pub = "" if private else f" WHERE {PUBLIC_BOOKS}"
-    pub_and = "" if private else f" AND {PUBLIC_BOOKS}"
+    pub = f" WHERE {IN_COLLECTION}" if private else f" WHERE {PUBLIC_BOOKS}"
+    pub_and = f" AND {IN_COLLECTION}" if private else f" AND {PUBLIC_BOOKS}"
     return jsonify(
         cuisines=by_name(d.execute(
             "SELECT c.name, count(*) AS n FROM (SELECT DISTINCT cuisine AS name FROM books b WHERE cuisine IS NOT NULL"
@@ -1146,7 +1148,8 @@ def facets(private):
             "SELECT a.name, count(*) AS n FROM authors a JOIN book_authors ba ON ba.author_id=a.id "
             "JOIN books b ON b.id=ba.book_id" + pub + " GROUP BY a.id")),
         publishers=sorted((r[0] for r in d.execute(
-            "SELECT DISTINCT publisher FROM books WHERE publisher IS NOT NULL")), key=fold) if private else [],
+            f"SELECT DISTINCT publisher FROM books b WHERE publisher IS NOT NULL AND {IN_COLLECTION}")), key=fold)
+            if private else [],
         locations=get_locations(d, public=not private),  # editors get empty ones too, for the picker
         stats={"books": d.execute(f"SELECT count(*) FROM books b WHERE {COOKBOOKS}" + pub_and).fetchone()[0],  # cookbooks
                "recipes": d.execute("SELECT count(*) FROM recipes r JOIN books b ON b.id=r.book_id"

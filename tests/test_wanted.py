@@ -220,3 +220,41 @@ def test_public_book_payload_has_no_want_fields(c):
     assert not set(W.COLS) & set(pub) and "released" not in pub
     listed = next(b for b in c.get("/api/books?q=public owned", environ_base=ANON).json["books"] if b["id"] == bid)
     assert not set(W.COLS) & set(listed)
+
+
+# ---------- Task 3: off the editor catalog, facets and searches ----------
+
+def _ids(r):
+    return {b["id"] for b in r.json["books"]}
+
+
+def test_editor_catalog_and_search_skip_wanted(c):
+    bid, _ = add_wanted("Qwfp Wanted Volume")
+    assert bid not in _ids(c.get("/admin/api/books"))
+    assert bid not in _ids(c.get("/admin/api/books?q=qwfp"))
+    assert bid in _ids(c.get("/admin/api/books?status=wanted"))
+
+
+def test_editor_recipe_search_skips_wanted_books(c):
+    bid, _ = add_wanted("Wanted With Recipes")
+    con = A.connect()
+    con.execute("INSERT INTO recipes(book_id, name) VALUES (?, 'Xylophone Lasagne')", (bid,))
+    con.commit()
+    con.close()
+    assert c.get("/admin/api/recipes?q=xylophone").json["count"] == 0
+    assert c.get("/admin/api/recipes/books?q=xylophone").json["count"] == 0
+
+
+def test_editor_facets_skip_wanted(c):
+    add_wanted("Facet Wanted", cuisine="Zanzibari", publisher="Qqq Wanted Press")
+    f = c.get("/admin/api/facets").json
+    assert all(x["name"] != "Zanzibari" for x in f["cuisines"])
+    assert "Qqq Wanted Press" not in f["publishers"]
+
+
+def test_private_mcp_search_books_skips_wanted(c, monkeypatch):
+    import mcp as MC
+    monkeypatch.setattr(MC, "MCP_TOKEN", "t0k")
+    add_wanted("Mcp Wanted Qzx")
+    books = mcp(c, "search_books", {"query": "qzx"}, token="t0k")["structuredContent"]["books"]
+    assert books == []

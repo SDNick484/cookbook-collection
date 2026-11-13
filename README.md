@@ -204,16 +204,16 @@ afterwards, the setting only names a new one) and can't be deleted or shelved.
 Keep a list of cookbooks you want to buy, both books already out and ones not released yet, without them showing up as part of the collection.
 
 - **Add one:** on **Add**, tick **Don't own it yet**. ISBN lookup and the cover work as usual. The shelf picker gives way to price, currency, release date (`2027`, `2027-03` or `2027-03-17`), buy link and priority (1 = most wanted). On an existing book, set its status to **Want to buy** to get the same fields.
-- **See them:** **More → Wanted**. They're grouped into **Coming soon** and **Out now**, sorted by priority, release date, price or when added, with a search box. "Out since you added it" flags a book that came out after you listed it. A release date's first day counts (`2027-03` is out on 1 March), in the server's `TZ`.
+- **See them:** the **Wanted** tab (editors only). They're grouped into **Coming soon** and **Out now**, sorted by priority, release date, price or when added, with a search box. "Out since you added it" flags a book that came out after you listed it. A release date's first day counts (`2027-03` is out on 1 March), in the server's `TZ`.
 - **Hidden everywhere else:** wanted books never appear on the public catalog, public detail pages, recipe search, counts or the public MCP, nor on the editor catalog and its search. Only signed-in editors see the Wanted list.
 - **Bought it:** on a wanted book's page. It joins the catalog in place (same page, link and history), optionally straight onto a shelf. Its price and buy link are kept. Undo it under **More → Recent changes**.
 
 ### Family wish list (optional)
-If a companion wish list app runs on the same server, a wanted book's page has **Add to a wish list…**. It adds the book to the chosen person's list through the wish list app's own API on localhost, so nothing in the wish list app changes. The dialog starts from the book's price and priority (change them there if you like), and the item links to the book's buy page when it has one; otherwise it gets a shopping link built from the ISBN (`WISHLIST_BOOK_URL`). Cookbooks never reads or writes whether an item was bought or reserved, so there are no spoilers. **Bought it** reminds you to take the book off any wish list it's on.
+If a companion wish list app is reachable at `WISHLIST_URL`, a wanted book's page has **Add to a wish list…**. It adds the book to the chosen person's list through the wish list app's own API, so nothing in the wish list app changes. The default URL is localhost (the app in the same container); for one in another container, set its LAN address (the wish list app treats requests from private addresses as its `LAN_ROLE`, an editor by default). Its Cloudflare address won't work, since that needs a sign-in. If the button is missing, Cookbooks couldn't reach `WISHLIST_URL`. Cookbooks only knows the items it added itself, so adding a book already on someone's list by hand makes a second item. The dialog starts from the book's price and priority (change them there if you like), and the item links to the book's buy page when it has one; otherwise it gets a shopping link built from the ISBN (`WISHLIST_BOOK_URL`). Cookbooks never reads or writes whether an item was bought or reserved, so there are no spoilers. **Bought it** reminds you to take the book off any wish list it's on.
 
 | Setting | Default | |
 |---|---|---|
-| `WISHLIST_URL` | `http://127.0.0.1:8766` | The wish list app on this server |
+| `WISHLIST_URL` | `http://127.0.0.1:8766` | Where Cookbooks calls the wish list app: localhost, or its LAN address in another container |
 | `WISHLIST_BOOK_URL` | `https://www.amazon.com/s?k={q}` | Shopping link for books without a buy link; `{q}` = ISBN, or title + author |
 | `WISHLIST_PUBLIC_URL` | empty | The wish list app's address in a browser, e.g. `https://wishlist.example.com`. Shown as a link after **Bought it**; never called |
 

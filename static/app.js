@@ -124,7 +124,7 @@ const currentRoute = () => location.hash.replace(/^#\/?/, "").split("?")[0];
 /* ---------- nav / router ---------- */
 function renderNav(route) {
   const items = ADMIN
-    ? [["#/", "Catalog"], ["#/photos", "Photos"], ["#/cook", "Cook"], ["#/add", "Add"], ["#/stats", "Stats"], ["#/more", "More"]]
+    ? [["#/", "Catalog"], ["#/photos", "Photos"], ["#/cook", "Cook"], ["#/add", "Add"], ["#/wanted", "Wanted"], ["#/stats", "Stats"], ["#/more", "More"]]
     : [["#/", "Catalog"], ["#/photos", "Photos"]].concat(S.editor ? [["/admin#/", "Edit"]] : [["/admin#/", "Sign in"]]);
   $("#nav").innerHTML = items.map(([h, t]) =>
     `<a href="${h}" class="${(h === "#/" ? route === "" : h.startsWith("#/") && route.startsWith(h.slice(2))) ? "on" : ""}">${t}</a>`).join("");
@@ -1652,9 +1652,6 @@ async function moreView() {
     <div class="panel"><h3>Recipes from websites</h3>
       <p class="small muted" style="margin-top:0">Save recipes from NYT Cooking and other sites by their links: your whole Recipe Box at once, or one at a time from your phone's share sheet.</p>
       <a class="btn primary" href="#/links">Add from links</a></div>
-    <div class="panel"><h3>Wanted <span class="muted small" id="wanted-n"></span></h3>
-      <p class="small muted" style="margin-top:0">Cookbooks we want to buy. They stay off the catalog until you mark them bought.</p>
-      <a class="btn primary" href="#/wanted">Open the wanted list</a></div>
     <div class="panel"><h3>Shelf locations</h3>
       <p class="small muted" style="margin-top:0">Rooms, shelves, anything nested: add, rename, move, reorder or delete. Each book's location shows on the public catalog.</p>
       <button class="primary" id="loc-more">Manage locations</button></div>
@@ -1674,7 +1671,6 @@ async function moreView() {
     <div class="panel"><h3>Public view</h3><p class="small muted">See what visitors see (no ratings, notes or loan details; shelf locations are shown).</p>
       <a class="btn" href="/">Open public catalog</a></div>`;
   $("#loc-more").onclick = () => locationsManager(() => { S.facets = null; });
-  api("wanted").then((r) => { const n = $("#wanted-n"); if (n) n.textContent = r.books.length || ""; }).catch(() => {});
 }
 
 /* ---------- recent changes (change history and undo) ---------- */
@@ -1850,7 +1846,7 @@ async function wantedView() {
   let by = "priority";
   try { by = localStorage.getItem("wantedSort") || by; } catch { /* private window */ }
   if (!WANTED_SORTS[by]) by = "priority";
-  view.innerHTML = `<a class="back" href="#/more">← More</a><h1>Wanted</h1>
+  view.innerHTML = `<h1>Wanted</h1>
     <p class="small muted">Cookbooks we want to buy. They stay off the catalog, and out of public view, until you mark them bought.</p>
     <div class="isbnrow"><input id="wanted-q" type="search" placeholder="Search wanted books" aria-label="Search wanted books">
       <select id="wanted-sort" aria-label="Sort">${Object.entries(WANTED_SORTS).map(([k, t]) => `<option value="${k}" ${k === by ? "selected" : ""}>${t}</option>`).join("")}</select></div>

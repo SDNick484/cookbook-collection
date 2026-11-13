@@ -27,6 +27,7 @@ def features():
     import wishlist  # local: importing it registers its routes, which must come after /mcp's
     return jsonify(ask=ask.enabled(), photo_import=bool(scan.ANTHROPIC_API_KEY), dinnerlog=bool(dinnerlog.DINNERLOG_API_URL),
                    dinnerlog_url=dinnerlog.DINNERLOG_URL or None, wishlist=wishlist.wishlist_available(),
+                   wishlist_url=wishlist.WISHLIST_PUBLIC_URL or None,
                    mcp_private=bool(mcp_tokens()), mcp_public=MCP_PUBLIC, mcp_write=MCP_WRITE,
                    mcp_url_token=MCP_URL_TOKEN)
 

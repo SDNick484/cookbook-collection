@@ -331,3 +331,66 @@ def test_bought_bad_location_is_400(c):
 
 def test_bought_unknown_book_is_404(c):
     assert c.post("/admin/api/books/999999/bought", json={}).status_code == 404
+
+
+# ---------- Task 5: the wish list push ----------
+
+def fake_wishlist(calls):
+    def f(method, path, body=None, timeout=5):
+        calls.append((method, path, body))
+        if path == "/api/people":
+            return [{"id": 2, "name": "Sam"}]
+        if path == "/api/people/2/items":
+            return {"id": 55}
+        raise RuntimeError("unexpected call")
+    return f
+
+
+def test_push_uses_buy_link_price_and_priority(c, monkeypatch):
+    import wishlist as WL
+    calls = []
+    monkeypatch.setattr(WL, "wishlist_call", fake_wishlist(calls))
+    bid, _ = add_wanted("Push Me", buy_url="https://publisher.example/push", price_cents=2450,
+                        price_currency="EUR", want_priority=1)
+    assert c.post(f"/admin/api/books/{bid}/wishlist", json={"person_id": 2}).status_code == 200
+    item = calls[-1][2]
+    assert item["url"] == "https://publisher.example/push" and item["price"] == "24.50"
+    assert item["priority"] == 1 and "EUR 24.50" in item["notes"]
+    assert [w["on_wish_lists"] for w in c.get("/admin/api/wanted").json["books"] if w["id"] == bid] == [["Sam"]]
+
+
+def test_push_usd_price_has_no_currency_note(c, monkeypatch):
+    import wishlist as WL
+    calls = []
+    monkeypatch.setattr(WL, "wishlist_call", fake_wishlist(calls))
+    bid, _ = add_wanted("Push Dollars", price_cents=3500, price_currency="USD")
+    c.post(f"/admin/api/books/{bid}/wishlist", json={"person_id": 2, "price": "99"})
+    item = calls[-1][2]
+    assert item["price"] == "35.00" and "USD" not in item["notes"]
+
+
+def test_push_without_want_fields_keeps_old_behaviour(c, monkeypatch):
+    import wishlist as WL
+    calls = []
+    monkeypatch.setattr(WL, "wishlist_call", fake_wishlist(calls))
+    bid, _ = add_wanted("Plain Push")
+    c.post(f"/admin/api/books/{bid}/wishlist", json={"person_id": 2, "price": "25.00", "priority": 3})
+    item = calls[-1][2]
+    assert item["url"].startswith("https://www.amazon.com/s?k=") and item["price"] == "25.00" and item["priority"] == 3
+
+
+def test_push_ignores_an_imported_non_http_buy_link(c, monkeypatch):
+    import wishlist as WL
+    calls = []
+    monkeypatch.setattr(WL, "wishlist_call", fake_wishlist(calls))
+    bid, _ = add_wanted("Junk Link Push", buy_url="javascript:alert(1)")
+    c.post(f"/admin/api/books/{bid}/wishlist", json={"person_id": 2})
+    assert calls[-1][2]["url"].startswith("https://www.amazon.com/s?k=")
+
+
+def test_features_carry_the_wish_list_link(c, monkeypatch):
+    import wishlist as WL
+    monkeypatch.setattr(WL, "WISHLIST_PUBLIC_URL", "https://wishlist.example.com")
+    assert c.get("/admin/api/features").json["wishlist_url"] == "https://wishlist.example.com"
+    monkeypatch.setattr(WL, "WISHLIST_PUBLIC_URL", "")
+    assert c.get("/admin/api/features").json["wishlist_url"] is None

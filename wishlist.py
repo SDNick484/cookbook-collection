@@ -12,6 +12,8 @@ from app import app, db, editor_required, make_err
 
 WISHLIST_URL = os.environ.get("WISHLIST_URL", "http://127.0.0.1:8766").rstrip("/")
 WISHLIST_BOOK_URL = os.environ.get("WISHLIST_BOOK_URL", "https://www.amazon.com/s?k={q}")
+# The wish list app's address in a browser, shown as a link after Bought it. Display only: never called.
+WISHLIST_PUBLIC_URL = os.environ.get("WISHLIST_PUBLIC_URL", "").rstrip("/")
 
 
 WISH_SCHEMA = """CREATE TABLE IF NOT EXISTS wish_items (
@@ -79,12 +81,19 @@ def add_to_wishlist(book_id):
     notes = ["Cookbook"]
     if b["isbn"]:
         notes.append(f"ISBN {b['isbn']}")
+    # A wanted book's own price, buy page and priority (wanted.py) win over the dialog's and the search link.
+    price = f"{b['price_cents'] / 100:.2f}" if b["price_cents"] is not None else None
+    if price and b["price_currency"] and b["price_currency"] != "USD":
+        notes.append(f"{b['price_currency']} {price}")
     if d.get("notes"):
         notes.append(str(d["notes"])[:300])
+    buy = b["buy_url"] if b["buy_url"] and b["buy_url"].lower().startswith(("http://", "https://")) else None
     item = {"name": f"{b['title']}{by}"[:200], "kind": "online",
-            "url": WISHLIST_BOOK_URL.replace("{q}", urllib.parse.quote_plus(q)),
-            "notes": " · ".join(notes), "priority": int(d.get("priority") or 2)}
-    if d.get("price") not in (None, ""):
+            "url": buy or WISHLIST_BOOK_URL.replace("{q}", urllib.parse.quote_plus(q)),
+            "notes": " · ".join(notes), "priority": b["want_priority"] or int(d.get("priority") or 2)}
+    if price:
+        item["price"] = price
+    elif d.get("price") not in (None, ""):
         item["price"] = d["price"]
     try:
         people = {p["id"]: p["name"] for p in wishlist_call("GET", "/api/people")}

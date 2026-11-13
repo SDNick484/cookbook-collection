@@ -196,6 +196,9 @@ def fields(kind, s):
 def fingerprint(kind, s):
     """A short hash of what an editor can change on the row (not the volatile fields): equal fingerprints, same row."""
     f = {k: v for k, v in fields(kind, s).items() if k not in VOLATILE[kind]}
+    if kind == "book":  # columns added after a change was recorded (wanted.py): unset, they aren't a change
+        import wanted
+        f = {k: v for k, v in f.items() if not (k in wanted.COLS and v is None)}
     if kind == "recipe":
         f["book_uid"] = s["book_uid"]
     raw = json.dumps(f, sort_keys=True, ensure_ascii=False, default=str)

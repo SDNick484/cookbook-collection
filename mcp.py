@@ -3,7 +3,7 @@
 Also /admin/api/features, which reports which of the optional integrations are configured. Tools, access levels
 (public / private / write), token handling and the log redaction wrapper live here; Ask (ask.py) reuses run_tool().
 """
-import hmac, json, logging, os, re, secrets
+import datetime, hmac, json, logging, os, re, secrets
 
 from flask import jsonify, request, Response
 
@@ -27,6 +27,7 @@ def features():
     import wishlist  # local: importing it registers its routes, which must come after /mcp's
     return jsonify(ask=ask.enabled(), photo_import=bool(scan.ANTHROPIC_API_KEY), dinnerlog=bool(dinnerlog.DINNERLOG_API_URL),
                    dinnerlog_url=dinnerlog.DINNERLOG_URL or None, wishlist=wishlist.wishlist_available(),
+                   wishlist_url=wishlist.WISHLIST_PUBLIC_URL or None,
                    mcp_private=bool(mcp_tokens()), mcp_public=MCP_PUBLIC, mcp_write=MCP_WRITE,
                    mcp_url_token=MCP_URL_TOKEN)
 
@@ -193,6 +194,8 @@ def t_search_books(a, private):
     sql, args = "SELECT b.* FROM books b WHERE 1=1", []
     if not private:
         sql += " AND b.status NOT IN ('gone') AND " + core.PUBLIC_BOOKS
+    else:  # wanted books aren't the collection: list_wanted has them
+        sql += " AND " + core.IN_COLLECTION
     q = (a.get("query") or "").strip()
     if q:
         fts_words, like_words = core.search_words(q)
@@ -303,8 +306,8 @@ def t_get_recipe(a, private):
 
 def t_list_categories(a, private):
     con = db()
-    pub = "" if private else f" WHERE {core.PUBLIC_BOOKS}"
-    pub_and = "" if private else f" AND {core.PUBLIC_BOOKS}"
+    pub = f" WHERE {core.IN_COLLECTION}" if private else f" WHERE {core.PUBLIC_BOOKS}"
+    pub_and = f" AND {core.IN_COLLECTION}" if private else f" AND {core.PUBLIC_BOOKS}"
     return {
         "ingredients": [dict(r) for r in con.execute(
             "SELECT i.name, count(ri.recipe_id) AS recipes, i.hint = 1 AS search_hint FROM ingredients i "
@@ -393,6 +396,37 @@ def t_update_book(a, private):
     return {"ok": True, "book_id": bid, "title": row["title"], "before": before, "after": after}
 
 
+WANTED_MAX = 100
+_SYMBOL = {"USD": "$", "EUR": "€", "GBP": "£"}
+
+
+def price_text(cents, currency):
+    """'$35.00', '€24.50', 'CHF 12.00', or None when there's no price. No currency means USD."""
+    if cents is None:
+        return None
+    cur = currency or "USD"
+    amount = f"{cents / 100:.2f}"
+    return f"{_SYMBOL[cur]}{amount}" if cur in _SYMBOL else f"{cur} {amount}"
+
+
+def wanted_order(books):
+    """Most wanted first (priority 1, unset last), then soonest release (no date last)."""
+    import wanted
+    far = datetime.date.max
+    return sorted(books, key=lambda b: (b["want_priority"] or 4, wanted.release_start(b["release_date"]) or far))
+
+
+def t_list_wanted(a, private):
+    import wanted
+    rows = db().execute("SELECT b.* FROM books b WHERE b.status = 'wanted'").fetchall()
+    books = wanted_order(wanted.wanted_payload(rows))
+    return {"books": [{"title": b["title"], "authors": b["authors"][:2],
+                       "price": price_text(b["price_cents"], b["price_currency"]),
+                       "release_date": b["release_date"], "released": b["released"],
+                       "priority": b["want_priority"]} for b in books[:WANTED_MAX]],
+            "total": len(books)}
+
+
 _S = lambda **p: {"type": "object", "properties": p}
 TOOLS = [
     ("search_recipes", False, t_search_recipes,
@@ -448,6 +482,11 @@ TOOLS = [
      "shelf_check says what the collection is neglecting: lapsed (cooked from before, not in a year, longest ago first, "
      f"at most {SHELF_LIST_MAX} of lapsed_total), unrated_most_cooked (books we cook from most that have no rating) "
      "and index (cookbooks with and without a recipe index).",
+     _S()),
+    ("list_wanted", True, t_list_wanted,
+     "Cookbooks we want to buy but don't own yet: title, authors, price, release date, whether it's out yet "
+     "(released), and priority 1 (most wanted) to 3. Most wanted first. These aren't part of the collection: never "
+     f"suggest cooking from them. At most {WANTED_MAX}, of total.",
      _S()),
     ("set_want_to_try", True, t_set_want, "Star (or unstar) a recipe as want-to-try.",
      {**_S(recipe_id={"type": "integer"}, want={"type": "boolean"}), "required": ["recipe_id"]}),

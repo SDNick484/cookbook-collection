@@ -12,7 +12,7 @@ TOKEN = "access-test-token_Q1"
 OLD, NEW = "old-rotating-token", "new-rotating-token"
 
 PUBLIC_TOOLS = {"search_recipes", "search_books", "get_book", "get_recipe", "list_categories"}
-READ_TOOLS = PUBLIC_TOOLS | {"suggest_recipes", "cooking_stats"}  # private, read-only
+READ_TOOLS = PUBLIC_TOOLS | {"suggest_recipes", "cooking_stats", "list_wanted"}  # private, read-only
 WRITE = set(MC.WRITE_TOOLS)
 
 

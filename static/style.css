@@ -515,3 +515,15 @@ form.redit h2 { margin: 12px 0 0; }
   .rsteps li[data-i]::before { top: 5pt; }
   .rsteps li p { font-size: 11pt; }
 }
+
+/* ---------- wanted books (More -> Wanted, the Add/Edit want fields, Bought it) ---------- */
+fieldset.want { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px 12px; margin: 0; display: grid; gap: 10px; min-width: 0; }
+fieldset.want legend { padding: 0 4px; font-size: .88rem; color: var(--muted); }
+.wlist { list-style: none; padding: 0; margin: 0 0 8px; display: grid; gap: 10px; max-width: 760px; }
+.wcard { display: grid; grid-template-columns: 54px minmax(0, 1fr); gap: 12px; align-items: start; padding: 10px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+.wcov { width: 54px; height: 80px; object-fit: cover; border-radius: 3px; background: var(--chip); }
+.wtitle { display: inline-flex; align-items: center; min-height: 44px; font-weight: 600; color: var(--ink); }
+.wcard .new { color: var(--ok); font-weight: 600; }
+.wcard .buy, .book dd a[rel~="noreferrer"] { display: inline-flex; align-items: center; min-height: 44px; }
+#wanted-sort { flex: 0 1 auto; min-height: 44px; }

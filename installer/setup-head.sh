@@ -109,6 +109,7 @@ add_setting "$CONF" MCP_URL_TOKEN 1 "1 = also accept the token in the URL, /mcp/
 add_setting "$CONF" PUBLIC_INDEXING 1 "1 = search engines may index the public catalog; 0 = robots.txt disallows everything and pages say noindex (/admin and /mcp are disallowed either way)"
 add_setting "$CONF" WISHLIST_URL http://127.0.0.1:8766 "Family wish list app (local) for 'Add to a wish list'"
 add_setting "$CONF" WISHLIST_BOOK_URL "https://www.amazon.com/s?k={q}" "Shopping link put on wish list items; {q} = ISBN (or title + author)"
+add_setting "$CONF" WISHLIST_PUBLIC_URL "" "Browser link to the wish list app, shown after Bought it, e.g. https://wishlist.example.com"
 add_setting "$CONF" DINNERLOG_URL "" "Dinner Log's public address, e.g. https://dinners.example.com — turns on 'Log this dinner' links"
 add_setting "$CONF" TZ "" "Time zone, e.g. America/Los_Angeles: daily limits (Ask, photo import) reset at local midnight in it; empty = this server's own zone (UTC unless /etc/localtime is set)"
 add_setting "$CONF" HOUSE_BOOK_TITLE "House Recipes" "Title of the house book (your own recipes) when it is first created; rename it in the editor later"
@@ -134,7 +135,7 @@ description="Cookbook Collection"
 : ${PORT:=8767}
 : ${DATA_DIR:=/var/lib/cookbooks}
 : ${BIND:=0.0.0.0}
-export DATA_DIR CF_TEAM_DOMAIN CF_AUD ADMIN_EMAILS LAN_EDIT LAN_CIDRS LAN_HOSTS ALLOWED_ORIGINS DINNERLOG_API_URL DINNERLOG_TOKEN ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_EFFORT ANTHROPIC_SEARCH_KEY ANTHROPIC_SEARCH_MODEL ASK_DAILY_LIMIT PHOTO_DAILY_LIMIT MCP_TOKEN MCP_PUBLIC MCP_WRITE MCP_URL_TOKEN PUBLIC_INDEXING WISHLIST_URL WISHLIST_BOOK_URL DINNERLOG_URL READ_TOKEN HOUSE_BOOK_TITLE RETURN_URL_ORIGINS CHANGES_KEEP_DAYS
+export DATA_DIR CF_TEAM_DOMAIN CF_AUD ADMIN_EMAILS LAN_EDIT LAN_CIDRS LAN_HOSTS ALLOWED_ORIGINS DINNERLOG_API_URL DINNERLOG_TOKEN ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_EFFORT ANTHROPIC_SEARCH_KEY ANTHROPIC_SEARCH_MODEL ASK_DAILY_LIMIT PHOTO_DAILY_LIMIT MCP_TOKEN MCP_PUBLIC MCP_WRITE MCP_URL_TOKEN PUBLIC_INDEXING WISHLIST_URL WISHLIST_BOOK_URL WISHLIST_PUBLIC_URL DINNERLOG_URL READ_TOKEN HOUSE_BOOK_TITLE RETURN_URL_ORIGINS CHANGES_KEEP_DAYS
 # TZ is exported only when set: an empty TZ would mean UTC and override /etc/localtime
 if [ -n "${TZ:-}" ]; then export TZ; else unset TZ; fi
 supervisor="supervise-daemon"

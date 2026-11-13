@@ -240,9 +240,10 @@ def _init_db_locked():
     global HAS_FTS
     con = connect()
     con.executescript(SCHEMA)
-    import dinnerlog, cook, wishlist, scan, eyb, ingredients, photos, online, ask, house, capture, changes
+    import dinnerlog, cook, wishlist, scan, eyb, ingredients, photos, online, ask, house, capture, changes, wanted
     online.migrate(con)
     house.migrate(con)  # after online: books.kind must exist
+    wanted.migrate(con)
     dinnerlog.migrate(con)
     cook.migrate(con)
     wishlist.migrate(con)
@@ -421,14 +422,16 @@ PUBLIC_RECIPE_COOKED = ("cooked_count",)
 PUBLIC_RECIPE_FLAGS = ("has_detail",)
 # Who may read a book without signing in. An allow-list of kinds: cookbooks (kind NULL) and the house book
 # (kind 'house', house.py) can be public; recipe websites (kind 'online') are for editors only, whatever their
-# visibility. Every anonymous read path (pages, JSON API, MCP, search, counts) filters with this or book_public().
-PUBLIC_BOOKS = "((b.kind IS NULL OR b.kind = 'house') AND b.visibility = 'public')"
-COOKBOOKS = "b.kind IS NULL"  # physical cookbooks: what "books in the collection" counts, separate from visibility
+# visibility. Wanted books (status 'wanted', wanted.py) are a shopping list, never public. Every anonymous read
+# path (pages, JSON API, MCP, search, counts) filters with this or book_public().
+IN_COLLECTION = "b.status <> 'wanted'"  # status is NOT NULL; editor lists of the collection add this themselves
+PUBLIC_BOOKS = f"({IN_COLLECTION} AND (b.kind IS NULL OR b.kind = 'house') AND b.visibility = 'public')"
+COOKBOOKS = f"(b.kind IS NULL AND {IN_COLLECTION})"  # physical cookbooks we own: what "books in the collection" counts
 
 
 def book_public(row):
-    """PUBLIC_BOOKS for a books row already loaded (a sqlite3.Row or dict with kind and visibility)."""
-    return row["kind"] in (None, "house") and row["visibility"] == "public"
+    """PUBLIC_BOOKS for a books row already loaded (a sqlite3.Row or dict with status, kind and visibility)."""
+    return row["status"] != "wanted" and row["kind"] in (None, "house") and row["visibility"] == "public"
 
 
 def book_dicts(rows, private):
@@ -447,6 +450,7 @@ def book_dicts(rows, private):
                           f"GROUP BY book_id", ids):
         counts[r[0]] = (r[1], r[2] or 0)
     paths = location_paths(db())
+    today = wanted.today() if private else None
     out = []
     for r in rows:
         d = dict(r) if private else {k: r[k] for k in PUBLIC_BOOK}
@@ -459,6 +463,7 @@ def book_dicts(rows, private):
         d["recipe_count"] = counts.get(r["id"], (0, 0))[0]
         if private:
             d["want_count"] = counts.get(r["id"], (0, 0))[1]
+            d["released"] = wanted.is_released(r["release_date"], today)  # the want fields: private only
         out.append(d)
     return out
 
@@ -859,7 +864,7 @@ def get_locations(con, public=False):
     least one, themselves or below, so no empty rooms and nothing from editor-only recipe websites is exposed."""
     tree = location_tree(con)
     direct = dict(con.execute("SELECT b.location_id, count(*) FROM books b WHERE b.location_id IS NOT NULL"
-                              + (f" AND {PUBLIC_BOOKS}" if public else "") + " GROUP BY b.location_id").fetchall())
+                              + f" AND {PUBLIC_BOOKS if public else IN_COLLECTION}" + " GROUP BY b.location_id").fetchall())
     n = {l["id"]: direct.get(l["id"], 0) for l in tree}
     for l in reversed(tree):  # a child comes after its parent, so this adds each subtree into its parent once
         if l["parent_id"] in n and l["parent_id"] != l["id"]:
@@ -924,6 +929,8 @@ def list_books(private):
     sql, args = "SELECT b.* FROM books b WHERE 1=1", []
     if not private:
         sql += " AND " + PUBLIC_BOOKS
+    elif request.args.get("status") != "wanted":  # wanted books show only on the Wanted screen
+        sql += " AND " + IN_COLLECTION
     words, runs = search_words(q)
     if words:
         if HAS_FTS:
@@ -991,8 +998,9 @@ def list_books(private):
             a = b["authors"][0] if b["authors"] else "~"
             return fold(a.split()[-1] if " " in a else a), fold(b["title"])
         books.sort(key=sname)
-    return jsonify(books=books, total=db().execute(
-        "SELECT count(*) FROM books b" + ("" if private else " WHERE " + PUBLIC_BOOKS)).fetchone()[0])
+    every = (PUBLIC_BOOKS if not private else "b.status = 'wanted'" if request.args.get("status") == "wanted"
+             else IN_COLLECTION)  # "N of M books": M is what this list holds with no filter
+    return jsonify(books=books, total=db().execute("SELECT count(*) FROM books b WHERE " + every).fetchone()[0])
 
 
 def get_book(book_id, private):
@@ -1042,7 +1050,7 @@ def recipe_filter(params, private):
     """WHERE clause + args for recipe search. Each word of q must match the recipe's name/index heading or
     one of its ingredient tags; ingredient= limits to recipes that use it (see ingredients.ingredient_condition)."""
     import ingredients
-    where, args = ([] if private else [PUBLIC_BOOKS]), []
+    where, args = ([IN_COLLECTION] if private else [PUBLIC_BOOKS]), []
     q = (params.get("q") or "").strip()
     words, runs = search_words(q)
     for tok in (words + runs)[:8]:
@@ -1127,8 +1135,8 @@ def recipe_books(private):
 def facets(private):
     d = db()
     by_name = lambda rows: sorted((dict(r) for r in rows), key=lambda x: fold(x["name"]))  # É with E, not after Z
-    pub = "" if private else f" WHERE {PUBLIC_BOOKS}"
-    pub_and = "" if private else f" AND {PUBLIC_BOOKS}"
+    pub = f" WHERE {IN_COLLECTION}" if private else f" WHERE {PUBLIC_BOOKS}"
+    pub_and = f" AND {IN_COLLECTION}" if private else f" AND {PUBLIC_BOOKS}"
     return jsonify(
         cuisines=by_name(d.execute(
             "SELECT c.name, count(*) AS n FROM (SELECT DISTINCT cuisine AS name FROM books b WHERE cuisine IS NOT NULL"
@@ -1141,7 +1149,8 @@ def facets(private):
             "SELECT a.name, count(*) AS n FROM authors a JOIN book_authors ba ON ba.author_id=a.id "
             "JOIN books b ON b.id=ba.book_id" + pub + " GROUP BY a.id")),
         publishers=sorted((r[0] for r in d.execute(
-            "SELECT DISTINCT publisher FROM books WHERE publisher IS NOT NULL")), key=fold) if private else [],
+            f"SELECT DISTINCT publisher FROM books b WHERE publisher IS NOT NULL AND {IN_COLLECTION}")), key=fold)
+            if private else [],
         locations=get_locations(d, public=not private),  # editors get empty ones too, for the picker
         stats={"books": d.execute(f"SELECT count(*) FROM books b WHERE {COOKBOOKS}" + pub_and).fetchone()[0],  # cookbooks
                "recipes": d.execute("SELECT count(*) FROM recipes r JOIN books b ON b.id=r.book_id"
@@ -1215,6 +1224,12 @@ def book_values(data):
         else:
             v = clean(v if isinstance(v, str) else (str(v) if v is not None else None))
         vals[k] = v
+    if vals.get("status") == "wanted":  # a book we don't own isn't on a shelf
+        vals["location_id"] = None
+    try:  # price, release date, buy link, priority (wanted.py); only the keys sent
+        vals.update(wanted.clean_fields(data))
+    except ValueError as e:
+        abort(make_err(400, str(e)))
     return vals
 
 
@@ -1880,6 +1895,7 @@ else:
     import scan  # noqa: E402,F401 — photo index import
     import mcp  # noqa: E402,F401 — features and the MCP server
     import wishlist  # noqa: E402,F401 — wish list link
+    import wanted  # noqa: E402 — books we want to buy (status 'wanted')
     import eyb  # noqa: E402,F401 — Eat Your Books import
     import ingredients  # noqa: E402,F401 — ingredient tags
     import photos  # noqa: E402,F401 — photos of dishes cooked from the books

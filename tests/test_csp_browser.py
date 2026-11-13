@@ -159,6 +159,24 @@ def test_editor_catalog_and_book(w, server, book):
     w.assert_clean("editor book page")
 
 
+def test_wanted_list_and_bought_dialog(w, server):
+    """More -> Wanted, a wanted book's page and its Bought it dialog, with no CSP violation."""
+    c = A.app.test_client()
+    bid = c.post("/admin/api/books", json={"title": "CSP Wanted Book", "status": "wanted", "price": "24,50",
+                                           "price_currency": "EUR", "release_date": "2099-03",
+                                           "buy_url": "https://publisher.example/csp", "want_priority": 1}).json["id"]
+    w.goto(f"{server}/admin#/wanted")
+    w.page.locator("#wanted-coming .wtitle", has_text="CSP Wanted Book").wait_for()
+    w.page.select_option("#wanted-sort", "price")
+    w.page.locator("#wanted-coming .wtitle", has_text="CSP Wanted Book").click()
+    w.page.locator("#bought").click()
+    w.page.locator("dialog[open] select[name=location_id]").wait_for()
+    w.page.locator("dialog[open] [data-cancel]").click()
+    w.page.wait_for_load_state("networkidle")
+    w.assert_clean("wanted list and Bought it")
+    c.delete(f"/admin/api/books/{bid}")
+
+
 def test_editor_cover_candidates_from_open_library(w, server, book):
     """Cover candidates load straight from the lookup hosts (Open Library, archive.org, Google)."""
     image = png()

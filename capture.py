@@ -655,11 +655,14 @@ def run_capture_job(job_id, parent_id, image=None, text=None, part=1, parts=1):
         rows = json.dumps(parse_reply(reply, truncated=stop == "max_tokens"), ensure_ascii=False)
     except Exception as e:  # noqa: BLE001
         err = f"Couldn't read the recipe from that {what}: {e}"
-    scan.finish_job(job_id, rows=rows, error=err)
+    if err is not None:
+        scan.finish_job(job_id, error=err)
+        return
     con = core.connect()
-    try:  # discarded while it was being read: keep nothing of what was read
-        con.execute("UPDATE photo_jobs SET rows=NULL WHERE id=? AND NOT EXISTS "
-                    "(SELECT 1 FROM photo_jobs WHERE id=? AND status='capture')", (job_id, parent_id))
+    try:  # one write: if the capture was discarded while it was being read, it finishes with nothing of what was read
+        con.execute("UPDATE photo_jobs SET status='done', warning=NULL, rows=CASE WHEN EXISTS "
+                    "(SELECT 1 FROM photo_jobs WHERE id=? AND status='capture') THEN ? END WHERE id=?",
+                    (parent_id, rows, job_id))
         con.commit()
     finally:
         con.close()

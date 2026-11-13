@@ -12,6 +12,7 @@ and an MCP server at `/mcp`. README.md is the user-facing guide; this file is ho
 | `scan.py` | Photo index import (Claude API, background jobs in `photo_jobs`; whole-index scans are a parent row with one child per page, `scan_state` derives the status, `merge_pages` joins them, `pages_today` enforces `PHOTO_DAILY_LIMIT`), `messages_api` (the Claude API call, also used by Ask), `model_call` (one request, effort fallback), and the job helpers capture.py shares: `photo_slot`, `finish_job`, `child_jobs`, `PARENT_STATUSES`. The `ANTHROPIC_*` settings |
 | `mcp.py` | MCP server (`TOOLS`, `WRITE_TOOLS`, `handle_rpc`, `run_tool`, access levels, token handling and log redaction) and `/admin/api/features` |
 | `wishlist.py` | The family wish list link (adds a book to a person's list over localhost, remembers what was added) |
+| `wanted.py` | Wanted books (`status='wanted'`): the five want columns (`COLS`, `migrate`), `clean_fields` (write validation), `release_start`/`is_released`/`today`, the Wanted list and Bought it routes |
 | `ask.py` | AI search: `POST /admin/api/ask`, `ask_log`, tool loop over `run_tool`, `show_results` hydration |
 | `ingredients.py` | Ingredient tags and search hints, CSV/zip import, `resolve()`, `ranked()` search ranking |
 | `eyb.py` | Eat Your Books import, merging garbled duplicate recipes |
@@ -72,6 +73,8 @@ Chromium for Playwright checks: `/opt/pw-browsers/chromium-*/chrome-linux/chrome
 - Anonymous reads filter with `PUBLIC_BOOKS` (SQL, alias `b`) or `book_public(row)`: an allow-list of kinds (NULL
   cookbooks, `'house'`) AND `visibility='public'`. `kind='online'` is never public. Every new read path (route, MCP
   tool, count) needs one of the two, and a test in `tests/test_house.py`. "How many cookbooks" counts use `COOKBOOKS`.
+  `PUBLIC_BOOKS` and `COOKBOOKS` also exclude `status='wanted'` (`IN_COLLECTION`); editor lists of the collection
+  add `IN_COLLECTION` themselves (see wanted.py).
 - Editor-only cooking history (`made_count`, a recipe's `made`, `shelf_check`) is added only inside `private` branches, never to `book_dicts` or the public recipe fields; `PUBLIC_RECIPE_COOKED` stays the whole public view of it. "Made" has one definition (`dinnerlog.MADE_RECIPE`, the complement of `cook.NEVER_MADE`); `tests/test_insights.py` checks they agree and `tests/test_house.py::test_cooking_insights_are_editor_only` checks nothing leaks.
 - `recipe_ingredients` is the EYB tag table; a house recipe's own lines are `recipe_ingredient_lines`. Only recipes in
   the house book carry details.

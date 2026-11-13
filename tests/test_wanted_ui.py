@@ -1,4 +1,4 @@
-"""Browser checks for wanted books in static/app.js: Add with "Don't own it yet", the Wanted screen (More -> Wanted),
+"""Browser checks for wanted books in static/app.js: Add with "Don't own it yet", the Wanted tab,
 staying off the catalog, and Bought it. Skipped when Playwright or Chromium isn't installed."""
 import os
 import sys
@@ -93,8 +93,11 @@ def test_wanted_screen_groups_sorts_and_links_safely(server, page):
     add_wanted("Ui Out Now Book", release_date="2001-01", price_cents=2450, price_currency="EUR", want_priority=2)
     add_wanted("Ui Junk Link Book", buy_url="javascript:alert(1)", want_priority=1)
     add_wanted("Ui Linked Book", buy_url="https://publisher.example/b", want_priority=3)
-    page.goto(f"{server}/admin#/more")
-    page.click("a[href='#/wanted']")
+    page.goto(f"{server}/admin#/")
+    tabs = page.locator("#nav a").all_inner_texts()
+    assert tabs == ["Catalog", "Photos", "Cook", "Add", "Wanted", "Stats", "More"]
+    page.click("#nav a[href='#/wanted']")
+    page.locator("#nav a.on", has_text="Wanted").wait_for()  # the tab shows where you are
     out = page.locator("#wanted-out")
     out.locator("text=Ui Out Now Book").wait_for()
     assert "€24.50" in out.inner_text()
@@ -110,3 +113,13 @@ def test_wanted_screen_groups_sorts_and_links_safely(server, page):
     page.locator("#wanted-out .wtitle").first.wait_for()
     assert page.input_value("#wanted-sort") == "added"  # remembered in this browser
     assert page.errors == []
+
+
+def test_no_wanted_tab_or_panel_where_it_does_not_belong(server, page):
+    page.goto(f"{server}/#/")
+    page.locator("#nav a").first.wait_for()
+    assert "Wanted" not in page.locator("#nav").inner_text()  # the public view
+    page.goto(f"{server}/admin#/more")
+    page.locator("#nav a.on", has_text="More").wait_for()
+    page.wait_for_load_state("networkidle")
+    assert page.locator("#view a[href='#/wanted']").count() == 0  # the tab replaces the More panel

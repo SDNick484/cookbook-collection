@@ -160,7 +160,7 @@ def test_editor_catalog_and_book(w, server, book):
 
 
 def test_wanted_list_and_bought_dialog(w, server):
-    """More -> Wanted, a wanted book's page and its Bought it dialog, with no CSP violation."""
+    """The Wanted tab, a wanted book's page and its Bought it dialog, with no CSP violation."""
     c = A.app.test_client()
     bid = c.post("/admin/api/books", json={"title": "CSP Wanted Book", "status": "wanted", "price": "24,50",
                                            "price_currency": "EUR", "release_date": "2099-03",

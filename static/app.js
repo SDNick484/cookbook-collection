@@ -164,6 +164,7 @@ async function route() {
     if (path === "try" && ADMIN) return await tryView();
     if (path === "review" && ADMIN) return await reviewView();
     if (path === "more" && ADMIN) return await moreView();
+    if (path === "wanted" && ADMIN) return await wantedView();
     if (path === "ask" && ADMIN) return askView();
     if (path === "cook" && ADMIN) return await cookView();
     if (path === "stats" && ADMIN) return await statsView();
@@ -407,6 +408,12 @@ async function bookView(id, focus) {
   if (b.location_path) rows.push(["Location", `<a class="loclink" href="#/?location_id=${encodeURIComponent(b.location_id)}">${PIN_ICON}${esc(b.location_path)}</a>`]);
   if (b.signed) rows.push(["", "Signed copy"]);
   if (b.kind === "online") rows.push(["Website", `<a href="https://${esc(b.site)}" target="_blank" rel="noopener">${esc(b.site)} ↗</a>`]);
+  if (ADMIN && b.status === "wanted") {
+    if (b.price_cents != null) rows.push(["Price", esc(fmtPrice(b.price_cents, b.price_currency))]);
+    if (b.release_date) rows.push([b.released ? "Released" : "Comes out", esc(fmtRelease(b.release_date))]);
+    if (b.want_priority) rows.push(["Priority", PRIORITY[b.want_priority]]);
+    if (isHttp(b.buy_url)) rows.push(["Buy", `<a href="${esc(b.buy_url)}" target="_blank" rel="noopener noreferrer">Buy page ↗</a>`]);
+  }
   const priv = ADMIN ? [
     b.status && b.status !== "owned" ? `<div><strong>${STATUS[b.status]}</strong>${b.status === "out" && b.out_since ? " since " + fmtDay(b.out_since) : ""}${b.loaned_to ? " to " + esc(b.loaned_to) : ""}</div>` : "",
     b.cooked_count ? `<div>Cooked from ${b.cooked_count}× (Dinner Log), last ${fmtDay(b.cooked_last)}</div>` : "",
@@ -437,8 +444,8 @@ async function bookView(id, focus) {
           <div class="actions"><a class="btn primary" href="#/links">Add recipes from links</a><a class="btn" href="#/book/${id}/edit">Edit</a></div>` : ""}
         ${ADMIN && b.kind === "house" ? `<p class="small muted">Recipes we've worked out ourselves, with ingredients and steps.</p>
           <div class="actions"><a class="btn primary" href="#/recipe/new">New recipe</a><a class="btn" href="#/book/${id}/edit">Edit</a></div>` : ""}
-        ${ADMIN && !b.kind ? `<div class="actions"><button id="shelf" class="${b.status === "out" ? "primary" : ""}">${b.status === "out" ? "Put back on shelf" : "Pulled out"}</button>
-          ${b.status === "wanted" ? `<button id="wish" class="primary">Add to a wish list…</button>` : ""}
+        ${ADMIN && !b.kind ? `<div class="actions">${b.status === "wanted" ? `<button id="bought" class="primary">Bought it</button>
+          <button id="wish">Add to a wish list…</button>` : `<button id="shelf" class="${b.status === "out" ? "primary" : ""}">${b.status === "out" ? "Put back on shelf" : "Pulled out"}</button>`}
           <a class="btn" href="#/book/${id}/edit">Edit book</a>
           <a class="btn" href="#/book/${id}/index">Import index</a><button id="addr">Add recipe</button></div>` : ""}
       </div>
@@ -483,6 +490,7 @@ async function bookView(id, focus) {
     toast(b.status === "out" ? "Back on the shelf" : "Marked as pulled out"); bookView(id);
   });
   if ($("#wish")) $("#wish").onclick = () => wishDialog(b);
+  if ($("#bought")) $("#bought").onclick = () => boughtDialog(b);
   dinnersPanel(b);
   $$("#rl li").forEach((li) => {
     const r = b.recipes.find((x) => x.id === +li.dataset.id);
@@ -1268,6 +1276,7 @@ function bookForm(b = {}) {
     <label class="f full">Description <span class="small">(public)</span><textarea name="description">${esc(b.description)}</textarea></label>
     <label class="f">Status<select name="status">${Object.entries(STATUS).map(([k, t]) => `<option value="${k}" ${(b.status || "owned") === k ? "selected" : ""}>${t}</option>`).join("")}</select></label>
     <label class="f">Loaned to<input name="loaned_to" value="${esc(b.loaned_to)}"></label>
+    ${b.kind ? "" : wantFields(b)}
     <label class="f">Rating<select name="rating"><option value="">Not rated</option>${[0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5].map((v) =>
       `<option value="${v}" ${b.rating === v ? "selected" : ""}>${starLabel(v)}</option>`).join("")}</select></label>
     ${b.kind === "online" ? "" : `<label class="f">Visible to<select name="visibility">
@@ -1294,6 +1303,7 @@ function readForm(form) {
   if (fd.has("clear_review")) o.needs_review = "";
   delete o.clear_review;
   if (!o.cover_url) delete o.cover_url;
+  if (o.status !== "wanted") WANT_KEYS.forEach((k) => delete o[k]);
   return o;
 }
 function fillForm(form, r, { overwrite = false } = {}) {
@@ -1325,6 +1335,7 @@ async function editView(id) {
       <span style="flex:1"></span><button class="danger" id="delete">Delete book</button></div>`;
   const form = $("#bf");
   wireLocationPicker(form);
+  wireWantFields(form);
   // camera and gallery are separate inputs: `capture` makes Android skip the gallery
   const uploadCover = async (e) => {
     if (!e.target.files[0]) return;
@@ -1375,11 +1386,13 @@ async function addView() {
       <div id="lookres" class="small" style="margin-top:10px"></div>
       <div id="newcover" class="coverpick" style="margin-top:10px"></div>
     </div>
+    <label class="chk panel" style="margin-bottom:0"><input type="checkbox" id="dont-own"> Don't own it yet: add it to the wanted list (kept off the catalog)</label>
     ${bookForm({})}
     <div class="actions"><button class="primary" id="save">Save book</button><button id="ol">Find matches by title</button></div>
     <div id="cands" class="cands panel hidden"></div>`;
   const form = $("#bf");
   wireLocationPicker(form);
+  wireWantFields(form, $("#dont-own"));
   const look = async (raw) => {
     const out = $("#lookres"); out.textContent = "Looking up…";
     try {
@@ -1639,6 +1652,9 @@ async function moreView() {
     <div class="panel"><h3>Recipes from websites</h3>
       <p class="small muted" style="margin-top:0">Save recipes from NYT Cooking and other sites by their links: your whole Recipe Box at once, or one at a time from your phone's share sheet.</p>
       <a class="btn primary" href="#/links">Add from links</a></div>
+    <div class="panel"><h3>Wanted <span class="muted small" id="wanted-n"></span></h3>
+      <p class="small muted" style="margin-top:0">Cookbooks we want to buy. They stay off the catalog until you mark them bought.</p>
+      <a class="btn primary" href="#/wanted">Open the wanted list</a></div>
     <div class="panel"><h3>Shelf locations</h3>
       <p class="small muted" style="margin-top:0">Rooms, shelves, anything nested: add, rename, move, reorder or delete. Each book's location shows on the public catalog.</p>
       <button class="primary" id="loc-more">Manage locations</button></div>
@@ -1658,6 +1674,7 @@ async function moreView() {
     <div class="panel"><h3>Public view</h3><p class="small muted">See what visitors see (no ratings, notes or loan details; shelf locations are shown).</p>
       <a class="btn" href="/">Open public catalog</a></div>`;
   $("#loc-more").onclick = () => locationsManager(() => { S.facets = null; });
+  api("wanted").then((r) => { const n = $("#wanted-n"); if (n) n.textContent = r.books.length || ""; }).catch(() => {});
 }
 
 /* ---------- recent changes (change history and undo) ---------- */
@@ -1756,6 +1773,143 @@ async function dinnersPanel(b) {
 }
 
 /* ---------- family wish list ---------- */
+/* ---------- wanted books (wanted.py): the list, its fields, and Bought it ---------- */
+const WANT_KEYS = ["price", "price_currency", "release_date", "buy_url", "want_priority"];
+const PRIORITY = { 1: "★★★ Most wanted", 2: "★★ Want", 3: "★ Maybe" };
+const isHttp = (u) => /^https?:\/\//i.test(u || "");   // imported data skips the server's check, so check again here
+// '2027' -> '2027-01-01', '2027-03' -> '2027-03-01'; null if it isn't a date (the server counts that as out now)
+function releaseStart(s) {
+  const m = /^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$/.exec(s || "");
+  return m ? `${m[1]}-${m[2] || "01"}-${m[3] || "01"}` : null;
+}
+function fmtRelease(s) {
+  const m = /^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$/.exec(s || "");
+  if (!m) return s || "";
+  if (!m[2]) return m[1];
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +(m[3] || 1)));
+  return d.toLocaleDateString(undefined, m[3] ? { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }
+    : { month: "short", year: "numeric", timeZone: "UTC" });
+}
+function fmtPrice(cents, cur) {
+  if (cents == null) return "";
+  try { return new Intl.NumberFormat(undefined, { style: "currency", currency: cur || "USD" }).format(cents / 100); }
+  catch { return `${cur} ${(cents / 100).toFixed(2)}`; }   // an imported code Intl doesn't know
+}
+function wantFields(b) {
+  return `<fieldset id="want-fields" class="full want ${b.status === "wanted" ? "" : "hidden"}"><legend>Want to buy</legend>
+    <div class="row2"><label class="f">Price<input name="price" inputmode="decimal" placeholder="35.00" value="${b.price_cents != null ? (b.price_cents / 100).toFixed(2) : ""}"></label>
+      <label class="f">Currency<input name="price_currency" maxlength="3" autocapitalize="characters" value="${esc(b.price_currency || "USD")}"></label></div>
+    <div class="row2"><label class="f">Release date <span class="small">(year, year-month or date)</span><input name="release_date" placeholder="2027-03" value="${esc(b.release_date)}"></label>
+      <label class="f">Priority<select name="want_priority"><option value="">—</option>${[1, 2, 3].map((v) =>
+        `<option value="${v}" ${b.want_priority === v ? "selected" : ""}>${PRIORITY[v]}</option>`).join("")}</select></label></div>
+    <label class="f">Buy link<input name="buy_url" type="url" inputmode="url" placeholder="https://publisher.example/book" value="${esc(b.buy_url)}"></label></fieldset>`;
+}
+// Show the want fields (and hide the shelf) while the status is "Want to buy". `box` is Add's "Don't own it yet".
+function wireWantFields(form, box) {
+  const st = form.elements.status, wf = $("#want-fields", form), loc = $("#loc-pick", form);
+  if (!st || !wf) return;
+  const sync = () => {
+    const w = st.value === "wanted";
+    wf.classList.toggle("hidden", !w);
+    if (loc) { loc.closest(".fld").classList.toggle("hidden", w); if (w && box) loc.value = ""; }
+    if (box) box.checked = w;
+  };
+  st.addEventListener("change", sync);
+  if (box) box.onchange = () => { st.value = box.checked ? "wanted" : "owned"; sync(); };
+  sync();
+}
+
+const WANTED_SORTS = { priority: "Priority", release: "Release date", price: "Price", added: "Recently added" };
+function wantedSorted(books, by) {
+  const start = (b) => releaseStart(b.release_date) || "9999";
+  const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  const cur = (b) => (!b.price_currency || b.price_currency === "USD" ? "" : b.price_currency);
+  const key = {
+    priority: (a, b) => (a.want_priority || 4) - (b.want_priority || 4) || cmp(start(a), start(b)),
+    release: (a, b) => cmp(start(a), start(b)),
+    price: (a, b) => (a.price_cents == null) - (b.price_cents == null) || cmp(cur(a), cur(b)) || (a.price_cents || 0) - (b.price_cents || 0),
+    added: (a, b) => cmp(b.created_at || "", a.created_at || "") || b.id - a.id,
+  }[by];
+  return [...books].sort((a, b) => key(a, b) || cmp(fold(a.title), fold(b.title)));
+}
+function wantedCard(b) {
+  const start = releaseStart(b.release_date);
+  const sinceAdded = b.released && start && (b.created_at || "").slice(0, 10) < start;
+  const bits = [b.release_date ? esc(fmtRelease(b.release_date)) : "", b.price_cents != null ? esc(fmtPrice(b.price_cents, b.price_currency)) : "",
+    b.want_priority ? `<span title="Priority ${b.want_priority}">${PRIORITY[b.want_priority].split(" ")[0]}</span>` : ""].filter(Boolean);
+  return `<li class="wcard" data-id="${b.id}">
+    ${b.cover_url ? `<img class="wcov" loading="lazy" src="${esc(b.cover_url)}" alt="">` : `<div class="wcov" style="background:${spine(b.title)}"></div>`}
+    <div><a class="wtitle" href="#/book/${b.id}">${esc(b.title)}</a>
+      <div class="small muted">${esc([b.authors.join(", "), b.publisher].filter(Boolean).join(" · "))}</div>
+      ${bits.length ? `<div class="small">${bits.join(" · ")}</div>` : ""}
+      ${sinceAdded ? `<div class="small new">Out since you added it</div>` : ""}
+      ${b.on_wish_lists.length ? `<div class="small muted">On ${b.on_wish_lists.map((n) => esc(n) + "'s").join(", ")} wish list</div>` : ""}
+      ${isHttp(b.buy_url) ? `<a class="buy small" href="${esc(b.buy_url)}" target="_blank" rel="noopener noreferrer">Buy page ↗</a>` : ""}</div></li>`;
+}
+async function wantedView() {
+  let by = "priority";
+  try { by = localStorage.getItem("wantedSort") || by; } catch { /* private window */ }
+  if (!WANTED_SORTS[by]) by = "priority";
+  view.innerHTML = `<a class="back" href="#/more">← More</a><h1>Wanted</h1>
+    <p class="small muted">Cookbooks we want to buy. They stay off the catalog, and out of public view, until you mark them bought.</p>
+    <div class="isbnrow"><input id="wanted-q" type="search" placeholder="Search wanted books" aria-label="Search wanted books">
+      <select id="wanted-sort" aria-label="Sort">${Object.entries(WANTED_SORTS).map(([k, t]) => `<option value="${k}" ${k === by ? "selected" : ""}>${t}</option>`).join("")}</select></div>
+    <div id="wanted-list"><p class="muted">Loading…</p></div>`;
+  let books = [];
+  const draw = () => {
+    const box = $("#wanted-list");
+    if (!books.length) {
+      box.innerHTML = `<div class="empty">${$("#wanted-q").value.trim() ? "No wanted books match."
+        : "Nothing on the wanted list. Add a book and tick “Don't own it yet”."}</div>`;
+      return;
+    }
+    const sorted = wantedSorted(books, by);
+    const group = (id, title, list) => list.length ? `<div class="section-h"><h2>${title} <span class="muted small">${list.length}</span></h2></div>
+      <ul class="wlist" id="${id}">${list.map(wantedCard).join("")}</ul>` : "";
+    box.innerHTML = group("wanted-coming", "Coming soon", sorted.filter((b) => !b.released))
+      + group("wanted-out", "Out now", sorted.filter((b) => b.released));
+  };
+  const load = async () => {
+    const q = $("#wanted-q").value.trim();
+    try { books = (await api("wanted" + (q ? "?q=" + encodeURIComponent(q) : ""))).books; } catch (e) { toast(e.message); }
+    draw();
+  };
+  $("#wanted-q").oninput = debounce(load, 250);
+  $("#wanted-sort").onchange = (e) => {
+    by = e.target.value;
+    try { localStorage.setItem("wantedSort", by); } catch { /* private window */ }
+    draw();
+  };
+  await load();
+}
+// Bought it: the book joins the catalog in place (same page, same link), optionally on a shelf. If it's on someone's
+// wish list, say so: only the wish list app can take it off without spoiling who's buying what.
+async function boughtDialog(b) {
+  if (!S.facets) { try { S.facets = await api("facets"); } catch (e) { toast(e.message); return; } }
+  const names = (b.wishes || []).map((w) => w.person_name);
+  const url = S.features && isHttp(S.features.wishlist_url) ? S.features.wishlist_url : "";
+  const who = names.map((n) => esc(n) + "'s").join(" and ") + (names.length > 1 ? " wish lists" : " wish list");
+  const d = document.createElement("dialog");
+  d.innerHTML = `<form method="dialog"><h2>Bought it</h2>
+    <p class="small muted" style="margin:0">“${esc(b.title)}” joins the catalog. Its price and buy link are kept.</p>
+    <label class="f">Shelf (optional)<select name="location_id">${locationOptions(S.facets.locations || [], "")}</select></label>
+    ${names.length ? `<p class="small">It's on ${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${who}</a>` : who}.
+      Remove it there so no one buys a second copy.</p>` : ""}
+    <div class="actions" style="justify-content:flex-end"><button type="button" data-cancel>Cancel</button><button class="primary" value="bought">Mark bought</button></div></form>`;
+  document.body.append(d);
+  d.addEventListener("close", async () => {
+    if (d.returnValue === "bought") {
+      const loc = new FormData($("form", d)).get("location_id");
+      try {
+        await api(`books/${b.id}/bought`, { method: "POST", body: { location_id: loc ? +loc : null } });
+        S.facets = null; toast("On the shelf"); bookView(b.id);
+      } catch (e) { toast(e.message); }
+    }
+    d.remove();
+  });
+  openModal(d);
+}
+
 async function wishDialog(b) {
   let people;
   try { people = (await api("wishlist/people")).people; } catch (e) { toast(e.message); return; }
@@ -1764,8 +1918,9 @@ async function wishDialog(b) {
     <p class="small muted" style="margin:0">“${esc(b.title)}” goes on that person's list with a shopping link${b.isbn ? " by ISBN" : ""}.</p>
     <div class="people">${people.map((p) => `<label class="person"><input type="radio" name="pid" value="${p.id}" required>
       <span style="--pc:${esc(p.color || "#777")}">${esc(p.name)}</span></label>`).join("")}</div>
-    <div class="row2"><label class="f">Price (optional)<input name="price" inputmode="decimal" placeholder="35.00"></label>
-      <label class="f">Priority<select name="priority"><option value="1">High</option><option value="2" selected>Normal</option><option value="3">Low</option></select></label></div>
+    <div class="row2"><label class="f">Price (optional)<input name="price" inputmode="decimal" placeholder="35.00" value="${b.price_cents != null ? (b.price_cents / 100).toFixed(2) : ""}"></label>
+      <label class="f">Priority<select name="priority">${[[1, "High"], [2, "Normal"], [3, "Low"]].map(([v, t]) =>
+        `<option value="${v}" ${(b.want_priority || 2) === v ? "selected" : ""}>${t}</option>`).join("")}</select></label></div>
     <div class="actions" style="justify-content:flex-end"><button type="button" data-cancel>Cancel</button><button class="primary" value="add">Add</button></div></form>`;
   document.body.append(d);
   d.addEventListener("close", async () => {

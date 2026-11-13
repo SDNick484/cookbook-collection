@@ -603,6 +603,47 @@ def test_discard_while_reading_keeps_nothing(c, env, monkeypatch):
     assert q("SELECT status, rows FROM photo_jobs WHERE id=?", kid)[0][:] == ("done", None)
 
 
+def test_discarded_capture_text_is_never_committed(c, env, monkeypatch):
+    """Discarded while reading: no commit may ever leave the read text on a finished row, not even for a moment
+    (a poller sees it, and a worker that dies between two commits would leave it for good)."""
+    gate = {501: threading.Event()}
+    monkeypatch.setattr(C, "call_claude", fake_claude(gate=gate))
+    job = send(c, 501).json["job"]
+    kid = q("SELECT id FROM photo_jobs WHERE parent_id=?", job)[0][0]
+    assert c.delete(f"/admin/api/house/capture/{job}").status_code == 200
+    real, seen = A.connect, []
+
+    class Watched:  # the worker's connections: after each commit, look at the row from outside
+        def __init__(self, con):
+            self._con = con
+
+        def __getattr__(self, name):
+            return getattr(self._con, name)
+
+        def __enter__(self):
+            self._con.__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self._con.__exit__(*exc)
+
+        def commit(self):
+            self._con.commit()
+            other = real()
+            seen.append(tuple(other.execute("SELECT status, rows FROM photo_jobs WHERE id=?", (kid,)).fetchone()))
+            other.close()
+
+    monkeypatch.setattr(A, "connect", lambda *a, **k: Watched(real(*a, **k)))
+    gate[501].set()
+    t0 = time.time()
+    while not any(s == "done" for s, _ in seen) and time.time() - t0 < 10:
+        time.sleep(0.02)
+    time.sleep(0.2)  # let any later commit of the worker land too
+    monkeypatch.setattr(A, "connect", real)
+    assert any(s == "done" for s, _ in seen)
+    assert [r for s, r in seen if s == "done" and r is not None] == []
+
+
 # ------------------------------------------------------------------ the gate
 ROUTES = [("POST", "/admin/api/house/capture/photos"), ("POST", "/admin/api/house/capture/text"),
           ("GET", "/admin/api/house/capture/JOB"), ("POST", "/admin/api/house/capture/JOB/attach"),

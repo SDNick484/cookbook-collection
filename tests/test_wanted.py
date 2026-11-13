@@ -394,3 +394,35 @@ def test_features_carry_the_wish_list_link(c, monkeypatch):
     assert c.get("/admin/api/features").json["wishlist_url"] == "https://wishlist.example.com"
     monkeypatch.setattr(WL, "WISHLIST_PUBLIC_URL", "")
     assert c.get("/admin/api/features").json["wishlist_url"] is None
+
+
+# ---------- Task 6: the private list_wanted MCP tool ----------
+
+def test_list_wanted_is_private_and_compact(c, monkeypatch):
+    import mcp as MC
+    monkeypatch.setattr(MC, "MCP_TOKEN", "t0k")
+    add_wanted("Mcp Listed", price_cents=2450, price_currency="EUR", want_priority=1, release_date="2099")
+    r = c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                             "params": {"name": "list_wanted", "arguments": {}}}).json
+    assert r["error"]["code"] == -32602 and "Unknown tool" in r["error"]["message"]  # public: not offered
+    res = mcp(c, "list_wanted", {}, token="t0k")["structuredContent"]
+    b = next(x for x in res["books"] if x["title"] == "Mcp Listed")
+    assert set(b) == {"title", "authors", "price", "release_date", "released", "priority"}
+    assert b["price"] == "€24.50" and b["released"] is False and b["priority"] == 1
+    assert res["total"] == q("SELECT count(*) FROM books WHERE status='wanted'")[0][0]
+
+
+@pytest.mark.parametrize("cents,cur,out", [(3500, "USD", "$35.00"), (3500, None, "$35.00"), (999, "GBP", "£9.99"),
+                                           (1200, "CHF", "CHF 12.00"), (None, "EUR", None)])
+def test_list_wanted_price_text(cents, cur, out):
+    import mcp as MC
+    assert MC.price_text(cents, cur) == out
+
+
+def test_list_wanted_order_priority_then_release():
+    import mcp as MC
+    books = [{"title": "c", "want_priority": None, "release_date": "2026"},
+             {"title": "b", "want_priority": 2, "release_date": None},
+             {"title": "a2", "want_priority": 1, "release_date": "2028"},
+             {"title": "a1", "want_priority": 1, "release_date": "2027-05"}]
+    assert [b["title"] for b in MC.wanted_order(books)] == ["a1", "a2", "b", "c"]

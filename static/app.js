@@ -1316,7 +1316,8 @@ async function editView(id) {
   const b = await api("books/" + id);
   view.innerHTML = `<a class="back" href="#/book/${id}">← ${esc(b.title)}</a><h1>Edit book</h1>
     <div class="panel"><div class="coverpick">${coverHTML(b)}
-      <div style="display:grid;gap:8px"><label class="btn">Upload / photograph cover<input id="cf" type="file" accept="image/*" capture="environment" class="vh"></label>
+      <div style="display:grid;gap:8px"><label class="btn">📷 Take cover photo<input id="cf-snap" type="file" accept="image/*" capture="environment" class="vh"></label>
+      <label class="btn">Choose cover image<input id="cf-pick" type="file" accept="image/*" class="vh"></label>
       <button id="ol">Find matches on Open Library</button></div><div id="newcover" class="coverpick"></div></div>
       <div id="cands" class="cands"></div></div>
     ${bookForm(b)}
@@ -1324,10 +1325,14 @@ async function editView(id) {
       <span style="flex:1"></span><button class="danger" id="delete">Delete book</button></div>`;
   const form = $("#bf");
   wireLocationPicker(form);
-  $("#cf").onchange = async (e) => {
+  // camera and gallery are separate inputs: `capture` makes Android skip the gallery
+  const uploadCover = async (e) => {
+    if (!e.target.files[0]) return;
     const fd = new FormData(); fd.append("file", e.target.files[0]);
     try { await api(`books/${id}/cover`, { method: "POST", body: fd }); toast("Cover updated"); editView(id); } catch (err) { toast(err.message); }
   };
+  $("#cf-snap").onchange = uploadCover;
+  $("#cf-pick").onchange = uploadCover;
   $("#ol").onclick = () => findMatches(form, $("#cands"));
   $("#save").onclick = () => busy($("#save"), async () => {
     if (!form.reportValidity()) return;

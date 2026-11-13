@@ -1924,7 +1924,7 @@ async function wishDialog(b) {
       const fd = new FormData($("form", d));
       try {
         const r = await api(`books/${b.id}/wishlist`, { method: "POST", body: { person_id: +fd.get("pid"), price: fd.get("price"), priority: +fd.get("priority") } });
-        toast(`Added to ${r.person}'s wish list`); bookView(b.id);
+        toast(`Added to ${r.person}'s wish list${r.cover === false ? " (the cover didn't come across)" : ""}`); bookView(b.id);
       } catch (e) { toast(e.message); }
     }
     d.remove();

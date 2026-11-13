@@ -484,3 +484,66 @@ def test_push_prefers_what_the_dialog_sends(c, monkeypatch):
     c.post(f"/admin/api/books/{bid}/wishlist", json={"person_id": 2, "price": "30.00", "priority": 3})
     item = calls[-1][2]
     assert item["price"] == "30.00" and item["priority"] == 3 and "EUR 30.00" in item["notes"]
+
+
+# ---------- the cover goes with a wish list item ----------
+
+def a_cover(name="wish-cover.jpg"):
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (30, 40), (200, 80, 40)).save(buf, "JPEG")
+    A.COVER_DIR.mkdir(parents=True, exist_ok=True)
+    (A.COVER_DIR / name).write_bytes(buf.getvalue())
+    return name, buf.getvalue()
+
+
+def test_multipart_body_is_a_valid_upload():
+    import wishlist as WL
+    from werkzeug.test import EnvironBuilder
+    from werkzeug.wrappers import Request
+    ctype, body = WL.multipart_body("photo", "cover.jpg", "image/jpeg", b"\xff\xd8 bytes \r\n--x")
+    env = EnvironBuilder(method="POST", input_stream=__import__("io").BytesIO(body), content_type=ctype,
+                         content_length=len(body)).get_environ()
+    f = Request(env).files["photo"]
+    assert f.filename == "cover.jpg" and f.mimetype == "image/jpeg" and f.read() == b"\xff\xd8 bytes \r\n--x"
+
+
+def test_push_sends_the_cover(c, monkeypatch):
+    import wishlist as WL
+    calls, uploads = [], []
+    monkeypatch.setattr(WL, "wishlist_call", fake_wishlist(calls))
+    monkeypatch.setattr(WL, "wishlist_upload", lambda path, field, filename, ctype, data, timeout=15:
+                        uploads.append((path, field, filename, ctype, data)) or {"id": 55})
+    name, data = a_cover()
+    bid, _ = add_wanted("Push With Cover", cover=name)
+    r = c.post(f"/admin/api/books/{bid}/wishlist", json={"person_id": 2})
+    assert r.status_code == 200 and r.json["cover"] is True
+    assert uploads == [("/api/items/55/photo", "photo", "cover.jpg", "image/jpeg", data)]
+
+
+def test_push_without_a_cover_sends_none(c, monkeypatch):
+    import wishlist as WL
+    calls, uploads = [], []
+    monkeypatch.setattr(WL, "wishlist_call", fake_wishlist(calls))
+    monkeypatch.setattr(WL, "wishlist_upload", lambda *a, **k: uploads.append(a))
+    bid, _ = add_wanted("Push No Cover")
+    gone, _ = add_wanted("Push Missing Cover File", cover="not-on-disk.jpg")
+    assert c.post(f"/admin/api/books/{bid}/wishlist", json={"person_id": 2}).json["cover"] is None
+    assert c.post(f"/admin/api/books/{gone}/wishlist", json={"person_id": 2}).json["cover"] is None
+    assert uploads == []
+
+
+def test_push_still_adds_when_the_cover_fails(c, monkeypatch):
+    import wishlist as WL
+    calls = []
+    monkeypatch.setattr(WL, "wishlist_call", fake_wishlist(calls))
+
+    def boom(*a, **k):
+        raise RuntimeError("wish list answered 503")
+    monkeypatch.setattr(WL, "wishlist_upload", boom)
+    name, _ = a_cover("wish-cover-2.jpg")
+    bid, _ = add_wanted("Push Cover Fails", cover=name)
+    r = c.post(f"/admin/api/books/{bid}/wishlist", json={"person_id": 2})
+    assert r.status_code == 200 and r.json["cover"] is False and r.json["person"] == "Sam"
+    assert q("SELECT count(*) FROM wish_items WHERE book_id=?", bid)[0][0] == 1

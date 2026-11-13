@@ -2,7 +2,7 @@
 
 Adds a book to a person's list in the companion wish list app, over localhost, and remembers what was added.
 """
-import json, os, urllib.error, urllib.parse, urllib.request
+import json, os, secrets, urllib.error, urllib.parse, urllib.request
 
 from flask import abort, jsonify, request
 
@@ -41,6 +41,42 @@ def wishlist_call(method, path, body=None, timeout=5):
         raise RuntimeError(msg or f"wish list answered {e.code}")
     except OSError as e:
         raise RuntimeError(f"wish list isn't reachable at {WISHLIST_URL} ({e})")
+
+
+def multipart_body(field, filename, ctype, data):
+    """A multipart/form-data body holding one file. Returns (content type, bytes)."""
+    boundary = "----cookbooks" + secrets.token_hex(12)
+    head = (f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"; filename="{filename}"\r\n'
+            f"Content-Type: {ctype}\r\n\r\n").encode()
+    return f"multipart/form-data; boundary={boundary}", head + data + f"\r\n--{boundary}--\r\n".encode()
+
+
+def wishlist_upload(path, field, filename, ctype, data, timeout=15):
+    """Upload one file to the wish list app (its photo route takes multipart, not JSON)."""
+    content_type, body = multipart_body(field, filename, ctype, data)
+    req = urllib.request.Request(WISHLIST_URL + path, data=body, method="POST", headers={
+        "X-Wishlist": "1", "Content-Type": content_type, "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"wish list answered {e.code}")
+    except OSError as e:
+        raise RuntimeError(f"wish list isn't reachable at {WISHLIST_URL} ({e})")
+
+
+def send_cover(item_id, cover):
+    """Give a new wish list item the book's cover. True when sent, False when the upload failed (the item stays),
+    None when there's nothing to send (no cover, or its file is gone)."""
+    path = core.COVER_DIR / cover if cover else None
+    if not item_id or not path or not path.is_file():
+        return None
+    try:
+        wishlist_upload(f"/api/items/{int(item_id)}/photo", "photo", "cover.jpg", "image/jpeg", path.read_bytes())
+        return True
+    except (RuntimeError, OSError) as e:
+        app.logger.warning("wish list cover upload for item %s failed: %s", item_id, e)
+        return False
 
 
 def wishlist_available():
@@ -107,7 +143,8 @@ def add_to_wishlist(book_id):
     con.execute("INSERT INTO wish_items(book_id, person_id, person_name, item_id) VALUES (?,?,?,?)",
                 (book_id, pid, people[pid], created.get("id")))
     con.commit()
-    return jsonify(ok=True, person=people[pid], item_id=created.get("id"))
+    cover = send_cover(created.get("id"), b["cover"])  # best effort: the item is added either way
+    return jsonify(ok=True, person=people[pid], item_id=created.get("id"), cover=cover)
 
 
 def wishes_for_book(book_id):
